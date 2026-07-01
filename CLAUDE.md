@@ -9,7 +9,7 @@
 - **Owner:** Shane (BIM Space Planning Manager, Exyte Ireland) — ESMC project, Muratec AMHS scope, Dresden.
 - **What it is:** Single-file HTML/CSS/JS app (`working.html`, currently ~12,600 lines) that parses Navisworks Clash Detective XML exports, manages clash review workflow, produces PPTX / PDF / BCF / CSV outputs.
 - **Deployment:** Copied to SharePoint, opened locally in Chrome/Edge by users.
-- **Hard constraints:** Single file. No external CDN dependencies. All libraries (Chart.js, JSZip, PptxGenJS, jsPDF) are inlined.
+- **Hard constraints:** Single file. Chart.js and JSZip are inlined (lines 13 and 34). PptxGenJS is loaded from CDN with jsdelivr/unpkg fallbacks (line 351). This is a known deviation from the 'no external dependencies' preference — accepted because inlining PptxGenJS would add ~700 KB to a rarely-used export path. If deploying to a site with restricted egress, verify the CDN or fallbacks are reachable before shipping. Inlining PptxGenJS is a separate future task.
 
 ---
 
