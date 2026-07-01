@@ -146,3 +146,8 @@ vite.config.ts.timestamp-*
 scripts/diag-*-report*.csv
 scripts/diag-*-report*.txt
 scripts/package-lock.json
+
+# tests/ Playwright run artifacts and lock
+tests/test-results/
+tests/playwright-report/
+tests/package-lock.json

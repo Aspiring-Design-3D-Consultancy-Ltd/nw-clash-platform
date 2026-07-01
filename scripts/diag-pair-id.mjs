@@ -98,6 +98,11 @@ function enrichFromFolder(folderName) {
   return out;
 }
 
+// Priority order MUST mirror bgetElementId() in working.html (marker
+// BGATR-ID-MULTI). Any drift here silently misclassifies the resolvedByAttr*
+// columns and any subsequent backfill.
+const ID_ATTR_ORDER = ['Element ID', 'GUID', '元素 ID', 'Entity Handle'];
+
 // ── Parser helpers — must mirror working.html bgatr() at ~5944 exactly ──────
 function bgatr(el, n) {
   if (!el) return '';
@@ -122,6 +127,15 @@ function allAttrNames(el) {
     if (attrN) names.add(attrN);
   }
   return [...names].sort();
+}
+
+function bgetElementId(el) {
+  if (!el) return { id: '', src: '' };
+  for (const name of ID_ATTR_ORDER) {
+    const v = bgatr(el, name);
+    if (v) return { id: v, src: name };
+  }
+  return { id: '', src: '' };
 }
 
 function bgetSource(el) {
@@ -158,6 +172,8 @@ for (const p of xmlPaths) {
         const obs = [...c.querySelectorAll('clashobject')];
         const oA = obs[0] || null;
         const oB = obs[1] || null;
+        const idA = bgetElementId(oA);
+        const idB = bgetElementId(oB);
         rows.push({
           file: path.basename(p),
           sourceFolder: enrich.sourceFolder,
@@ -167,8 +183,11 @@ for (const p of xmlPaths) {
           nwName,
           hasObsA: !!oA,
           hasObsB: !!oB,
-          elementIdA: bgatr(oA, 'Element ID'),
-          elementIdB: bgatr(oB, 'Element ID'),
+          elementIdA: idA.id,
+          elementIdB: idB.id,
+          // BGATR-ID-MULTI mirror: attribute name that yielded each ID.
+          resolvedByAttrA: idA.src,
+          resolvedByAttrB: idB.src,
           attrNamesA: allAttrNames(oA).join('|'),
           attrNamesB: allAttrNames(oB).join('|'),
           sourceA: bgetSource(oA),
@@ -195,6 +214,7 @@ const csvEsc = v => {
 const detailHeader = [
   'file','sourceFolder','exportDate','building','testName','nwName',
   'hasObsA','hasObsB','elementIdA','elementIdB',
+  'resolvedByAttrA','resolvedByAttrB',
   'attrNamesA','attrNamesB','sourceA','sourceB'
 ];
 fs.writeFileSync(
@@ -256,6 +276,42 @@ const totalXmls = xmlPaths.length;
 const totA = rows.filter(r => r.elementIdA).length;
 const totB = rows.filter(r => r.elementIdB).length;
 
+// Attribute-name coverage aggregates (BGATR-ID-MULTI verification surface).
+// Empty resolvedByAttr means the side had no clashobject OR none of the
+// four priority attributes was present.
+const attrKeys = [...ID_ATTR_ORDER, '(none)'];
+const attrLabel = k => k === '(none)' ? '(none)' : k;
+const attrCovA = new Map(attrKeys.map(k => [k, 0]));
+const attrCovB = new Map(attrKeys.map(k => [k, 0]));
+for (const r of rows) {
+  const kA = r.resolvedByAttrA || '(none)';
+  const kB = r.resolvedByAttrB || '(none)';
+  attrCovA.set(kA, (attrCovA.get(kA) || 0) + 1);
+  attrCovB.set(kB, (attrCovB.get(kB) || 0) + 1);
+}
+
+// Identity-attribute distribution by testName. One row per test; per-side
+// count of each attribute name. Shows which authoring tools populate each
+// test, so a partial regression (say 元素 ID drops out) surfaces immediately.
+const testAttrRows = new Map();
+for (const r of rows) {
+  let g = testAttrRows.get(r.testName);
+  if (!g) {
+    g = {
+      testName: r.testName,
+      clashCount: 0,
+      A: new Map(attrKeys.map(k => [k, 0])),
+      B: new Map(attrKeys.map(k => [k, 0])),
+    };
+    testAttrRows.set(r.testName, g);
+  }
+  g.clashCount++;
+  const kA = r.resolvedByAttrA || '(none)';
+  const kB = r.resolvedByAttrB || '(none)';
+  g.A.set(kA, (g.A.get(kA) || 0) + 1);
+  g.B.set(kB, (g.B.get(kB) || 0) + 1);
+}
+
 // Signature aggregation for B1-vs-B2 verdict
 const sigCounts = new Map();
 for (const r of rows) {
@@ -283,10 +339,31 @@ out.push(`Total clashes parsed:          ${rows.length}`);
 out.push(`Side A Element ID coverage:    ${totA} / ${rows.length}  (${pct(totA, rows.length)})`);
 out.push(`Side B Element ID coverage:    ${totB} / ${rows.length}  (${pct(totB, rows.length)})`);
 out.push('');
-out.push('Top 5 distinct side-B objectattribute signatures (Element ID missing)');
+out.push('Attribute-name coverage — clashes resolved by each name');
 out.push('-'.repeat(60));
-if (!topSigs.length) out.push('  (none — either every side B had Element ID, or no clashes parsed)');
+out.push(`  ${'name'.padEnd(16)} sideA        sideB`);
+for (const k of attrKeys) {
+  const a = attrCovA.get(k) || 0;
+  const b = attrCovB.get(k) || 0;
+  out.push(`  ${attrLabel(k).padEnd(16)} ${String(a).padStart(5)} (${pct(a, rows.length).padStart(6)})  ${String(b).padStart(5)} (${pct(b, rows.length).padStart(6)})`);
+}
+out.push('');
+out.push('Top 5 distinct side-B objectattribute signatures (identity missing)');
+out.push('-'.repeat(60));
+if (!topSigs.length) out.push('  (none — every side B resolved via one of the four names)');
 for (const [k, v] of topSigs) out.push(`  n=${v}  { ${k} }`);
+out.push('');
+out.push('Identity-attribute distribution by test');
+out.push('-'.repeat(60));
+out.push(`  ${'testName'.padEnd(36)} ${'n'.padStart(4)}  A: EID  GUID  元素  EH  none    B: EID  GUID  元素  EH  none`);
+const testOrder = [...testAttrRows.values()].sort((x, y) => y.clashCount - x.clashCount);
+const short = k => k === 'Element ID' ? 'EID' : k === '元素 ID' ? '元素' : k === 'Entity Handle' ? 'EH' : k === '(none)' ? 'none' : k;
+for (const g of testOrder) {
+  const aVals = attrKeys.map(k => String(g.A.get(k) || 0).padStart(4)).join('  ');
+  const bVals = attrKeys.map(k => String(g.B.get(k) || 0).padStart(4)).join('  ');
+  out.push(`  ${g.testName.slice(0, 36).padEnd(36)} ${String(g.clashCount).padStart(4)}     ${aVals}       ${bVals}`);
+}
+void short; // header labels are hardcoded above; short() reserved for future
 out.push('');
 out.push('Building distribution');
 out.push('-'.repeat(60));
