@@ -141,3 +141,13 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# scripts/ generated diagnostic artifacts (committed scripts, ignored output)
+scripts/diag-*-report*.csv
+scripts/diag-*-report*.txt
+scripts/package-lock.json
+
+# tests/ Playwright run artifacts and lock
+tests/test-results/
+tests/playwright-report/
+tests/package-lock.json

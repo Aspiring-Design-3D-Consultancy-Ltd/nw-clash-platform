@@ -6002,6 +6002,52 @@ function bgetItem(el){
   if(nodes.length>=5)return nodes[4].textContent.trim();
   return bgatr(el,'Item')||bgatr(el,'item');
 }
+/* BGATR-ID-MULTI start: element identity in NW XML varies by source authoring
+   tool. Revit uses "Element ID" (English) or "元素 ID" (Chinese). Muratec/AMHS
+   .nwc supplier models and some Revit installs use "GUID". AutoCAD-sourced
+   .dwg models use "Entity Handle". Phase A diagnostic across 13 archived XMLs
+   (1,795 clashes) showed side B was 0% "Element ID" but ~100% "GUID" — the
+   parser was capturing only the English Revit case. Try the four names in
+   priority order; return the first non-empty value along with the attribute
+   name used so downstream can persist provenance for debugging and
+   PAIR-ID-MERGE tier tracking. bgatr() itself is unchanged — it's a
+   general-purpose helper used elsewhere. */
+function bgetElementId(el){
+  if(!el)return{id:'',src:''};
+  const order=['Element ID','GUID','元素 ID','Entity Handle'];
+  for(const name of order){
+    const v=bgatr(el,name);
+    if(v)return{id:v,src:name};
+  }
+  return{id:'',src:''};
+}
+/* BGATR-ID-MULTI end */
+/* PAIR-ID-COMPOSITE-FALLBACK start: order-insensitive stable pair key for
+   PAIR-ID-MERGE lookups. Three tiers:
+     ID::A|B          — both sides carry an identity attribute (any of the
+                        four bgetElementId names). Element/GUID pairs are
+                        globally unique in Navisworks so no testName scoping
+                        is needed at this tier.
+     COMP::A|B        — composite of (source .nwc + normalised element name)
+                        on each side. Catches AMHS/AutoCAD clashes where
+                        neither side has a unique identity attribute but the
+                        model source + element name is stable across exports.
+     LEGACY::T::N     — testName + nwOrig, the pre-PAIR-ID-MERGE key. Retained
+                        as the ultimate fallback for manually-added clashes
+                        and pre-IMG-POS register entries. */
+function pairKey(c){
+  const a=(c.elementIdA||'').trim();
+  const b=(c.elementIdB||'').trim();
+  if(a&&b)return'ID::'+[a,b].sort().join('|');
+  const norm=s=>(s||'').toLowerCase().replace(/\s+/g,' ').trim();
+  const compA=norm(c.sourceA)+'::'+norm(c.elementA);
+  const compB=norm(c.sourceB)+'::'+norm(c.elementB);
+  if(compA!=='::'&&compB!=='::'){
+    return'COMP::'+[compA,compB].sort().join('|');
+  }
+  return'LEGACY::'+(c.testName||'')+'::'+(c.nwOrig||'');
+}
+/* PAIR-ID-COMPOSITE-FALLBACK end */
 function bmsg(t,c){const el=document.getElementById('bmsg');if(el){el.textContent=t;el.style.color=c||'#374151';}}
 
 function inferDisc(src,layer){
@@ -6644,12 +6690,19 @@ function batchParse(files,errors,readCount){
           if(cdEl){const cy=cdEl.getAttribute('year'),cm=cdEl.getAttribute('month'),cd=cdEl.getAttribute('day');if(cy&&cm&&cd)nwCreated=String(cd).padStart(2,'0')+'/'+String(cm).padStart(2,'0')+'/'+String(cy).slice(2);}
         }
         /* FILE-MTIME-AS-DATE-USE end */
-        const eA={id:bgatr(obs[0],'Element ID'),item:bgetItem(obs[0]),layer:bgetLayer(obs[0]),source:bgetSource(obs[0]),
+        /* BGATR-ID-MULTI-USE start: pull element identity via bgetElementId()
+           so GUID / Entity Handle / 元素 ID variants are captured alongside
+           Element ID. .idSrc records which attribute name yielded the value
+           and is persisted downstream for provenance. Parser 1 site. */
+        const _idA=bgetElementId(obs[0]);
+        const _idB=bgetElementId(obs[1]);
+        const eA={id:_idA.id,idSrc:_idA.src,item:bgetItem(obs[0]),layer:bgetLayer(obs[0]),source:bgetSource(obs[0]),
           baseLevel:bgatr(obs[0],'Base Level')||bgatr(obs[0],'Level')||bgatr(obs[0],'Schedule Level')||bgatr(obs[0],'Reference Level')||'',
           gridHead:bgatr(obs[0],'Grid Head')||bgatr(obs[0],'Grid Intersection')||bgatr(obs[0],'Nearest Grid')||''};
-        const eB={id:bgatr(obs[1],'Element ID'),item:bgetItem(obs[1]),layer:bgetLayer(obs[1]),source:bgetSource(obs[1]),
+        const eB={id:_idB.id,idSrc:_idB.src,item:bgetItem(obs[1]),layer:bgetLayer(obs[1]),source:bgetSource(obs[1]),
           baseLevel:bgatr(obs[1],'Base Level')||bgatr(obs[1],'Level')||bgatr(obs[1],'Schedule Level')||bgatr(obs[1],'Reference Level')||'',
           gridHead:bgatr(obs[1],'Grid Head')||bgatr(obs[1],'Grid Intersection')||bgatr(obs[1],'Nearest Grid')||''};
+        /* BGATR-ID-MULTI-USE end */
         // Extract Navisworks viewport image filename from href (e.g. "files\cd000001.jpg" → "cd000001.jpg")
         const hrefRaw=r.getAttribute('href')||'';
         const nwImageRef=hrefRaw?hrefRaw.replace(/.*[\\\/]/,''):'';
@@ -6886,12 +6939,18 @@ function bparse(){
       const cdEl=r.querySelector('createddate date');
       let nwCreated=null;
       if(cdEl){const cy=cdEl.getAttribute('year'),cm=cdEl.getAttribute('month'),cd=cdEl.getAttribute('day');if(cy&&cm&&cd)nwCreated=String(cd).padStart(2,'0')+'/'+String(cm).padStart(2,'0')+'/'+String(cy).slice(2);}
-      const eA={id:bgatr(obs[0],'Element ID'),item:bgetItem(obs[0]),layer:bgetLayer(obs[0]),source:bgetSource(obs[0]),
+      /* BGATR-ID-MULTI-USE start: mirror of the parser 1 change — same
+         priority order (Element ID → GUID → 元素 ID → Entity Handle), same
+         idSrc provenance capture. Dual-parser discipline (CLAUDE.md). */
+      const _idA=bgetElementId(obs[0]);
+      const _idB=bgetElementId(obs[1]);
+      const eA={id:_idA.id,idSrc:_idA.src,item:bgetItem(obs[0]),layer:bgetLayer(obs[0]),source:bgetSource(obs[0]),
         baseLevel:bgatr(obs[0],'Base Level')||bgatr(obs[0],'Level')||bgatr(obs[0],'Schedule Level')||bgatr(obs[0],'Reference Level')||'',
         gridHead:bgatr(obs[0],'Grid Head')||bgatr(obs[0],'Grid Intersection')||bgatr(obs[0],'Nearest Grid')||''};
-      const eB={id:bgatr(obs[1],'Element ID'),item:bgetItem(obs[1]),layer:bgetLayer(obs[1]),source:bgetSource(obs[1]),
+      const eB={id:_idB.id,idSrc:_idB.src,item:bgetItem(obs[1]),layer:bgetLayer(obs[1]),source:bgetSource(obs[1]),
         baseLevel:bgatr(obs[1],'Base Level')||bgatr(obs[1],'Level')||bgatr(obs[1],'Schedule Level')||bgatr(obs[1],'Reference Level')||'',
         gridHead:bgatr(obs[1],'Grid Head')||bgatr(obs[1],'Grid Intersection')||bgatr(obs[1],'Nearest Grid')||''};
+      /* BGATR-ID-MULTI-USE end */
       /* IMG-PARSE-FIX start: this single-file parser was missing the href
          extraction that parser #1 (batchLoad path) has. Navisworks puts
          href="...\cd000001.jpg" on each clashresult OR each clashgroup
@@ -7230,49 +7289,43 @@ function importToRegister(mode){
   function _bumpPF(c,which){const k=c.sourceFile||'pasted';if(!perFile[k])perFile[k]={count:0,added:0,updated:0,unchanged:0};perFile[k].count++;perFile[k][which]++;}
   /* DUP-FILES-FIX end */
 
+  /* PAIR-ID-COMPOSITE-FALLBACK-USE start: build a one-shot pairKey() lookup
+     over the current register so the merge loop is O(N+M) instead of the
+     previous O(N*M) find-per-clash. First-match wins on key collisions —
+     matches the previous .find() short-circuit behaviour. */
+  const _existByKey=new Map();
+  (S.clashes||[]).forEach(x=>{
+    const k=pairKey(x);
+    if(k&&!_existByKey.has(k))_existByKey.set(k,x);
+  });
+  /* PAIR-ID-COMPOSITE-FALLBACK-USE end */
+
   _bcfC.forEach(c=>{
-    // Merge key: testName + '::' + nwName (stable across re-imports of the same test)
-    const mergeKey=(c.tn||'')+'::'+( c.nwName||'');
-    /* PAIR-ID-MERGE start: Navisworks renumbers clashes (Clash1, Clash2, ...)
-       between exports — sort order depends on current depth/severity at export
-       time, so the legacy testName::nwName merge key fails to match existing
-       clashes on most re-imports. Every supplier delivery therefore treats
-       every clash as brand-new, destroying coordination state (status, notes,
-       assignee, statusHistory). Element-pair IDs are stable across exports
-       for a given physical clash. Match on order-insensitive element-pair IDs
-       scoped to the same testName (A=X,B=Y matches A=Y,B=X — Navisworks
-       sometimes swaps object order between exports). Legacy testName::nwName
-       lookup is retained as fallback below for records without element IDs
-       (manually-added clashes, pre-IMG-POS register entries, supplier exports
-       that omit Element ID). To revert: delete this block and the matching
-       end marker; the original `const exist=` below was reduced to `if(!exist)
-       exist=` — restore it to `const exist=` to recover prior behaviour. */
-    const _cAid=(c.eA&&c.eA.id)||'';
-    const _cBid=(c.eB&&c.eB.id)||'';
-    const _cTn=c.tn||'';
-    let exist=null;
-    if(_cAid && _cBid){
-      exist=(S.clashes||[]).find(x=>{
-        if((x.testName||'')!==_cTn) return false;
-        const xA=x.elementIdA||'', xB=x.elementIdB||'';
-        if(!xA || !xB) return false;
-        return (xA===_cAid && xB===_cBid) || (xA===_cBid && xB===_cAid);
-      });
-    }
+    /* PAIR-ID-MERGE start: match incoming clash to an existing register entry
+       via pairKey() — walks ID-pair → source+element composite → testName::
+       nwOrig legacy tiers. Element-pair identity (Element ID / GUID /
+       元素 ID / Entity Handle — see bgetElementId at BGATR-ID-MULTI) is stable
+       across Navisworks exports even though the sequential clashname
+       (Clash1, Clash2, ...) is not. The composite tier catches AMHS supplier
+       and AutoCAD clashes where neither side carries a unique identity
+       attribute (~2% of the archive per Phase A). The legacy tier preserves
+       compatibility with pre-PAIR-ID-MERGE records and manually-added clashes.
+       Lookup uses the pre-built _existByKey map (see PAIR-ID-COMPOSITE-
+       FALLBACK-USE above the forEach). */
+    /* PAIR-ID-COMPOSITE-FALLBACK-USE start */
+    const _incoming={
+      elementIdA:(c.eA&&c.eA.id)||'',
+      elementIdB:(c.eB&&c.eB.id)||'',
+      sourceA:(c.eA&&c.eA.source)||'',
+      sourceB:(c.eB&&c.eB.source)||'',
+      elementA:(c.eA&&(c.eA.item||c.eA.layer))||'',
+      elementB:(c.eB&&(c.eB.item||c.eB.layer))||'',
+      testName:c.tn||'',
+      nwOrig:c.nwName||'',
+    };
+    const exist=_existByKey.get(pairKey(_incoming))||null;
+    /* PAIR-ID-COMPOSITE-FALLBACK-USE end */
     /* PAIR-ID-MERGE end */
-    // Match against existing: prefer exact mergeKey, fall back to legacy nwOrig match
-    if(!exist) exist=(S.clashes||[]).find(x=>{
-      const xKey=((x.testName||'')+'::'+( x.nwOrig||''));
-      /* DUP-FILES-FIX start: removed the unsafe fallback `||(x.nwOrig&&x.nwOrig===c.nwName)`.
-         Navisworks numbers clashes sequentially within each test (Clash1, Clash2, …) so a
-         bare-name fallback collides across every file and silently overwrites distinct
-         clashes. Merging now requires testName::nwName to match exactly — safe for legitimate
-         re-imports of the same test, and correctly treats clashes from different tests as
-         distinct even when they share names. To revert: replace this line with
-         `return xKey===mergeKey||(x.nwOrig&&x.nwOrig===c.nwName);` */
-      return xKey===mergeKey;
-      /* DUP-FILES-FIX end */
-    });
 
     if(exist&&mode==='append'){
       /* PAIR-ID-RESOLVED-COUNT start: record that this existing clash got
@@ -7331,6 +7384,12 @@ function importToRegister(mode){
       elementB:c.eB.item||c.eB.layer||'Unknown',
       elementIdA:c.eA.id,
       elementIdB:c.eB.id,
+      /* BGATR-ID-MULTI-USE: persist which attribute name yielded each ID
+         (Element ID / GUID / 元素 ID / Entity Handle / '' for none) so the
+         UI can render provenance and future diagnostics can quantify the
+         source-tool mix without re-parsing the archived XMLs. */
+      elementIdSrcA:(c.eA&&c.eA.idSrc)||'',
+      elementIdSrcB:(c.eB&&c.eB.idSrc)||'',
       /* OWNER-MAP-FIX start: persist the source .nwc file for each clashobject so
          the dashboard scope toggle can determine party ownership per clash. The
          parser already extracts these into c.eA.source / c.eB.source — we just

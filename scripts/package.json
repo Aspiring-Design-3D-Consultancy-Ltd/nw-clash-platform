@@ -1,0 +1,13 @@
+{
+  "name": "nw-clash-scripts",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Diagnostic and maintenance scripts for the Navisworks Clash Intelligence Platform. Kept separate from the single-file app.",
+  "scripts": {
+    "diag-pair-id": "node diag-pair-id.mjs"
+  },
+  "dependencies": {
+    "linkedom": "^0.18.5"
+  }
+}

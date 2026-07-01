@@ -1,0 +1,13 @@
+{
+  "name": "nw-clash-tests",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Playwright specs for the Navisworks Clash Intelligence Platform. Run: cd tests && npm install && npm test.",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0"
+  }
+}

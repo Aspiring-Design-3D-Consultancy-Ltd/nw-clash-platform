@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<exchange units="mm">
+  <batchtest units="mm">
+    <clashtest name="[H] PAIR-ID-MULTI-ATTR Fixture" test_type="hard" priority="1">
+      <!-- Clash 1: Element ID / Element ID -->
+      <clashresult name="Clash1" href="files\cd000001.jpg" distance="-0.020">
+        <clashpoint><pos3f x="1000" y="1000" z="1000"/></clashpoint>
+        <resultstatus>new</resultstatus>
+        <clashobject>
+          <pathlink><node>ESMC.nwd</node><node>Structural.nwc</node></pathlink>
+          <layer>S-Beam</layer>
+          <objectattribute><name>Element ID</name><value>EID-A1</value></objectattribute>
+        </clashobject>
+        <clashobject>
+          <pathlink><node>ESMC.nwd</node><node>MEP.nwc</node></pathlink>
+          <layer>M-Duct</layer>
+          <objectattribute><name>Element ID</name><value>EID-B1</value></objectattribute>
+        </clashobject>
+      </clashresult>
+
+      <!-- Clash 2: GUID / GUID -->
+      <clashresult name="Clash2" href="files\cd000002.jpg" distance="-0.018">
+        <clashpoint><pos3f x="1100" y="1100" z="1100"/></clashpoint>
+        <resultstatus>new</resultstatus>
+        <clashobject>
+          <pathlink><node>ESMC.nwd</node><node>MuratecAMHS.nwc</node></pathlink>
+          <layer>AMHS-Track-A</layer>
+          <objectattribute><name>GUID</name><value>GUID-A2</value></objectattribute>
+        </clashobject>
+        <clashobject>
+          <pathlink><node>ESMC.nwd</node><node>MuratecAMHS.nwc</node></pathlink>
+          <layer>AMHS-Track-B</layer>
+          <objectattribute><name>GUID</name><value>GUID-B2</value></objectattribute>
+        </clashobject>
+      </clashresult>
+
+      <!-- Clash 3: Element ID / GUID -->
+      <clashresult name="Clash3" href="files\cd000003.jpg" distance="-0.015">
+        <clashpoint><pos3f x="1200" y="1200" z="1200"/></clashpoint>
+        <resultstatus>new</resultstatus>
+        <clashobject>
+          <pathlink><node>ESMC.nwd</node><node>Structural.nwc</node></pathlink>
+          <layer>S-Column</layer>
+          <objectattribute><name>Element ID</name><value>EID-A3</value></objectattribute>
+        </clashobject>
+        <clashobject>
+          <pathlink><node>ESMC.nwd</node><node>MuratecAMHS.nwc</node></pathlink>
+          <layer>AMHS-Track-C</layer>
+          <objectattribute><name>GUID</name><value>GUID-B3</value></objectattribute>
+        </clashobject>
+      </clashresult>
+
+      <!-- Clash 4: Entity Handle / GUID -->
+      <clashresult name="Clash4" href="files\cd000004.jpg" distance="-0.012">
+        <clashpoint><pos3f x="1300" y="1300" z="1300"/></clashpoint>
+        <resultstatus>new</resultstatus>
+        <clashobject>
+          <pathlink><node>ESMC.nwd</node><node>CivilRoads.dwg</node></pathlink>
+          <layer>Civil-Drainage</layer>
+          <objectattribute><name>Entity Handle</name><value>EH-A4</value></objectattribute>
+        </clashobject>
+        <clashobject>
+          <pathlink><node>ESMC.nwd</node><node>MuratecAMHS.nwc</node></pathlink>
+          <layer>AMHS-Track-D</layer>
+          <objectattribute><name>GUID</name><value>GUID-B4</value></objectattribute>
+        </clashobject>
+      </clashresult>
+
+      <!-- Clash 5: no-ID / GUID (Exyte AAS-style side A) -->
+      <clashresult name="Clash5" href="files\cd000005.jpg" distance="-0.009">
+        <clashpoint><pos3f x="1400" y="1400" z="1400"/></clashpoint>
+        <resultstatus>new</resultstatus>
+        <clashobject>
+          <pathlink><node>ESMC.nwd</node><node>ExyteAAS.nwc</node></pathlink>
+          <layer>AAS-Assembly</layer>
+          <objectattribute><name>Item Name</name><value>AAS-Widget-77</value></objectattribute>
+        </clashobject>
+        <clashobject>
+          <pathlink><node>ESMC.nwd</node><node>MuratecAMHS.nwc</node></pathlink>
+          <layer>AMHS-Track-E</layer>
+          <objectattribute><name>GUID</name><value>GUID-B5</value></objectattribute>
+        </clashobject>
+      </clashresult>
+    </clashtest>
+  </batchtest>
+</exchange>
