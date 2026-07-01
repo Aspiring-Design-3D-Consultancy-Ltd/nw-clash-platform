@@ -10481,6 +10481,7 @@ function rSet(){
       <button class="btn sm" onclick="dlBCF()">↓ Export BCF 2.1</button>
       <button class="btn sm" onclick="dlJSON()">↓ Backup JSON</button>
       <!-- XTEST-DUP-AUDIT start: audit button --><button class="btn sm" onclick="auditRegisterForCrossTestDuplicates()" title="Find clashes that appear in multiple clash tests">&#x1F50D; Audit cross-test duplicates</button><!-- XTEST-DUP-AUDIT end -->
+      <!-- JSON-BACKUP-RESTORE-BTN start --><button class="btn sm" onclick="jsonBackupRestore()" title="Replace all current state with a previously exported Backup JSON. Auto-backs up first.">&#x21BB; Restore from JSON</button><!-- JSON-BACKUP-RESTORE-BTN end -->
       <!-- SELECTIVE-RESET-BTN start --><button class="btn sm d" onclick="selectiveReset()" title="Pick specific categories to clear (images, clashes, weekly, levels, plans, settings, PIN). Everything not ticked is preserved.">&#x1F3AF; Selective reset</button><!-- SELECTIVE-RESET-BTN end -->
       <button class="btn sm d" onclick="factoryReset()" title="Wipe everything, then install the 104-clash 4-week demo dataset. Useful for training/testing.">⟲ Factory reset</button>
       <button class="btn sm d" onclick="clearAll()" title="Wipe everything to a blank state — no demo data installed afterwards.">🗑 Clear all data</button>
@@ -11091,6 +11092,156 @@ function _selectiveResetCategories(){
       lsKeys:['pin']},
   ];
 }
+/* JSON-BACKUP-RESTORE start: Restore all project state from a previously
+   exported Backup JSON. Full replacement of clashes, weekly snapshots,
+   projName, projWeek. Safety net: auto-download a pre-restore snapshot of
+   the CURRENT state before mutating anything, so a mistaken restore is
+   reversible via drag-drop / re-restore of the auto-backup file. UI lives
+   in the JSON-BACKUP-RESTORE-MODAL block; the core logic here handles
+   validation and mutation only.
+   Validation is strict — reject the whole restore if any required per-clash
+   field is missing (uid, testName, nwOrig, status). A malformed backup
+   would silently create ghost records that break PAIR-ID-MERGE and status
+   history. */
+function _validateRestoreJson(obj){
+  const errs=[];
+  if(!obj||typeof obj!=='object')errs.push('Not a JSON object.');
+  if(!Array.isArray(obj?.clashes))errs.push('Missing or invalid "clashes" array.');
+  if(!Array.isArray(obj?.weekly))errs.push('Missing or invalid "weekly" array.');
+  if(typeof obj?.projName!=='string'||!obj.projName)errs.push('Missing or empty "projName".');
+  if(errs.length)return{ok:false,errors:errs};
+  // Per-clash minimum required fields.
+  const bad=[];
+  const req=['uid','testName','nwOrig','status'];
+  (obj.clashes||[]).forEach((c,i)=>{
+    if(!c||typeof c!=='object'){bad.push('#'+i+': not an object');return;}
+    const missing=req.filter(k=>!c[k]);
+    if(missing.length)bad.push('#'+i+' ('+(c.uid||'no-uid')+'): missing '+missing.join(', '));
+  });
+  if(bad.length){
+    const preview=bad.slice(0,5).join('; ')+(bad.length>5?` …and ${bad.length-5} more`:'');
+    return{ok:false,errors:['Clash records failed validation: '+preview]};
+  }
+  return{ok:true,errors:[]};
+}
+function _executeJsonRestore(parsed){
+  // 1. Auto-download pre-restore backup of CURRENT state. Uses a distinct
+  //    filename prefix so it doesn't collide with user-triggered backups.
+  try{
+    const cur={clashes:S.clashes,weekly:S.weekly,projName:S.projName,projWeek:S.projWeek,exported:new Date().toISOString(),_kind:'pre-restore'};
+    const ts=new Date().toISOString().replace(/[:.]/g,'-');
+    dblob(new Blob([JSON.stringify(cur,null,2)],{type:'application/json'}),'pre-restore-'+ts+'.json');
+  }catch(e){console.warn('JSON-BACKUP-RESTORE: pre-restore backup failed',e);}
+  // 2. Replace state.
+  S.clashes=parsed.clashes.slice();
+  S.weekly=Array.isArray(parsed.weekly)?parsed.weekly.slice():[];
+  S.projName=parsed.projName;
+  if(typeof parsed.projWeek==='string'&&parsed.projWeek)S.projWeek=parsed.projWeek;
+  // 3. Rebuild _uid from restored records so nuid() doesn't collide.
+  const mx=Math.max(0,...S.clashes.map(c=>parseInt((c.uid||'CLX-0').replace(/\D/g,''),10)||0));
+  _uid=mx;
+  // 4. Regenerate weekly snapshots from restored register so a stale
+  //    weekly[] from an older backup doesn't misrepresent history.
+  try{regenWeeklyFromRegister();}catch(e){console.warn('JSON-BACKUP-RESTORE: regenWeeklyFromRegister failed',e);}
+  // 5. Persist.
+  sv('clashes',S.clashes);
+  sv('weekly',S.weekly);
+  sv('proj',S.projName);
+  sv('week',S.projWeek);
+  updSB();updSS();
+  const testCount=new Set(S.clashes.map(c=>c.testName)).size;
+  showToast('Restored '+S.clashes.length+' clash'+(S.clashes.length===1?'':'es')+' across '+testCount+' test'+(testCount===1?'':'s')+'. Pre-restore backup saved.');
+  nav('dashboard');
+}
+/* JSON-BACKUP-RESTORE end */
+/* JSON-BACKUP-RESTORE-MODAL start: file-picker + REPLACE-confirm modal.
+   Confirm button stays disabled until (a) a valid JSON is loaded AND
+   (b) the user types "REPLACE" exactly (case-sensitive) into the input.
+   Cancel-on-Escape and click-outside-to-dismiss for keyboard-comfortable
+   review. */
+function jsonBackupRestore(){
+  const id='json-restore-modal';
+  const prior=document.getElementById(id);if(prior)prior.remove();
+  const m=document.createElement('div');
+  m.id=id;
+  m.style.cssText='position:fixed;inset:0;background:rgba(15,24,36,.55);display:flex;align-items:center;justify-content:center;z-index:99999;font-family:Arial,sans-serif';
+  m.innerHTML=`
+    <div style="background:#fff;border-radius:8px;width:600px;max-width:94vw;max-height:90vh;overflow:auto;padding:18px 22px;box-shadow:0 12px 40px rgba(0,0,0,.25)">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+        <span style="font-size:18px">↻</span>
+        <h2 style="font-size:16px;font-weight:700;color:#0F1824;margin:0">Restore from JSON backup</h2>
+      </div>
+      <div style="font-size:12px;color:#64748B;margin-bottom:12px">This will REPLACE all current state (clashes, weekly snapshots, project name and week). A pre-restore backup of the current state will download automatically before anything changes.</div>
+      <div style="border:.5px solid #E5E7EB;border-radius:5px;padding:10px;margin-bottom:12px">
+        <label style="font-size:12px;color:#374151;display:block;margin-bottom:6px">Select backup JSON file:</label>
+        <input id="jr-file" type="file" accept="application/json,.json" style="font-size:11px">
+      </div>
+      <div id="jr-preview" style="font-size:11px;color:#334155;line-height:1.6;background:#F8FAFC;border:.5px solid #E2E8F0;border-radius:5px;padding:8px 10px;margin-bottom:12px;min-height:36px">Choose a file to see the preview.</div>
+      <div style="border-top:.5px solid #E5E7EB;padding-top:10px;margin-bottom:10px">
+        <label style="font-size:12px;color:#374151;display:block;margin-bottom:4px">Type <strong>REPLACE</strong> to confirm (case sensitive):</label>
+        <input id="jr-confirm-text" type="text" style="width:180px;font-family:monospace;padding:5px 8px;border:.5px solid #CBD5E1;border-radius:4px;font-size:13px" autocomplete="off" spellcheck="false">
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:8px">
+        <button class="btn sm" id="jr-cancel">Cancel</button>
+        <button class="btn sm" id="jr-go" style="color:#DC2626;border-color:#FCA5A5" disabled>Replace state</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(m);
+  let parsed=null;
+  const preview=m.querySelector('#jr-preview');
+  const goBtn=m.querySelector('#jr-go');
+  const confirmText=m.querySelector('#jr-confirm-text');
+  const updateGoBtn=()=>{
+    goBtn.disabled=!(parsed&&confirmText.value==='REPLACE');
+  };
+  const close=()=>{m.remove();document.removeEventListener('keydown',onKey);};
+  const onKey=(e)=>{if(e.key==='Escape')close();};
+  document.addEventListener('keydown',onKey);
+  m.addEventListener('click',(e)=>{if(e.target===m)close();});
+  m.querySelector('#jr-cancel').addEventListener('click',close);
+  confirmText.addEventListener('input',updateGoBtn);
+  m.querySelector('#jr-file').addEventListener('change',(e)=>{
+    parsed=null;
+    updateGoBtn();
+    const f=e.target.files&&e.target.files[0];
+    if(!f){preview.textContent='Choose a file to see the preview.';return;}
+    const rdr=new FileReader();
+    rdr.onload=()=>{
+      let obj;
+      try{obj=JSON.parse(rdr.result);}
+      catch(err){
+        preview.innerHTML='<span style="color:#DC2626">Could not parse JSON: '+esc(err.message)+'</span>';
+        return;
+      }
+      const v=_validateRestoreJson(obj);
+      if(!v.ok){
+        preview.innerHTML='<span style="color:#DC2626">Invalid backup:</span><br>'+v.errors.map(x=>'&#x2022; '+esc(x)).join('<br>');
+        return;
+      }
+      parsed=obj;
+      const tests=new Set(obj.clashes.map(c=>c.testName)).size;
+      const wk=obj.weekly.length;
+      const exp=obj.exported?esc(String(obj.exported)):'(no timestamp)';
+      preview.innerHTML=
+        '<strong style="color:#0F1824">'+esc(obj.projName)+'</strong><br>'+
+        obj.clashes.length+' clash'+(obj.clashes.length===1?'':'es')+
+        ' &middot; '+tests+' test'+(tests===1?'':'s')+
+        ' &middot; '+wk+' weekly snapshot'+(wk===1?'':'s')+'<br>'+
+        '<span style="color:#64748B">Exported: '+exp+'</span>';
+      updateGoBtn();
+    };
+    rdr.onerror=()=>{preview.innerHTML='<span style="color:#DC2626">Could not read file.</span>';};
+    rdr.readAsText(f);
+  });
+  m.querySelector('#jr-go').addEventListener('click',()=>{
+    if(!parsed||confirmText.value!=='REPLACE')return;
+    close();
+    _executeJsonRestore(parsed);
+  });
+}
+/* JSON-BACKUP-RESTORE-MODAL end */
+
 function selectiveReset(){
   const cats=_selectiveResetCategories();
   const id='selective-reset-modal';
