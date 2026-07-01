@@ -256,4 +256,71 @@ test.describe('PAIR-ID-BACKFILL', () => {
 
     fs.unlinkSync(tmp);
   });
+
+  test('folder picker collects every XML in a folder tree and skips non-XML / empty / lock files', async ({ page }) => {
+    // Simulate a "Clash Tests" archive: a root folder with two weekly subfolders,
+    // each containing one XML plus a stray image, an empty file, and a ~lockfile.
+    // Playwright's setInputFiles on a webkitdirectory input accepts a plain
+    // file array — the filter inside handleFiles() enforces the .xml + non-empty
+    // + no-~/$ rule.
+    const seed = makeRegisterBackup();
+    await page.evaluate((data) => {
+      S.clashes = data.clashes.slice();
+      S.weekly = [];
+      sv('clashes', S.clashes);
+    }, seed);
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nw-bf-folder-'));
+    const week1 = path.join(root, '260601 FAB AMHS v 7 Clash test');
+    const week2 = path.join(root, '260608 CUB Exyte v AMHS Clash test');
+    fs.mkdirSync(week1, { recursive: true });
+    fs.mkdirSync(week2, { recursive: true });
+    const xmlA = path.join(week1, 'test-A.xml');
+    const xmlB = path.join(week2, 'test-B.xml');
+    fs.writeFileSync(xmlA, XML_FIXTURE);
+    // Second XML only carries [H] Test B (the third register clash's test).
+    fs.writeFileSync(xmlB, XML_FIXTURE);
+    const jpg = path.join(week1, 'cd000001.jpg');
+    const empty = path.join(week1, 'empty.xml');
+    const lock = path.join(week1, '~lock-test.xml');
+    fs.writeFileSync(jpg, 'not an xml');
+    fs.writeFileSync(empty, '');
+    fs.writeFileSync(lock, XML_FIXTURE);
+
+    await page.evaluate(() => pairIdBackfill());
+    await page.waitForSelector('#pair-id-backfill-modal');
+
+    // Point the webkitdirectory input at the archive root — Playwright
+    // enumerates every file underneath, matching what a native folder
+    // pick produces.
+    await page.locator('#bf-folder').setInputFiles(root);
+
+    await page.waitForFunction(() => {
+      const c = document.querySelector('#bf-file-count');
+      return c && /files selected/.test(c.textContent);
+    });
+
+    const countText = await page.locator('#bf-file-count').textContent();
+    // 2 usable XMLs (xmlA + xmlB); jpg + empty + ~lock skipped = 3 skipped.
+    expect(countText).toContain('2 files selected');
+    expect(countText).toContain('(3 skipped)');
+
+    await page.waitForFunction(() => {
+      const r = document.querySelector('#bf-report');
+      return r && r.textContent && r.textContent.includes('Dry-run summary');
+    });
+    await page.locator('#bf-apply').click();
+    await page.waitForFunction(() => {
+      const r = document.querySelector('#bf-report');
+      return r && r.textContent && r.textContent.includes('Backfill complete');
+    });
+
+    // All three register clashes should be backfilled (XML_FIXTURE covers Tests A + B).
+    const covered = await page.evaluate(() =>
+      S.clashes.filter(c => c.elementIdA && c.elementIdB).length
+    );
+    expect(covered).toBe(3);
+
+    fs.rmSync(root, { recursive: true, force: true });
+  });
 });
