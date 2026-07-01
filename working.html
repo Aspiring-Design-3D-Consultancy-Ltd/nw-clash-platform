@@ -7362,9 +7362,16 @@ function importToRegister(mode){
      for downstream toast + success card + per-import log entry. Append mode
      only — replace mode wipes register so the concept doesn't apply. */
   let _disappeared=0;
+  /* PAIR-ID-AUTO-RESOLVE start: also collect the actual UIDs (not just the
+     count) so the post-import modal can offer to flip them to Resolved. */
+  const _disappearedUids=[];
+  /* PAIR-ID-AUTO-RESOLVE end */
   if(mode==='append'){
     _preExistingByTest.forEach((tn,uid)=>{
-      if(!_matchedUids.has(uid))_disappeared++;
+      if(!_matchedUids.has(uid)){
+        _disappeared++;
+        /* PAIR-ID-AUTO-RESOLVE */ _disappearedUids.push(uid);
+      }
     });
   }
   /* PAIR-ID-RESOLVED-COUNT end */
@@ -7455,7 +7462,111 @@ function importToRegister(mode){
   </div></div>`;
   showToast(`Merged: ${added} new, ${updated} updated, ${unchanged} unchanged${/* PAIR-ID-RESOLVED-COUNT */_disappeared?` \u00b7 ${_disappeared} likely fixed in model`:''}`);
   bmsg(`\u2713 ${added} new clashes imported — ${updated} updated, ${unchanged} unchanged${/* PAIR-ID-RESOLVED-COUNT */_disappeared?` \u00b7 ${_disappeared} likely fixed in model (not present in this XML)`:''}`,'#007A38');
+  /* PAIR-ID-AUTO-RESOLVE start: Phase 2 hand-off — offer to flip the
+     disappeared clashes to Resolved. Deferred so the success card + toast
+     paint first. Guarded by can('edit_register') inside the prompt so
+     read-only viewers see the toast but not the modal. */
+  if(_disappearedUids.length){setTimeout(()=>promptAutoResolve(_disappearedUids),350);}
+  /* PAIR-ID-AUTO-RESOLVE end */
 }
+/* PAIR-ID-AUTO-RESOLVE start: Phase 2 of PAIR-ID-RESOLVED-COUNT. Detection
+   already tallies clashes that were in the register but did NOT appear in an
+   append batch's XML for the same testName. This block turns that detection
+   into an optional one-click status flip:
+     promptAutoResolve(uids)     — confirm modal listing the clashes
+     autoResolveClashes(uids)    — snapshot prior status/history, flip to
+                                   Resolved this ISO week, save, show undo toast
+     undoAutoResolve(snap)       — restore prior status + statusHistory
+     showUndoToast(msg,onUndo)   — toast variant with an Undo button
+   Snapshot captures c.statusHistory by value (slice) so undo restores the
+   exact prior tail — pushStatusHistory() may have replaced the last entry
+   in-place if the clash already had a same-week history row.
+   Skipped silently for read-only viewers. */
+function promptAutoResolve(uids){
+  if(!Array.isArray(uids)||!uids.length)return;
+  if(typeof can==='function'&&!can('edit_register'))return;
+  const list=(S.clashes||[]);
+  const rows=uids.map(uid=>list.find(x=>x.uid===uid)).filter(c=>c&&c.status!=='Resolved');
+  if(!rows.length)return;
+  const n=rows.length;
+  const preview=rows.slice(0,5).map(c=>esc(c.nwName||c.uid)).join('<br>');
+  const more=n>5?`<div style="font-size:10px;color:#94A3B8;margin-top:6px">…and ${n-5} more</div>`:'';
+  const prior=document.getElementById('autoResolveModal');if(prior)prior.remove();
+  const ov=document.createElement('div');
+  ov.id='autoResolveModal';
+  ov.style.cssText='position:fixed;inset:0;background:rgba(15,24,36,.55);z-index:10000;display:flex;align-items:center;justify-content:center;font-family:Arial,sans-serif';
+  ov.innerHTML=`<div style="background:#fff;border-radius:8px;padding:20px 22px;max-width:460px;width:92%;box-shadow:0 20px 40px rgba(0,0,0,.35)">
+    <div style="font-size:15px;font-weight:700;color:#0F1824;margin-bottom:8px">Mark ${n} clash${n===1?'':'es'} as Resolved?</div>
+    <div style="font-size:12px;color:#475569;line-height:1.5;margin-bottom:10px">${n===1?'This clash was':'These clashes were'} in the register but did not appear in this import’s XML for the same test — likely fixed in the model. Flipping to Resolved appends a statusHistory entry dated to this ISO week.</div>
+    <div style="background:#F8FAFC;border:.5px solid #E2E8F0;border-radius:5px;padding:8px 10px;font-size:11px;color:#334155;margin-bottom:14px;max-height:130px;overflow:auto;line-height:1.6">${preview}${more}</div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button id="autoResolveCancel" class="btn sm" style="font-size:12px">Cancel</button>
+      <button id="autoResolveOk" class="btn sm ac" style="font-size:12px;background:#00B050;color:#fff;border-color:#00B050">Mark ${n} Resolved</button>
+    </div>
+  </div>`;
+  document.body.appendChild(ov);
+  const onKey=(e)=>{if(e.key==='Escape')close();};
+  const close=()=>{ov.remove();document.removeEventListener('keydown',onKey);};
+  document.addEventListener('keydown',onKey);
+  ov.querySelector('#autoResolveCancel').onclick=close;
+  ov.addEventListener('click',(e)=>{if(e.target===ov)close();});
+  ov.querySelector('#autoResolveOk').onclick=()=>{
+    close();
+    autoResolveClashes(rows.map(c=>c.uid));
+  };
+}
+function autoResolveClashes(uids){
+  if(!Array.isArray(uids)||!uids.length)return;
+  const wy=_weekYearNow();
+  const snap=[];
+  let n=0;
+  uids.forEach(uid=>{
+    const c=(S.clashes||[]).find(x=>x.uid===uid);
+    if(!c||c.status==='Resolved')return;
+    snap.push({
+      uid:c.uid,
+      status:c.status,
+      statusHistory:Array.isArray(c.statusHistory)?c.statusHistory.slice():[]
+    });
+    c.status='Resolved';
+    pushStatusHistory(c,'Resolved',wy);
+    n++;
+  });
+  if(!n)return;
+  sv('clashes',S.clashes);
+  regenWeeklyFromRegister();
+  updSB();updSS();
+  showUndoToast(`${n} clash${n===1?'':'es'} marked Resolved`,()=>undoAutoResolve(snap));
+}
+function undoAutoResolve(snap){
+  if(!Array.isArray(snap)||!snap.length)return;
+  let n=0;
+  snap.forEach(s=>{
+    const c=(S.clashes||[]).find(x=>x.uid===s.uid);
+    if(!c)return;
+    c.status=s.status;
+    c.statusHistory=Array.isArray(s.statusHistory)?s.statusHistory.slice():[];
+    n++;
+  });
+  sv('clashes',S.clashes);
+  regenWeeklyFromRegister();
+  updSB();updSS();
+  showToast(`Undone — ${n} clash${n===1?'':'es'} restored`);
+}
+function showUndoToast(msg,onUndo){
+  const t=document.createElement('div');
+  t.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#0F1824;color:#fff;padding:8px 16px;border-radius:6px;font-size:12px;font-family:Arial,sans-serif;z-index:9999;display:flex;align-items:center;gap:12px;transition:opacity .4s';
+  const span=document.createElement('span');span.textContent=msg;
+  const btn=document.createElement('button');btn.type='button';btn.textContent='Undo';
+  btn.style.cssText='background:transparent;color:#FFD166;border:1px solid #FFD166;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit';
+  let done=false;
+  const dismiss=()=>{if(done)return;done=true;t.style.opacity='0';setTimeout(()=>t.remove(),400);};
+  btn.onclick=()=>{if(done)return;done=true;try{onUndo&&onUndo();}finally{t.remove();}};
+  t.appendChild(span);t.appendChild(btn);
+  document.body.appendChild(t);
+  setTimeout(dismiss,6000);
+}
+/* PAIR-ID-AUTO-RESOLVE end */
 
 async function baianalyse(){
   if(!S.apiKey){alert('Add your Anthropic API key in Settings.');return;}
