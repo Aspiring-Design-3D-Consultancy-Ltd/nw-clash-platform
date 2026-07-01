@@ -10482,6 +10482,7 @@ function rSet(){
       <button class="btn sm" onclick="dlJSON()">↓ Backup JSON</button>
       <!-- XTEST-DUP-AUDIT start: audit button --><button class="btn sm" onclick="auditRegisterForCrossTestDuplicates()" title="Find clashes that appear in multiple clash tests">&#x1F50D; Audit cross-test duplicates</button><!-- XTEST-DUP-AUDIT end -->
       <!-- JSON-BACKUP-RESTORE-BTN start --><button class="btn sm" onclick="jsonBackupRestore()" title="Replace all current state with a previously exported Backup JSON. Auto-backs up first.">&#x21BB; Restore from JSON</button><!-- JSON-BACKUP-RESTORE-BTN end -->
+      <!-- PAIR-ID-BACKFILL-BTN start --><button class="btn sm" onclick="pairIdBackfill()" title="Reparse archived XMLs to fill in missing Element IDs / GUIDs on existing register clashes. Status, notes, priority are preserved.">&#x1F517; Backfill pair IDs</button><!-- PAIR-ID-BACKFILL-BTN end -->
       <!-- SELECTIVE-RESET-BTN start --><button class="btn sm d" onclick="selectiveReset()" title="Pick specific categories to clear (images, clashes, weekly, levels, plans, settings, PIN). Everything not ticked is preserved.">&#x1F3AF; Selective reset</button><!-- SELECTIVE-RESET-BTN end -->
       <button class="btn sm d" onclick="factoryReset()" title="Wipe everything, then install the 104-clash 4-week demo dataset. Useful for training/testing.">⟲ Factory reset</button>
       <button class="btn sm d" onclick="clearAll()" title="Wipe everything to a blank state — no demo data installed afterwards.">🗑 Clear all data</button>
@@ -11241,6 +11242,221 @@ function jsonBackupRestore(){
   });
 }
 /* JSON-BACKUP-RESTORE-MODAL end */
+
+/* PAIR-ID-BACKFILL start: retro-fit Element IDs onto existing register
+   clashes by reparsing archived Navisworks XMLs. The register was captured
+   before the BGATR-ID-MULTI fix landed, so ~97% of records carry empty
+   elementIdA/elementIdB and pairKey() falls to the LEGACY tier on every
+   re-import. Once IDs are backfilled, subsequent imports match at the ID
+   tier — which is stable across Navisworks renumbering. This flow is
+   metadata-only: status, notes, priority, assignedTo, statusHistory,
+   coordinates and dates are NOT touched under any circumstance. Match key
+   is testName + nwName (the legacy identity), because that is what the
+   register still has to offer. */
+function _bfParseXml(xmlText, fname){
+  const rows=[];
+  let doc;
+  try{doc=new DOMParser().parseFromString(xmlText,'text/xml');}
+  catch(e){return{rows,error:'XML parse failed: '+e.message};}
+  if(doc.querySelector('parsererror'))return{rows,error:'Invalid XML.'};
+  let batches=[...doc.querySelectorAll('clashtest')];
+  if(!batches.length)batches=[...doc.querySelectorAll('batchtest')];
+  batches.forEach(batch=>{
+    const tn=batch.getAttribute('name')||fname.replace(/\.xml$/i,'');
+    let clashes=[...batch.querySelectorAll('clashresult')];
+    if(!clashes.length)clashes=[...batch.querySelectorAll('clashgroup')];
+    clashes.forEach((r,i)=>{
+      const obs=[...r.querySelectorAll('clashobject')];
+      const idA=bgetElementId(obs[0]);
+      const idB=bgetElementId(obs[1]);
+      rows.push({
+        file:fname,
+        testName:tn,
+        nwName:r.getAttribute('name')||('Clash '+(i+1)),
+        elementIdA:idA.id,
+        elementIdB:idB.id,
+        elementIdSrcA:idA.src,
+        elementIdSrcB:idB.src,
+        sourceA:bgetSource(obs[0]),
+        sourceB:bgetSource(obs[1]),
+      });
+    });
+  });
+  return{rows,error:null};
+}
+function _bfDryRun(xmlRows){
+  // Match register clashes against XML clashes by testName + nwName (legacy).
+  // Registers only one match per register uid; XML clashes indexed by key.
+  const xmlByKey=new Map();
+  for(const x of xmlRows){
+    const k=(x.testName||'')+'::'+(x.nwName||'');
+    if(!xmlByKey.has(k))xmlByKey.set(k,x);
+  }
+  const perTest=new Map();
+  const matched=[];
+  const unmatchedRegister=[];
+  const seenXmlKeys=new Set();
+  (S.clashes||[]).forEach(c=>{
+    const k=(c.testName||'')+'::'+(c.nwOrig||'');
+    const x=xmlByKey.get(k);
+    let bucket=perTest.get(c.testName);
+    if(!bucket){bucket={testName:c.testName,register:0,xml:0,matched:0,regNoXml:0,alreadyHasIds:0};perTest.set(c.testName,bucket);}
+    bucket.register++;
+    if(c.elementIdA&&c.elementIdB)bucket.alreadyHasIds++;
+    if(x){bucket.matched++;matched.push({clash:c,xml:x});seenXmlKeys.add(k);}
+    else{bucket.regNoXml++;unmatchedRegister.push(c);}
+  });
+  const unmatchedXml=[];
+  xmlByKey.forEach((x,k)=>{
+    let bucket=perTest.get(x.testName);
+    if(!bucket){bucket={testName:x.testName,register:0,xml:0,matched:0,regNoXml:0,alreadyHasIds:0};perTest.set(x.testName,bucket);}
+    bucket.xml++;
+    if(!seenXmlKeys.has(k))unmatchedXml.push(x);
+  });
+  return{perTest,matched,unmatchedRegister,unmatchedXml};
+}
+function _bfApply(dryRun){
+  // Auto-backup first — same shape as JSON-BACKUP-RESTORE's safety net.
+  try{
+    const cur={clashes:S.clashes,weekly:S.weekly,projName:S.projName,projWeek:S.projWeek,exported:new Date().toISOString(),_kind:'pre-backfill'};
+    const ts=new Date().toISOString().replace(/[:.]/g,'-');
+    dblob(new Blob([JSON.stringify(cur,null,2)],{type:'application/json'}),'pre-backfill-'+ts+'.json');
+  }catch(e){console.warn('PAIR-ID-BACKFILL: pre-backfill backup failed',e);}
+  let touched=0;
+  dryRun.matched.forEach(({clash,xml})=>{
+    // Metadata-only. Overwrite ID fields (they were empty or wrong); do NOT
+    // touch status, notes, priority, assignedTo, statusHistory, x/y/z, date.
+    clash.elementIdA=xml.elementIdA||'';
+    clash.elementIdB=xml.elementIdB||'';
+    clash.elementIdSrcA=xml.elementIdSrcA||'';
+    clash.elementIdSrcB=xml.elementIdSrcB||'';
+    if(xml.sourceA)clash.sourceA=xml.sourceA;
+    if(xml.sourceB)clash.sourceB=xml.sourceB;
+    touched++;
+  });
+  sv('clashes',S.clashes);
+  return touched;
+}
+function _bfCoverage(){
+  const list=S.clashes||[];
+  const n=list.length||1;
+  const a=list.filter(c=>c.elementIdA).length;
+  const b=list.filter(c=>c.elementIdB).length;
+  const tiers={ID:0,COMP:0,LEGACY:0};
+  list.forEach(c=>{
+    const k=pairKey(c);
+    if(k.startsWith('ID::'))tiers.ID++;
+    else if(k.startsWith('COMP::'))tiers.COMP++;
+    else tiers.LEGACY++;
+  });
+  return{
+    n:list.length,
+    aPct:((100*a/n)).toFixed(1)+'%',
+    bPct:((100*b/n)).toFixed(1)+'%',
+    aCount:a,bCount:b,tiers,
+  };
+}
+/* PAIR-ID-BACKFILL end */
+/* PAIR-ID-BACKFILL-MODAL start: two-phase modal. Phase 1 = dry-run report;
+   phase 2 = success summary with before/after coverage. All state changes
+   happen only after the Apply button is clicked in phase 1. */
+function pairIdBackfill(){
+  const id='pair-id-backfill-modal';
+  const prior=document.getElementById(id);if(prior)prior.remove();
+  const m=document.createElement('div');
+  m.id=id;
+  m.style.cssText='position:fixed;inset:0;background:rgba(15,24,36,.55);display:flex;align-items:center;justify-content:center;z-index:99999;font-family:Arial,sans-serif';
+  m.innerHTML=`
+    <div style="background:#fff;border-radius:8px;width:720px;max-width:96vw;max-height:90vh;overflow:auto;padding:18px 22px;box-shadow:0 12px 40px rgba(0,0,0,.25)">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+        <span style="font-size:18px">🔗</span>
+        <h2 style="font-size:16px;font-weight:700;color:#0F1824;margin:0">Backfill pair IDs from archived XMLs</h2>
+      </div>
+      <div style="font-size:12px;color:#64748B;margin-bottom:12px;line-height:1.5">Reparses selected Navisworks XMLs and copies <code>elementIdA</code>, <code>elementIdB</code>, <code>elementIdSrcA</code>, <code>elementIdSrcB</code>, <code>sourceA</code>, <code>sourceB</code> onto matching register clashes. Match key is <strong>testName + nwName</strong> (legacy identity). Status, notes, priority, assignedTo, statusHistory, coordinates and dates are <strong>never</strong> touched.</div>
+      <div style="border:.5px solid #E5E7EB;border-radius:5px;padding:10px;margin-bottom:12px">
+        <label style="font-size:12px;color:#374151;display:block;margin-bottom:6px">Select archived XML file(s):</label>
+        <input id="bf-file" type="file" accept="application/xml,text/xml,.xml" multiple style="font-size:11px">
+        <div id="bf-file-count" style="font-size:11px;color:#64748B;margin-top:6px">No files selected.</div>
+      </div>
+      <div id="bf-report" style="font-size:11px;color:#334155;line-height:1.5;background:#F8FAFC;border:.5px solid #E2E8F0;border-radius:5px;padding:8px 10px;margin-bottom:12px;min-height:36px;max-height:280px;overflow:auto">Choose XML file(s) to run a dry-run match report.</div>
+      <div style="display:flex;justify-content:flex-end;gap:8px">
+        <button class="btn sm" id="bf-cancel">Cancel</button>
+        <button class="btn sm" id="bf-apply" style="color:#0F766E;border-color:#5EEAD4" disabled>Apply backfill</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(m);
+  let dryRun=null;
+  let xmlRowsCache=[];
+  const report=m.querySelector('#bf-report');
+  const applyBtn=m.querySelector('#bf-apply');
+  const fileCount=m.querySelector('#bf-file-count');
+  const close=()=>{m.remove();document.removeEventListener('keydown',onKey);};
+  const onKey=(e)=>{if(e.key==='Escape')close();};
+  document.addEventListener('keydown',onKey);
+  m.addEventListener('click',(e)=>{if(e.target===m)close();});
+  m.querySelector('#bf-cancel').addEventListener('click',close);
+  m.querySelector('#bf-file').addEventListener('change',async (e)=>{
+    dryRun=null;applyBtn.disabled=true;
+    const files=[...(e.target.files||[])];
+    fileCount.textContent=files.length?`${files.length} file${files.length===1?'':'s'} selected — parsing…`:'No files selected.';
+    if(!files.length){report.textContent='Choose XML file(s) to run a dry-run match report.';return;}
+    xmlRowsCache=[];
+    const errors=[];
+    for(const f of files){
+      const text=await f.text();
+      const r=_bfParseXml(text,f.name);
+      if(r.error)errors.push(f.name+' — '+r.error);
+      xmlRowsCache=xmlRowsCache.concat(r.rows);
+    }
+    fileCount.textContent=`${files.length} file${files.length===1?'':'s'} selected · ${xmlRowsCache.length} clashes parsed`+(errors.length?` · ${errors.length} error${errors.length===1?'':'s'}`:'');
+    dryRun=_bfDryRun(xmlRowsCache);
+    // Render per-test table.
+    const rows=[...dryRun.perTest.values()].sort((a,b)=>(b.matched)-(a.matched));
+    const totalMatched=rows.reduce((a,r)=>a+r.matched,0);
+    const totalReg=rows.reduce((a,r)=>a+r.register,0);
+    const totalXml=rows.reduce((a,r)=>a+r.xml,0);
+    const html=[
+      '<div style="margin-bottom:6px"><strong>Dry-run summary</strong> — no changes yet.</div>',
+      '<div style="margin-bottom:8px">Register: '+totalReg+' · XML: '+totalXml+' · matched: <strong>'+totalMatched+'</strong>'+(errors.length?' <span style="color:#DC2626">('+errors.length+' file errors)</span>':'')+'</div>',
+      '<table style="width:100%;border-collapse:collapse;font-size:11px">',
+      '<thead><tr style="background:#EFF6FF;color:#0F1824"><th style="text-align:left;padding:4px 6px;border-bottom:.5px solid #BFDBFE">Test</th><th style="text-align:right;padding:4px 6px;border-bottom:.5px solid #BFDBFE">Register</th><th style="text-align:right;padding:4px 6px;border-bottom:.5px solid #BFDBFE">XML</th><th style="text-align:right;padding:4px 6px;border-bottom:.5px solid #BFDBFE">Matched</th><th style="text-align:right;padding:4px 6px;border-bottom:.5px solid #BFDBFE">Reg no XML</th><th style="text-align:right;padding:4px 6px;border-bottom:.5px solid #BFDBFE">Already had IDs</th></tr></thead>',
+      '<tbody>',
+      rows.map(r=>`<tr><td style="padding:3px 6px;border-bottom:.5px dashed #E5E7EB">${esc(r.testName||'(no test)')}</td><td style="text-align:right;padding:3px 6px;border-bottom:.5px dashed #E5E7EB">${r.register}</td><td style="text-align:right;padding:3px 6px;border-bottom:.5px dashed #E5E7EB">${r.xml}</td><td style="text-align:right;padding:3px 6px;border-bottom:.5px dashed #E5E7EB"><strong>${r.matched}</strong></td><td style="text-align:right;padding:3px 6px;border-bottom:.5px dashed #E5E7EB">${r.regNoXml}</td><td style="text-align:right;padding:3px 6px;border-bottom:.5px dashed #E5E7EB">${r.alreadyHasIds}</td></tr>`).join(''),
+      '</tbody></table>',
+      errors.length?`<div style="margin-top:8px;color:#DC2626">Errors:<br>${errors.map(e=>esc(e)).join('<br>')}</div>`:'',
+    ].join('');
+    report.innerHTML=html;
+    applyBtn.disabled=(totalMatched===0);
+  });
+  applyBtn.addEventListener('click',()=>{
+    if(!dryRun||!dryRun.matched.length)return;
+    const before=_bfCoverage();
+    const touched=_bfApply(dryRun);
+    const after=_bfCoverage();
+    showToast('Backfilled '+touched+' clash'+(touched===1?'':'es')+'. Pair-ID coverage now A: '+after.aPct+', B: '+after.bPct+'.');
+    // Render success summary.
+    const bt=before.tiers, at=after.tiers;
+    report.innerHTML=[
+      '<div style="margin-bottom:8px;color:#0F766E"><strong>&#x2713; Backfill complete.</strong> '+touched+' clash'+(touched===1?'':'es')+' updated.</div>',
+      '<div style="margin-bottom:6px"><strong>Coverage delta</strong></div>',
+      '<table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:10px">',
+      '<thead><tr style="background:#F0FDF4;color:#0F1824"><th style="text-align:left;padding:4px 6px;border-bottom:.5px solid #BBF7D0">Metric</th><th style="text-align:right;padding:4px 6px;border-bottom:.5px solid #BBF7D0">Before</th><th style="text-align:right;padding:4px 6px;border-bottom:.5px solid #BBF7D0">After</th></tr></thead>',
+      '<tbody>',
+      `<tr><td style="padding:3px 6px;border-bottom:.5px dashed #E5E7EB">Side A ID coverage</td><td style="text-align:right;padding:3px 6px;border-bottom:.5px dashed #E5E7EB">${before.aPct}</td><td style="text-align:right;padding:3px 6px;border-bottom:.5px dashed #E5E7EB"><strong>${after.aPct}</strong></td></tr>`,
+      `<tr><td style="padding:3px 6px;border-bottom:.5px dashed #E5E7EB">Side B ID coverage</td><td style="text-align:right;padding:3px 6px;border-bottom:.5px dashed #E5E7EB">${before.bPct}</td><td style="text-align:right;padding:3px 6px;border-bottom:.5px dashed #E5E7EB"><strong>${after.bPct}</strong></td></tr>`,
+      `<tr><td style="padding:3px 6px;border-bottom:.5px dashed #E5E7EB">pairKey ID tier</td><td style="text-align:right;padding:3px 6px;border-bottom:.5px dashed #E5E7EB">${bt.ID}</td><td style="text-align:right;padding:3px 6px;border-bottom:.5px dashed #E5E7EB"><strong>${at.ID}</strong></td></tr>`,
+      `<tr><td style="padding:3px 6px;border-bottom:.5px dashed #E5E7EB">pairKey COMP tier</td><td style="text-align:right;padding:3px 6px;border-bottom:.5px dashed #E5E7EB">${bt.COMP}</td><td style="text-align:right;padding:3px 6px;border-bottom:.5px dashed #E5E7EB">${at.COMP}</td></tr>`,
+      `<tr><td style="padding:3px 6px;border-bottom:.5px dashed #E5E7EB">pairKey LEGACY tier</td><td style="text-align:right;padding:3px 6px;border-bottom:.5px dashed #E5E7EB">${bt.LEGACY}</td><td style="text-align:right;padding:3px 6px;border-bottom:.5px dashed #E5E7EB">${at.LEGACY}</td></tr>`,
+      '</tbody></table>',
+      '<div style="font-size:11px;color:#64748B">Pre-backfill snapshot downloaded as pre-backfill-*.json.</div>',
+    ].join('');
+    applyBtn.disabled=true;
+    applyBtn.textContent='Applied';
+    m.querySelector('#bf-cancel').textContent='Close';
+  });
+}
+/* PAIR-ID-BACKFILL-MODAL end */
 
 function selectiveReset(){
   const cats=_selectiveResetCategories();
