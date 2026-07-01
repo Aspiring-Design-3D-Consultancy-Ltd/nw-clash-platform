@@ -11375,7 +11375,18 @@ function pairIdBackfill(){
       <div style="font-size:12px;color:#64748B;margin-bottom:12px;line-height:1.5">Reparses selected Navisworks XMLs and copies <code>elementIdA</code>, <code>elementIdB</code>, <code>elementIdSrcA</code>, <code>elementIdSrcB</code>, <code>sourceA</code>, <code>sourceB</code> onto matching register clashes. Match key is <strong>testName + nwName</strong> (legacy identity). Status, notes, priority, assignedTo, statusHistory, coordinates and dates are <strong>never</strong> touched.</div>
       <div style="border:.5px solid #E5E7EB;border-radius:5px;padding:10px;margin-bottom:12px">
         <label style="font-size:12px;color:#374151;display:block;margin-bottom:6px">Select archived XML file(s):</label>
-        <input id="bf-file" type="file" accept="application/xml,text/xml,.xml" multiple style="font-size:11px">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <input id="bf-file" type="file" accept="application/xml,text/xml,.xml" multiple style="font-size:11px">
+          <!-- PAIR-ID-BACKFILL-FOLDER start: folder-select shortcut for archives
+               laid out as C:\temp\Clash Tests\<weekly folder>\<*.xml>. The hidden
+               webkitdirectory input recursively enumerates the picked folder;
+               the shared file handler filters to .xml (skipping empty files and
+               ~/$ Office-lock names) before parsing. -->
+          <span style="font-size:11px;color:#94A3B8">or</span>
+          <button type="button" id="bf-folder-btn" class="btn sm" style="font-size:11px">Choose folder…</button>
+          <input id="bf-folder" type="file" webkitdirectory directory multiple style="display:none">
+          <!-- PAIR-ID-BACKFILL-FOLDER end -->
+        </div>
         <div id="bf-file-count" style="font-size:11px;color:#64748B;margin-top:6px">No files selected.</div>
       </div>
       <div id="bf-report" style="font-size:11px;color:#334155;line-height:1.5;background:#F8FAFC;border:.5px solid #E2E8F0;border-radius:5px;padding:8px 10px;margin-bottom:12px;min-height:36px;max-height:280px;overflow:auto">Choose XML file(s) to run a dry-run match report.</div>
@@ -11396,11 +11407,19 @@ function pairIdBackfill(){
   document.addEventListener('keydown',onKey);
   m.addEventListener('click',(e)=>{if(e.target===m)close();});
   m.querySelector('#bf-cancel').addEventListener('click',close);
-  m.querySelector('#bf-file').addEventListener('change',async (e)=>{
+  /* PAIR-ID-BACKFILL-FOLDER start: shared file handler feeds off either the
+     files-picker or the folder-picker. Filters to .xml, non-empty,
+     no ~/$ (Office lock files) so a picked folder full of images and
+     temp files still yields a clean XML set. */
+  const handleFiles=async (rawFiles)=>{
     dryRun=null;applyBtn.disabled=true;
-    const files=[...(e.target.files||[])];
-    fileCount.textContent=files.length?`${files.length} file${files.length===1?'':'s'} selected — parsing…`:'No files selected.';
-    if(!files.length){report.textContent='Choose XML file(s) to run a dry-run match report.';return;}
+    const allFiles=[...(rawFiles||[])];
+    const files=allFiles.filter(f=>/\.xml$/i.test(f.name)&&f.size>0&&!/[~$]/.test(f.name));
+    const skipped=allFiles.length-files.length;
+    fileCount.textContent=files.length
+      ?`${files.length} file${files.length===1?'':'s'} selected — parsing…`+(skipped?` (${skipped} skipped)`:'')
+      :(allFiles.length?`No usable XMLs in selection (${allFiles.length} skipped).`:'No files selected.');
+    if(!files.length){report.textContent='Choose XML file(s) — or a folder — to run a dry-run match report.';return;}
     xmlRowsCache=[];
     const errors=[];
     for(const f of files){
@@ -11428,7 +11447,11 @@ function pairIdBackfill(){
     ].join('');
     report.innerHTML=html;
     applyBtn.disabled=(totalMatched===0);
-  });
+  };
+  m.querySelector('#bf-file').addEventListener('change',e=>handleFiles(e.target.files));
+  m.querySelector('#bf-folder').addEventListener('change',e=>handleFiles(e.target.files));
+  m.querySelector('#bf-folder-btn').addEventListener('click',()=>m.querySelector('#bf-folder').click());
+  /* PAIR-ID-BACKFILL-FOLDER end */
   applyBtn.addEventListener('click',()=>{
     if(!dryRun||!dryRun.matched.length)return;
     const before=_bfCoverage();
