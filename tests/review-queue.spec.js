@@ -49,6 +49,7 @@ const XML_PARTIAL = `<?xml version="1.0" encoding="UTF-8"?>
       <clashresult name="Clash1" distance="-0.02">
         <clashpoint><pos3f x="100" y="200" z="300"/></clashpoint>
         <resultstatus>active</resultstatus>
+        <createddate><date year="2026" month="7" day="15" hour="10" minute="0" second="0"/></createddate>
         <clashobject>
           <pathlink><node>ESMC.nwd</node><node>Structural.nwc</node></pathlink>
           <objectattribute><name>Element ID</name><value>EID-A-1</value></objectattribute>
@@ -61,6 +62,7 @@ const XML_PARTIAL = `<?xml version="1.0" encoding="UTF-8"?>
       <clashresult name="Clash2" distance="-0.02">
         <clashpoint><pos3f x="200" y="400" z="600"/></clashpoint>
         <resultstatus>active</resultstatus>
+        <createddate><date year="2026" month="7" day="15" hour="10" minute="0" second="0"/></createddate>
         <clashobject>
           <pathlink><node>ESMC.nwd</node><node>Structural.nwc</node></pathlink>
           <objectattribute><name>Element ID</name><value>EID-A-2</value></objectattribute>
@@ -73,6 +75,7 @@ const XML_PARTIAL = `<?xml version="1.0" encoding="UTF-8"?>
       <clashresult name="Clash3" distance="-0.02">
         <clashpoint><pos3f x="300" y="600" z="900"/></clashpoint>
         <resultstatus>active</resultstatus>
+        <createddate><date year="2026" month="7" day="15" hour="10" minute="0" second="0"/></createddate>
         <clashobject>
           <pathlink><node>ESMC.nwd</node><node>Structural.nwc</node></pathlink>
           <objectattribute><name>Element ID</name><value>EID-A-3</value></objectattribute>

@@ -960,6 +960,11 @@ async function initAuth(){
        state so rReview can surface the amber banner without waiting for a
        fresh import to repopulate it. Defaults to {} on first launch. */
     S.reviewQueueBanners=lv('reviewQueueBanners',{})||{};
+    /* REVIEW-QUEUE-DATE-GUARD-BANNER: hydrate the fail-closed no-date
+       banner flag so rReview shows the "no resolvable date" explainer
+       across page loads. Set by REVIEW-QUEUE-DATE-GUARD when it fails
+       closed; cleared when the next import resolves a date. */
+    S.reviewQueueNoDateBanner=lv('reviewQueueNoDateBanner',false)===true;
     // Only load demo data if nothing has EVER been saved (null = first launch).
     // An empty array [] means the user intentionally cleared their data — respect that.
     if(!Array.isArray(S.clashes)){S.clashes=DC.map(c=>({...c}));sv('clashes',S.clashes);_uid=104;}
@@ -1016,6 +1021,33 @@ async function initAuth(){
     }
   }catch(e){console.warn('REVIEW-QUEUE-MIGRATE-SCOPE-FIX error:',e);}
   /* REVIEW-QUEUE-MIGRATE-SCOPE-FIX end */
+  /* REVIEW-QUEUE-MIGRATE-DATE-GUARD-FIX start: one-time clear of stale
+     pendingReview flags produced by the pre-fail-closed DATE-GUARD build.
+     Production report: 471 clashes flagged against an archived XML because
+     the guard silently fell through on unresolved dates. Fail-closed is
+     now the default (REVIEW-QUEUE-DATE-GUARD-USE), but existing stale
+     flags in localStorage need clearing so the register isn't polluted
+     from the moment the fix ships. Gate: nw:reviewQueueDateGuardFixed.
+     Runs once per browser. Leaves reviewedStillOpen alone — user
+     confirmations remain valid. Also clears the no-date banner in case
+     it was set spuriously by the old build. */
+  try{
+    if(!localStorage.getItem('nw:reviewQueueDateGuardFixed')){
+      let _rqDgCleared=0;
+      (S.clashes||[]).forEach(c=>{
+        if(c.pendingReview!==undefined){delete c.pendingReview;_rqDgCleared++;}
+        if(c.disappearedAt!==undefined)delete c.disappearedAt;
+        if(c.disappearedInBatch!==undefined)delete c.disappearedInBatch;
+      });
+      if(_rqDgCleared)sv('clashes',S.clashes);
+      if(S.reviewQueueNoDateBanner){
+        S.reviewQueueNoDateBanner=false;
+        sv('reviewQueueNoDateBanner',false);
+      }
+      localStorage.setItem('nw:reviewQueueDateGuardFixed','1');
+    }
+  }catch(e){console.warn('REVIEW-QUEUE-MIGRATE-DATE-GUARD-FIX error:',e);}
+  /* REVIEW-QUEUE-MIGRATE-DATE-GUARD-FIX end */
   if(!S.pin){
     document.getElementById('ath').textContent='Set Up Your PIN';
     document.getElementById('asub').textContent='Choose a 4-digit PIN to protect your data';
@@ -6735,6 +6767,32 @@ function batchParse(files,errors,readCount){
           if(cdEl){const cy=cdEl.getAttribute('year'),cm=cdEl.getAttribute('month'),cd=cdEl.getAttribute('day');if(cy&&cm&&cd)nwCreated=String(cd).padStart(2,'0')+'/'+String(cm).padStart(2,'0')+'/'+String(cy).slice(2);}
         }
         /* FILE-MTIME-AS-DATE-USE end */
+        /* REVIEW-QUEUE-DATE-GUARD-CREATEDDATE start: capture the XML
+           <createddate><date year=... month=... day=... hour=... minute=...
+           second=.../></createddate> as a full-precision ISO string,
+           independent of the mtime-priority nwCreated above (which drops
+           time). Powers the Review Queue date guard's fail-closed check
+           against archive imports — previously the guard aliased _batchMaxD
+           (day-precision, and null when neither mtime nor a parseable DD/MM/YY
+           was available) and silently fell through, mass-flagging 471 clashes
+           in production. Mirror change in parser 2 (bparse). */
+        let nwCreatedFullISO=null;
+        {
+          const cdEl=r.querySelector('createddate date');
+          if(cdEl){
+            const cy=parseInt(cdEl.getAttribute('year'),10);
+            const cm=parseInt(cdEl.getAttribute('month'),10);
+            const cd=parseInt(cdEl.getAttribute('day'),10);
+            const ch=parseInt(cdEl.getAttribute('hour')||'0',10);
+            const cmi=parseInt(cdEl.getAttribute('minute')||'0',10);
+            const cs=parseInt(cdEl.getAttribute('second')||'0',10);
+            if(isFinite(cy)&&isFinite(cm)&&isFinite(cd)){
+              const _d=new Date(Date.UTC(cy,cm-1,cd,isFinite(ch)?ch:0,isFinite(cmi)?cmi:0,isFinite(cs)?cs:0));
+              if(!isNaN(_d.getTime()))nwCreatedFullISO=_d.toISOString();
+            }
+          }
+        }
+        /* REVIEW-QUEUE-DATE-GUARD-CREATEDDATE end */
         /* BGATR-ID-MULTI-USE start: pull element identity via bgetElementId()
            so GUID / Entity Handle / 元素 ID variants are captured alongside
            Element ID. .idSrc records which attribute name yielded the value
@@ -6756,6 +6814,7 @@ function batchParse(files,errors,readCount){
           nwName:r.getAttribute('name')||('Clash '+(i+1)),
           nwSt,depMm,tn,sourceFile:fname,
           nwCreated,
+          /* REVIEW-QUEUE-DATE-GUARD-CREATEDDATE */ nwCreatedFullISO,
           nwImageRef,
           /* IMG-POS: per-test position (0-indexed). Lets us fall back to
              positional image matching when the XML has no href attributes
@@ -6984,6 +7043,24 @@ function bparse(){
       const cdEl=r.querySelector('createddate date');
       let nwCreated=null;
       if(cdEl){const cy=cdEl.getAttribute('year'),cm=cdEl.getAttribute('month'),cd=cdEl.getAttribute('day');if(cy&&cm&&cd)nwCreated=String(cd).padStart(2,'0')+'/'+String(cm).padStart(2,'0')+'/'+String(cy).slice(2);}
+      /* REVIEW-QUEUE-DATE-GUARD-CREATEDDATE start: mirror of the parser 1
+         capture — full-precision ISO with hour/minute/second attributes for
+         the Review Queue date guard. Dual-parser discipline (CLAUDE.md).
+         Independent of nwCreated (which is DD/MM/YY, day precision). */
+      let nwCreatedFullISO=null;
+      if(cdEl){
+        const cy2=parseInt(cdEl.getAttribute('year'),10);
+        const cm2=parseInt(cdEl.getAttribute('month'),10);
+        const cd2=parseInt(cdEl.getAttribute('day'),10);
+        const ch2=parseInt(cdEl.getAttribute('hour')||'0',10);
+        const cmi2=parseInt(cdEl.getAttribute('minute')||'0',10);
+        const cs2=parseInt(cdEl.getAttribute('second')||'0',10);
+        if(isFinite(cy2)&&isFinite(cm2)&&isFinite(cd2)){
+          const _d=new Date(Date.UTC(cy2,cm2-1,cd2,isFinite(ch2)?ch2:0,isFinite(cmi2)?cmi2:0,isFinite(cs2)?cs2:0));
+          if(!isNaN(_d.getTime()))nwCreatedFullISO=_d.toISOString();
+        }
+      }
+      /* REVIEW-QUEUE-DATE-GUARD-CREATEDDATE end */
       /* BGATR-ID-MULTI-USE start: mirror of the parser 1 change — same
          priority order (Element ID → GUID → 元素 ID → Entity Handle), same
          idSrc provenance capture. Dual-parser discipline (CLAUDE.md). */
@@ -7006,6 +7083,7 @@ function bparse(){
       const nwImageRef=hrefRaw?hrefRaw.replace(/.*[\\\/]/,''):'';
       _bcfC.push({idx:_bcfC.length+1,nwName:r.getAttribute('name')||('Clash '+(i+1)),nwSt,depMm,tn,sourceFile:'pasted',
         nwCreated,
+        /* REVIEW-QUEUE-DATE-GUARD-CREATEDDATE */ nwCreatedFullISO,
         nwImageRef,
         testIdx:i,
         x:parseFloat(pos?.getAttribute('x')||'0'),y:parseFloat(pos?.getAttribute('y')||'0'),z:parseFloat(pos?.getAttribute('z')||'0'),
@@ -7325,25 +7403,41 @@ function importToRegister(mode){
     }
   });
   /* PAIR-ID-RESOLVED-COUNT end */
-  /* REVIEW-QUEUE-DATE-GUARD start: capture the batch's export date and
-     snapshot per-test earliest register clash date BEFORE the merge loop
-     mutates S.clashes. Required because REVIEW-QUEUE-DETECT ran unguarded
-     against archive imports: importing a June 2026 XML against a July 2026
-     register mass-flagged every clash added in the meantime — the XML
-     legitimately pre-dates them and can't say anything about resolution.
-     Batch date sources in priority order (mirrors FILE-MTIME-AS-DATE
-     precedence): file mtime override → XML <createddate> → null. _batchMaxD
-     already resolves that chain (hoisted at the top of importToRegister),
-     so we alias it here for legibility at the flag site. Null means we
-     couldn't determine any date at all — DETECT-USE falls back to the
-     unguarded behaviour and logs a console warn so the user knows the
-     detection may include false positives on this import. _rqEarliestByTest
-     powers the DATE-GUARD-BANNER — an "import older than the register"
-     surface in the Review Queue when the guard actively suppressed
-     flagging for a test. */
-  const _rqBatchDate=_batchMaxD;
-  if(mode==='append' && !_rqBatchDate){
-    try{console.warn('REVIEW-QUEUE-DATE-GUARD: batch date unavailable; disappeared-clash flagging will fall back to unguarded behaviour.');}catch(e){}
+  /* REVIEW-QUEUE-DATE-GUARD start: resolve the batch's export date so
+     REVIEW-QUEUE-DETECT can distinguish "clash was resolved between the
+     register and this XML" from "user imported an older archive so
+     everything after it looks disappeared". Previous version silently
+     fell through when the date couldn't be resolved (foot-gun: 471
+     stale flags in production against an archive XML). This version
+     FAILS CLOSED: if no date is resolvable, flagging is skipped
+     entirely and S.reviewQueueNoDateBanner surfaces a persistent
+     explainer in the Review Queue.
+     Priority chain (mirrors FILE-MTIME-AS-DATE precedence):
+       1. _batchMaxD — file mtime → XML createddate day-precision, via
+          parseDMY on c.nwCreated. Mtime wins here when parser 1 was
+          the source.
+       2. MAX of c.nwCreatedFullISO across _bcfC — real XML createddate
+          with hour/minute/second precision, unconditionally captured
+          by both parsers (REVIEW-QUEUE-DATE-GUARD-CREATEDDATE). Covers
+          the case where mtime was absent AND the DD/MM/YY roundtrip
+          via nwCreated failed for any reason.
+       3. null → fail closed.
+     _rqEarliestByTest powers the DATE-GUARD-BANNER — the per-test
+     "import pre-dates the register" surface. */
+  let _rqBatchDate=_batchMaxD;
+  if(!_rqBatchDate){
+    let _rqMaxISO=null;
+    (_bcfC||[]).forEach(c=>{
+      if(!c||!c.nwCreatedFullISO)return;
+      const d=new Date(c.nwCreatedFullISO);
+      if(isNaN(d.getTime()))return;
+      if(!_rqMaxISO||d>_rqMaxISO)_rqMaxISO=d;
+    });
+    if(_rqMaxISO)_rqBatchDate=_rqMaxISO;
+  }
+  const _rqBatchDateResolvable=!!_rqBatchDate;
+  if(mode==='append' && !_rqBatchDateResolvable){
+    try{console.warn('REVIEW-QUEUE-DATE-GUARD: no resolvable date on this import; disappeared-clash flagging skipped entirely (fail closed).');}catch(e){}
   }
   const _rqEarliestByTest=new Map();
   (S.clashes||[]).forEach(c=>{
@@ -7533,18 +7627,16 @@ function importToRegister(mode){
          future edits to the resolved-count plumbing. */
       if(!_rqBatchTests.has(c.testName))return;
       /* REVIEW-QUEUE-DETECT-SCOPE-USE end */
-      /* REVIEW-QUEUE-DATE-GUARD-USE start: only flag when the batch is
-         strictly LATER than this clash's date. Batch <= clash means the XML
-         pre-dates or coincides with the clash — it can't say anything about
-         resolution because the clash didn't exist (or barely existed) when
-         the XML was exported. Same-date treated as not-strictly-later:
-         conservative default that avoids flipping same-day imports. When
-         _rqBatchDate or the clash date can't be parsed, skip flagging —
-         see helper for the null-batch console warn. */
-      if(_rqBatchDate){
-        const _cd=parseDMY(c.date);
-        if(!_cd||_cd>=_rqBatchDate)return;
-      }
+      /* REVIEW-QUEUE-DATE-GUARD-USE start: fail-closed date guard. Skip
+         flagging when: (a) no resolvable batch date — production incident
+         had 471 stale flags because this branch used to fall through;
+         (b) clash date can't be parsed; (c) batch date is not strictly
+         later than the clash date. Same-date treated as not-strictly-
+         later: conservative default that avoids flipping same-day
+         imports. */
+      if(!_rqBatchDate)return;
+      const _cd=parseDMY(c.date);
+      if(!_cd||_cd>=_rqBatchDate)return;
       /* REVIEW-QUEUE-DATE-GUARD-USE end */
       c.pendingReview=true;
       c.disappearedAt=_rqIso;
@@ -7561,18 +7653,32 @@ function importToRegister(mode){
      test advances past it. Runs on append only, and only when the guard
      itself ran (_rqBatchDate non-null); otherwise we don't know whether
      suppression occurred, so we leave the prior banner state alone. */
-  if(mode==='append' && _rqBatchDate){
+  if(mode==='append'){
     if(!S.reviewQueueBanners||typeof S.reviewQueueBanners!=='object')S.reviewQueueBanners={};
-    const _rqBatchDMY=String(_rqBatchDate.getDate()).padStart(2,'0')+'/'+String(_rqBatchDate.getMonth()+1).padStart(2,'0')+'/'+String(_rqBatchDate.getFullYear()).slice(2);
-    _batchTests.forEach(tn=>{
-      const earliest=_rqEarliestByTest.get(tn);
-      if(earliest && _rqBatchDate<=earliest){
-        const eDMY=String(earliest.getDate()).padStart(2,'0')+'/'+String(earliest.getMonth()+1).padStart(2,'0')+'/'+String(earliest.getFullYear()).slice(2);
-        S.reviewQueueBanners[tn]={batchDate:_rqBatchDMY,earliestDate:eDMY};
-      } else {
-        delete S.reviewQueueBanners[tn];
+    if(_rqBatchDate){
+      const _rqBatchDMY=String(_rqBatchDate.getDate()).padStart(2,'0')+'/'+String(_rqBatchDate.getMonth()+1).padStart(2,'0')+'/'+String(_rqBatchDate.getFullYear()).slice(2);
+      _batchTests.forEach(tn=>{
+        const earliest=_rqEarliestByTest.get(tn);
+        if(earliest && _rqBatchDate<=earliest){
+          const eDMY=String(earliest.getDate()).padStart(2,'0')+'/'+String(earliest.getMonth()+1).padStart(2,'0')+'/'+String(earliest.getFullYear()).slice(2);
+          S.reviewQueueBanners[tn]={batchDate:_rqBatchDMY,earliestDate:eDMY};
+        } else {
+          delete S.reviewQueueBanners[tn];
+        }
+      });
+      /* REVIEW-QUEUE-DATE-GUARD-BANNER: clear no-date banner on a
+         successful date resolve — the guard ran cleanly. */
+      if(S.reviewQueueNoDateBanner){
+        S.reviewQueueNoDateBanner=false;
+        sv('reviewQueueNoDateBanner',false);
       }
-    });
+    } else {
+      /* REVIEW-QUEUE-DATE-GUARD-BANNER: fail-closed banner — set on this
+         import because we couldn't resolve any date. Persists until the
+         next import DOES resolve a date. */
+      S.reviewQueueNoDateBanner=true;
+      sv('reviewQueueNoDateBanner',true);
+    }
     sv('reviewQueueBanners',S.reviewQueueBanners);
   }
   /* REVIEW-QUEUE-DATE-GUARD-BANNER end */
@@ -7699,13 +7805,17 @@ function rReview(){
     const b=_rqBanners[tn];if(!b)return '';
     return _rqBannerAmber(`Last import for <strong>${esc(tn)}</strong> (${esc(b.batchDate)}) pre-dates the register (earliest clash ${esc(b.earliestDate)}) — no disappeared-clash detection ran. Import a newer XML to trigger review.`);
   };
+  const _rqNoDateBanner=S.reviewQueueNoDateBanner===true
+    ? `<div class="rq-nodate-banner" style="background:#FEF3C7;border:.5px solid #F59E0B;border-radius:5px;padding:8px 12px;margin-bottom:8px;font-size:11px;color:#92400E;line-height:1.5">⚠ Last import had no resolvable date — Review Queue detection was skipped. Set file dates or use a newer Navisworks XML export.</div>`
+    : '';
   /* REVIEW-QUEUE-DATE-GUARD-BANNER end */
   if(!pending.length){
-    /* REVIEW-QUEUE-DATE-GUARD-BANNER: empty-state aggregated banner. */
+    /* REVIEW-QUEUE-DATE-GUARD-BANNER: empty-state banners — no-date banner
+       (fail-closed) surfaces above the per-test aggregated banner. */
     const emptyBanner=_rqBannerTests.length
       ? _rqBannerAmber(`Last import pre-dates the register for ${_rqBannerTests.length} test${_rqBannerTests.length===1?'':'s'} (${_rqBannerTests.map(esc).join(', ')}) — no disappeared-clash detection ran for those. Import a newer XML to trigger review.`)
       : '';
-    return `${emptyBanner}<div class="card" style="border-top:3px solid #00B050"><div class="cb" style="padding:24px;text-align:center">
+    return `${_rqNoDateBanner}${emptyBanner}<div class="card" style="border-top:3px solid #00B050"><div class="cb" style="padding:24px;text-align:center">
       <div style="font-size:14px;font-weight:700;color:#00B050;margin-bottom:6px">✓ Review Queue is empty</div>
       <div style="font-size:11px;color:#64748B;line-height:1.6">Clashes that disappear from a future import will show up here for confirmation.<br>Nothing to review right now.</div>
     </div></div>`;
@@ -7759,6 +7869,7 @@ function rReview(){
     </div>`;
   }).join('');
   return `
+    ${_rqNoDateBanner}
     <div class="card" style="border-top:3px solid #EA7600;margin-bottom:9px"><div class="cb" style="padding:10px 14px">
       <div style="font-size:12px;font-weight:700;color:#0F1824;margin-bottom:3px">${pending.length} clash${pending.length===1?'':'es'} awaiting review</div>
       <div style="font-size:10.5px;color:#64748B;line-height:1.5">These clashes were in the register but did not appear in the latest import for the same test. They may have been fixed in the model — or the XML may be a partial export. Confirm each: <strong>Resolved</strong> closes the clash and records a status-history entry. <strong>Still Open</strong> keeps the current status and prevents it from being re-flagged on future imports.</div>
