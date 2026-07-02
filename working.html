@@ -956,6 +956,10 @@ async function initAuth(){
     sv('clashes',S.clashes);sv('weekly',S.weekly);sv('dataVersion',DATA_VERSION);_uid=104;
   } else {
     S.clashes=lv('clashes',null);S.weekly=lv('weekly',null);
+    /* REVIEW-QUEUE-DATE-GUARD-BANNER: hydrate the per-test suppressed-import
+       state so rReview can surface the amber banner without waiting for a
+       fresh import to repopulate it. Defaults to {} on first launch. */
+    S.reviewQueueBanners=lv('reviewQueueBanners',{})||{};
     // Only load demo data if nothing has EVER been saved (null = first launch).
     // An empty array [] means the user intentionally cleared their data — respect that.
     if(!Array.isArray(S.clashes)){S.clashes=DC.map(c=>({...c}));sv('clashes',S.clashes);_uid=104;}
@@ -7321,6 +7325,35 @@ function importToRegister(mode){
     }
   });
   /* PAIR-ID-RESOLVED-COUNT end */
+  /* REVIEW-QUEUE-DATE-GUARD start: capture the batch's export date and
+     snapshot per-test earliest register clash date BEFORE the merge loop
+     mutates S.clashes. Required because REVIEW-QUEUE-DETECT ran unguarded
+     against archive imports: importing a June 2026 XML against a July 2026
+     register mass-flagged every clash added in the meantime — the XML
+     legitimately pre-dates them and can't say anything about resolution.
+     Batch date sources in priority order (mirrors FILE-MTIME-AS-DATE
+     precedence): file mtime override → XML <createddate> → null. _batchMaxD
+     already resolves that chain (hoisted at the top of importToRegister),
+     so we alias it here for legibility at the flag site. Null means we
+     couldn't determine any date at all — DETECT-USE falls back to the
+     unguarded behaviour and logs a console warn so the user knows the
+     detection may include false positives on this import. _rqEarliestByTest
+     powers the DATE-GUARD-BANNER — an "import older than the register"
+     surface in the Review Queue when the guard actively suppressed
+     flagging for a test. */
+  const _rqBatchDate=_batchMaxD;
+  if(mode==='append' && !_rqBatchDate){
+    try{console.warn('REVIEW-QUEUE-DATE-GUARD: batch date unavailable; disappeared-clash flagging will fall back to unguarded behaviour.');}catch(e){}
+  }
+  const _rqEarliestByTest=new Map();
+  (S.clashes||[]).forEach(c=>{
+    if(!_batchTests.has(c.testName))return;
+    const d=parseDMY(c.date);
+    if(!d)return;
+    const prev=_rqEarliestByTest.get(c.testName);
+    if(!prev||d<prev)_rqEarliestByTest.set(c.testName,d);
+  });
+  /* REVIEW-QUEUE-DATE-GUARD end */
   /* DUP-FILES-FIX start: per-file tracker so a multi-file batch import produces
      one imports[] entry per file (not one combined entry). Keys are the
      sourceFile value stamped onto each clash by batchParse (line 3196) or
@@ -7500,6 +7533,19 @@ function importToRegister(mode){
          future edits to the resolved-count plumbing. */
       if(!_rqBatchTests.has(c.testName))return;
       /* REVIEW-QUEUE-DETECT-SCOPE-USE end */
+      /* REVIEW-QUEUE-DATE-GUARD-USE start: only flag when the batch is
+         strictly LATER than this clash's date. Batch <= clash means the XML
+         pre-dates or coincides with the clash — it can't say anything about
+         resolution because the clash didn't exist (or barely existed) when
+         the XML was exported. Same-date treated as not-strictly-later:
+         conservative default that avoids flipping same-day imports. When
+         _rqBatchDate or the clash date can't be parsed, skip flagging —
+         see helper for the null-batch console warn. */
+      if(_rqBatchDate){
+        const _cd=parseDMY(c.date);
+        if(!_cd||_cd>=_rqBatchDate)return;
+      }
+      /* REVIEW-QUEUE-DATE-GUARD-USE end */
       c.pendingReview=true;
       c.disappearedAt=_rqIso;
       c.disappearedInBatch=_rqBatch;
@@ -7507,6 +7553,29 @@ function importToRegister(mode){
     sv('clashes',S.clashes);
   }
   /* REVIEW-QUEUE-DETECT end */
+  /* REVIEW-QUEUE-DATE-GUARD-BANNER start: per-test flag persisted for the
+     Review Queue UI to surface an amber "import pre-dates register" banner
+     when the DATE-GUARD suppressed flagging for a whole test. Set when the
+     batch date is <= that test's earliest register clash date (guard
+     suppressed the whole test); cleared when a later import for the same
+     test advances past it. Runs on append only, and only when the guard
+     itself ran (_rqBatchDate non-null); otherwise we don't know whether
+     suppression occurred, so we leave the prior banner state alone. */
+  if(mode==='append' && _rqBatchDate){
+    if(!S.reviewQueueBanners||typeof S.reviewQueueBanners!=='object')S.reviewQueueBanners={};
+    const _rqBatchDMY=String(_rqBatchDate.getDate()).padStart(2,'0')+'/'+String(_rqBatchDate.getMonth()+1).padStart(2,'0')+'/'+String(_rqBatchDate.getFullYear()).slice(2);
+    _batchTests.forEach(tn=>{
+      const earliest=_rqEarliestByTest.get(tn);
+      if(earliest && _rqBatchDate<=earliest){
+        const eDMY=String(earliest.getDate()).padStart(2,'0')+'/'+String(earliest.getMonth()+1).padStart(2,'0')+'/'+String(earliest.getFullYear()).slice(2);
+        S.reviewQueueBanners[tn]={batchDate:_rqBatchDMY,earliestDate:eDMY};
+      } else {
+        delete S.reviewQueueBanners[tn];
+      }
+    });
+    sv('reviewQueueBanners',S.reviewQueueBanners);
+  }
+  /* REVIEW-QUEUE-DATE-GUARD-BANNER end */
   // Keep data version so auto-reset doesn't wipe real data
   sv('dataVersion',DATA_VERSION);
   // Regenerate weekly snapshots bucketed by clash date
@@ -7618,8 +7687,25 @@ function _rqLastStatusChange(c){
 }
 function rReview(){
   const pending=(S.clashes||[]).filter(c=>c.pendingReview===true);
+  /* REVIEW-QUEUE-DATE-GUARD-BANNER start: pull persisted per-test
+     suppressed-import state. Empty-state renders one aggregated banner
+     listing every affected test so the user knows detection ran but
+     found nothing to flag on those tests because the batch pre-dated
+     the register. Group headers get their own inline banner. */
+  const _rqBanners=(S.reviewQueueBanners&&typeof S.reviewQueueBanners==='object')?S.reviewQueueBanners:{};
+  const _rqBannerTests=Object.keys(_rqBanners).sort();
+  const _rqBannerAmber=(msg)=>`<div class="rq-date-banner" style="background:#FEF3C7;border:.5px solid #F59E0B;border-radius:5px;padding:8px 12px;margin-bottom:8px;font-size:11px;color:#92400E;line-height:1.5">⚠ ${msg}</div>`;
+  const _rqBannerForTest=(tn)=>{
+    const b=_rqBanners[tn];if(!b)return '';
+    return _rqBannerAmber(`Last import for <strong>${esc(tn)}</strong> (${esc(b.batchDate)}) pre-dates the register (earliest clash ${esc(b.earliestDate)}) — no disappeared-clash detection ran. Import a newer XML to trigger review.`);
+  };
+  /* REVIEW-QUEUE-DATE-GUARD-BANNER end */
   if(!pending.length){
-    return `<div class="card" style="border-top:3px solid #00B050"><div class="cb" style="padding:24px;text-align:center">
+    /* REVIEW-QUEUE-DATE-GUARD-BANNER: empty-state aggregated banner. */
+    const emptyBanner=_rqBannerTests.length
+      ? _rqBannerAmber(`Last import pre-dates the register for ${_rqBannerTests.length} test${_rqBannerTests.length===1?'':'s'} (${_rqBannerTests.map(esc).join(', ')}) — no disappeared-clash detection ran for those. Import a newer XML to trigger review.`)
+      : '';
+    return `${emptyBanner}<div class="card" style="border-top:3px solid #00B050"><div class="cb" style="padding:24px;text-align:center">
       <div style="font-size:14px;font-weight:700;color:#00B050;margin-bottom:6px">✓ Review Queue is empty</div>
       <div style="font-size:11px;color:#64748B;line-height:1.6">Clashes that disappear from a future import will show up here for confirmation.<br>Nothing to review right now.</div>
     </div></div>`;
@@ -7643,7 +7729,11 @@ function rReview(){
         <td style="padding:5px 8px;font-size:10px;color:#64748B">${hist}</td>
       </tr>`;
     }).join('');
-    return `<div class="card" data-rq-group="${esc(tn)}" style="margin-bottom:8px">
+    /* REVIEW-QUEUE-DATE-GUARD-BANNER: per-group banner. Only renders when
+       this test has an active suppressed-import flag from the last import.
+       Sits above the group card so it visibly explains the queue count. */
+    const _rqGrpBanner=_rqBannerForTest(tn);
+    return `${_rqGrpBanner}<div class="card" data-rq-group="${esc(tn)}" style="margin-bottom:8px">
       <div class="ch" style="cursor:pointer" onclick="reviewQueueToggleGroup(${tnJson})">
         <span class="ct" style="display:flex;align-items:center;gap:8px">
           <span style="font-size:11px;color:#64748B">${open?'▼':'▶'}</span>
