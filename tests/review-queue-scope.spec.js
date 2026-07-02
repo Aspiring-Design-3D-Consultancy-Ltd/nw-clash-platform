@@ -48,6 +48,7 @@ const XML_TEST_A_PARTIAL = `<?xml version="1.0" encoding="UTF-8"?>
       ${[1,2].map(n => `<clashresult name="Clash${n}" distance="-0.02">
         <clashpoint><pos3f x="${100*n}" y="${200*n}" z="${300*n}"/></clashpoint>
         <resultstatus>active</resultstatus>
+        <createddate><date year="2026" month="7" day="15" hour="10" minute="0" second="0"/></createddate>
         <clashobject><pathlink><node>ESMC.nwd</node><node>Structural.nwc</node></pathlink><objectattribute><name>Element ID</name><value>EID-AA-${n}</value></objectattribute></clashobject>
         <clashobject><pathlink><node>ESMC.nwd</node><node>MEP.nwc</node></pathlink><objectattribute><name>Element ID</name><value>EID-AB-${n}</value></objectattribute></clashobject>
       </clashresult>`).join('')}
@@ -62,6 +63,7 @@ const XML_TEST_B_FULL = `<?xml version="1.0" encoding="UTF-8"?>
       ${[1,2,3].map(n => `<clashresult name="Clash${n}" distance="-0.02">
         <clashpoint><pos3f x="${100*n}" y="${200*n}" z="${300*n}"/></clashpoint>
         <resultstatus>active</resultstatus>
+        <createddate><date year="2026" month="7" day="15" hour="10" minute="0" second="0"/></createddate>
         <clashobject><pathlink><node>ESMC.nwd</node><node>Structural.nwc</node></pathlink><objectattribute><name>Element ID</name><value>EID-BA-${n}</value></objectattribute></clashobject>
         <clashobject><pathlink><node>ESMC.nwd</node><node>MEP.nwc</node></pathlink><objectattribute><name>Element ID</name><value>EID-BB-${n}</value></objectattribute></clashobject>
       </clashresult>`).join('')}
