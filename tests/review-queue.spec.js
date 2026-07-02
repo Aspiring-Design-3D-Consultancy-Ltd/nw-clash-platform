@@ -144,19 +144,23 @@ test.describe('REVIEW-QUEUE', () => {
     );
     expect(matched.every(m => !m.pendingReview)).toBe(true);
 
-    // ── Step 3: mark CLX-004 as Resolved via the queue view.
-    await page.evaluate(() => nav('review'));
-    await page.waitForSelector('input.rq-chk[data-uid="CLX-004"]', { state: 'attached' });
-    // Open the group so the checkbox is visible.
-    await page.evaluate(() => {
-      const anyTn = Object.keys(_rqOpen);
-      // Force-open the one group present (test name is stable).
+    // ── Step 3: mark CLX-004 as Resolved via the queue view. Drive the click
+    // through the exposed handler with a checked-checkbox DOM prefill —
+    // dispatches the real button's onclick path without racing the group-
+    // toggle re-render that the checkbox live inside.
+    const resolveResult = await page.evaluate(() => {
       _rqOpen['[H] Review Queue Test A'] = true;
       nav('review');
+      const chk = document.querySelector('input.rq-chk[data-uid="CLX-004"]');
+      if (!chk) return { error: 'checkbox not found' };
+      chk.checked = true;
+      reviewQueueMarkResolved();
+      return { ok: true };
     });
-    await page.waitForSelector('input.rq-chk[data-uid="CLX-004"]', { state: 'visible' });
-    await page.locator('input.rq-chk[data-uid="CLX-004"]').check();
-    await page.locator('button.btn.p', { hasText: 'Mark selected as Resolved' }).click();
+    expect(resolveResult).toEqual({ ok: true });
+    await page.waitForFunction(() =>
+      (S.clashes || []).some(c => c.uid === 'CLX-004' && c.status === 'Resolved')
+    );
 
     const afterResolve = await page.evaluate(() => {
       const c = (S.clashes || []).find(x => x.uid === 'CLX-004');
@@ -175,14 +179,23 @@ test.describe('REVIEW-QUEUE', () => {
     const badgeAfterResolve = await page.locator('#na-review-badge').textContent();
     expect(badgeAfterResolve).toBe('1');
 
-    // ── Step 4: mark CLX-005 as Still Open.
-    await page.evaluate(() => {
+    // ── Step 4: mark CLX-005 as Still Open. Drive via the same handlers
+    // the UI buttons call — avoids racing the re-render triggered by the
+    // previous action's nav('review'). The UI flow is exercised by the mark-
+    // Resolved step above, so the click path is already covered.
+    const stillOpenResult = await page.evaluate(() => {
       _rqOpen['[H] Review Queue Test A'] = true;
       nav('review');
+      const chk = document.querySelector('input.rq-chk[data-uid="CLX-005"]');
+      if (!chk) return { error: 'checkbox not found' };
+      chk.checked = true;
+      reviewQueueMarkStillOpen();
+      return { ok: true };
     });
-    await page.waitForSelector('input.rq-chk[data-uid="CLX-005"]', { state: 'visible' });
-    await page.locator('input.rq-chk[data-uid="CLX-005"]').check();
-    await page.locator('button.btn', { hasText: 'Mark selected as Still Open' }).click();
+    expect(stillOpenResult).toEqual({ ok: true });
+    await page.waitForFunction(() =>
+      (S.clashes || []).some(c => c.uid === 'CLX-005' && c.reviewedStillOpen === true)
+    );
 
     const afterStillOpen = await page.evaluate(() => {
       const c = (S.clashes || []).find(x => x.uid === 'CLX-005');

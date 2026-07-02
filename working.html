@@ -989,6 +989,29 @@ async function initAuth(){
      Idempotent — no-op once CUB keys are absent. See function definition for
      full description of what it touches. */
   try{_migrateCUBtoCUP();}catch(e){console.warn('CUB→CUP migration error:',e);}
+  /* REVIEW-QUEUE-MIGRATE-SCOPE-FIX start: one-time clear of stale
+     pendingReview/disappearedAt/disappearedInBatch flags on registers that
+     were imported before the REVIEW-QUEUE-DETECT-SCOPE guard shipped. The
+     production incident that triggered the fix left 474 clashes flagged
+     across unrelated tests — those flags survive in localStorage until
+     something rewrites them. Runs once per browser (gate:
+     nw:reviewQueueScopeFixed), then never again. Safe on fresh registers
+     (no-op when no clash carries the flag). Leaves reviewedStillOpen
+     alone — that was set by explicit user click via the Review Queue
+     and remains valid. */
+  try{
+    if(!localStorage.getItem('nw:reviewQueueScopeFixed')){
+      let _rqCleared=0;
+      (S.clashes||[]).forEach(c=>{
+        if(c.pendingReview!==undefined){delete c.pendingReview;_rqCleared++;}
+        if(c.disappearedAt!==undefined)delete c.disappearedAt;
+        if(c.disappearedInBatch!==undefined)delete c.disappearedInBatch;
+      });
+      if(_rqCleared)sv('clashes',S.clashes);
+      localStorage.setItem('nw:reviewQueueScopeFixed','1');
+    }
+  }catch(e){console.warn('REVIEW-QUEUE-MIGRATE-SCOPE-FIX error:',e);}
+  /* REVIEW-QUEUE-MIGRATE-SCOPE-FIX end */
   if(!S.pin){
     document.getElementById('ath').textContent='Set Up Your PIN';
     document.getElementById('asub').textContent='Choose a 4-digit PIN to protect your data';
@@ -7454,6 +7477,16 @@ function importToRegister(mode){
      this one stays open and shouldn't be prompted again. Confirmation to
      Resolved / Still Open is user-driven via REVIEW-QUEUE-ACTIONS. Append
      mode only — replace mode wipes the register so nothing pre-existed. */
+  /* REVIEW-QUEUE-DETECT-SCOPE start: rebuild the incoming-batch testName set
+     directly on the register's testName field so the flag setter's scope
+     check is legible and independent of the PAIR-ID-RESOLVED-COUNT plumbing.
+     Belt-and-braces after a production incident where 474 register clashes
+     were mass-flagged after a partial per-test import — an unrelated-tests
+     leak would show up here as a set-membership violation rather than a
+     silent tail off _preExistingByTest. Reads _bcfC.tn (parser 1 and 2 both
+     set it) with a testName fallback for defensive downstream callers. */
+  const _rqBatchTests=new Set((_bcfC||[]).map(c=>c.tn||c.testName).filter(Boolean));
+  /* REVIEW-QUEUE-DETECT-SCOPE end */
   if(mode==='append'){
     const _rqBatch='bat-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,6);
     const _rqIso=new Date().toISOString();
@@ -7461,6 +7494,12 @@ function importToRegister(mode){
       if(!_preExistingByTest.has(c.uid))return;
       if(_matchedUids.has(c.uid))return;
       if(c.reviewedStillOpen===true)return;
+      /* REVIEW-QUEUE-DETECT-SCOPE-USE start: only flag clashes whose testName
+         appears in the incoming batch. Redundant with _preExistingByTest by
+         construction — kept as an explicit assertion so the intent survives
+         future edits to the resolved-count plumbing. */
+      if(!_rqBatchTests.has(c.testName))return;
+      /* REVIEW-QUEUE-DETECT-SCOPE-USE end */
       c.pendingReview=true;
       c.disappearedAt=_rqIso;
       c.disappearedInBatch=_rqBatch;
