@@ -108,6 +108,11 @@ body{font-family:Arial,sans-serif;font-size:13px;background:#F0F2F7;color:#0F172
 .na:hover{background:var(--sbh);color:rgba(255,255,255,.85);}
 .na.on{background:rgba(0,107,166,.17);color:#fff;border-left-color:var(--acc);}
 .ni{font-size:13px;width:17px;text-align:center;}
+/* REVIEW-QUEUE-TAB start: badge for the Review Queue nav item — hidden when
+   count is zero, coloured to draw the eye at non-zero counts. */
+.na-badge{margin-left:auto;background:#EA7600;color:#fff;font-size:9px;font-weight:700;padding:1px 6px;border-radius:8px;line-height:1.4;min-width:14px;text-align:center;}
+.na-badge[hidden]{display:none;}
+/* REVIEW-QUEUE-TAB end */
 .sb-cts{padding:.52rem .9rem;border-top:1px solid rgba(255,255,255,.05);}
 .ct-r{display:flex;justify-content:space-between;margin-bottom:2px;}
 .ct-i{font-size:9px;color:var(--sbt);display:flex;align-items:center;gap:3px;}
@@ -387,6 +392,9 @@ tbody td:last-child{border-right:none;}
       <div class="nav-sec">Clash Management</div>
       <div class="na" id="na-register" onclick="nav('register')"><span class="ni">📋</span>Clash Register</div>
       <div class="na" id="na-board" onclick="nav('board')"><span class="ni">⬛</span>Board View</div>
+      <!-- REVIEW-QUEUE-TAB start: nav entry + badge for disappeared-clash queue -->
+      <div class="na" id="na-review" onclick="nav('review')"><span class="ni">🔍</span>Review Queue<span class="na-badge" id="na-review-badge" hidden>0</span></div>
+      <!-- REVIEW-QUEUE-TAB end -->
       <div class="nav-sec">Tools</div>
       <div class="na" id="na-bcf" onclick="nav('bcf')" data-minrole="manager"><span class="ni">⚡</span>BCF Generator</div>
       <div class="na" id="na-priority" onclick="nav('priority')"><span class="ni">⚖</span>Priority Guide</div>
@@ -1038,7 +1046,7 @@ function doLock(){
 }
 
 /* ═══════ NAV ═══════ */
-const VT={dashboard:'Dashboard',heatmap:'Spatial Heatmap',register:'Clash Register',board:'Board View',bcf:'BCF Generator',priority:'Priority Guide',help:'User Guide',data:'Data Manager',settings:'Settings'};
+const VT={dashboard:'Dashboard',heatmap:'Spatial Heatmap',register:'Clash Register',board:'Board View',/* REVIEW-QUEUE-TAB */review:'Review Queue',bcf:'BCF Generator',priority:'Priority Guide',help:'User Guide',data:'Data Manager',settings:'Settings'};
 const VA={
   dashboard:'<div style="display:flex;gap:6px"><button class="tbtn ac" onclick="exportReport(&apos;report&apos;)" style="flex:1;text-align:center">&#x1F4CB; Weekly Report</button><button class="tbtn" onclick="exportPPTX()" style="flex:1;text-align:center;background:#EA7600;color:#fff;border-color:#EA7600">&#x1F4CA; Export PPTX</button><button class="tbtn" onclick="closeApp()" style="flex:1;text-align:center;background:#475569;color:#fff;border-color:#475569">&#x2715; Close</button></div>',
   register:'<button class="tbtn tbtn-fw" onclick="showAF()">+ Add clash</button><button class="tbtn tbtn-fw" onclick="dlCSV()">&#x2193; CSV</button><button class="tbtn tbtn-fw" onclick="showBCFImportPanel()">&#x2191; BCF In</button><button class="tbtn tbtn-fw" onclick="dlBCF()">&#x2193; BCF Out</button><button class="tbtn tbtn-fw" onclick="showIsoRenameModal()">🏷 Rename Clashes</button>',
@@ -1061,7 +1069,7 @@ function nav(v){
   if(v==='heatmap')initHeatmap();
   if(v==='register')setTimeout(filterReg,0);
 }
-function rv(v){switch(v){case 'dashboard':return rDash();case 'heatmap':return rHeatmap();case 'register':return rReg();case 'board':return rBoard();case 'bcf':return rBCF();case 'priority':return rPri();case 'help':return rHelp();case 'data':return rData();case 'settings':return rSet();default:return '';}}
+function rv(v){switch(v){case 'dashboard':return rDash();case 'heatmap':return rHeatmap();case 'register':return rReg();case 'board':return rBoard();/* REVIEW-QUEUE-VIEW */case 'review':return rReview();case 'bcf':return rBCF();case 'priority':return rPri();case 'help':return rHelp();case 'data':return rData();case 'settings':return rSet();default:return '';}}
 
 /* ═══════ SIDEBAR & STRIP ═══════ */
 function updSB(){
@@ -1069,6 +1077,16 @@ function updSB(){
   document.getElementById('spw').textContent=S.projWeek||autoWeekLabel();
   const m={New:'snew',Active:'sact',Reviewed:'srev',Approved:'sapp',Resolved:'sres'};
   Object.entries(m).forEach(([st,id])=>{const el=document.getElementById(id);if(el)el.textContent=(S.clashes||[]).filter(c=>c.status===st).length;});
+  /* REVIEW-QUEUE-TAB start: pendingReview count on the sidebar badge. Hidden
+     when zero so the nav item reads as a plain tab. Called from every state
+     mutation via existing updSB() invocation sites. */
+  const _rqBadge=document.getElementById('na-review-badge');
+  if(_rqBadge){
+    const _rqN=(S.clashes||[]).filter(c=>c.pendingReview===true).length;
+    _rqBadge.textContent=String(_rqN);
+    if(_rqN>0)_rqBadge.removeAttribute('hidden');else _rqBadge.setAttribute('hidden','');
+  }
+  /* REVIEW-QUEUE-TAB end */
 }
 function updSS(){
   ST.forEach(s=>{const el=document.getElementById('cn-'+s);if(el)el.textContent=(S.clashes||[]).filter(c=>c.status===s).length;});
@@ -7427,6 +7445,29 @@ function importToRegister(mode){
     });
   }
   /* PAIR-ID-RESOLVED-COUNT end */
+  /* REVIEW-QUEUE-DETECT start: flag each clash present in the register but
+     absent from this batch's XML for the same testName as pendingReview so
+     it surfaces in the Review Queue tab (REVIEW-QUEUE-TAB / REVIEW-QUEUE-
+     VIEW). Reuses the pre-existing-vs-matched diff PAIR-ID-RESOLVED-COUNT
+     just computed — no status mutation here. Skip clashes flagged
+     reviewedStillOpen from a prior review round: the user has already said
+     this one stays open and shouldn't be prompted again. Confirmation to
+     Resolved / Still Open is user-driven via REVIEW-QUEUE-ACTIONS. Append
+     mode only — replace mode wipes the register so nothing pre-existed. */
+  if(mode==='append'){
+    const _rqBatch='bat-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,6);
+    const _rqIso=new Date().toISOString();
+    (S.clashes||[]).forEach(c=>{
+      if(!_preExistingByTest.has(c.uid))return;
+      if(_matchedUids.has(c.uid))return;
+      if(c.reviewedStillOpen===true)return;
+      c.pendingReview=true;
+      c.disappearedAt=_rqIso;
+      c.disappearedInBatch=_rqBatch;
+    });
+    sv('clashes',S.clashes);
+  }
+  /* REVIEW-QUEUE-DETECT end */
   // Keep data version so auto-reset doesn't wipe real data
   sv('dataVersion',DATA_VERSION);
   // Regenerate weekly snapshots bucketed by clash date
@@ -7515,6 +7556,173 @@ function importToRegister(mode){
   showToast(`Merged: ${added} new, ${updated} updated, ${unchanged} unchanged${/* PAIR-ID-RESOLVED-COUNT */_disappeared?` \u00b7 ${_disappeared} likely fixed in model`:''}`);
   bmsg(`\u2713 ${added} new clashes imported — ${updated} updated, ${unchanged} unchanged${/* PAIR-ID-RESOLVED-COUNT */_disappeared?` \u00b7 ${_disappeared} likely fixed in model (not present in this XML)`:''}`,'#007A38');
 }
+
+/* REVIEW-QUEUE-VIEW start: tab body for user-driven confirmation of clashes
+   that disappeared from the incoming XML (flagged by REVIEW-QUEUE-DETECT).
+   Groups by testName; each group collapses/expands independently; checkboxes
+   drive the two action buttons (REVIEW-QUEUE-ACTIONS: Resolved / Still Open).
+   Empty state renders when no pendingReview clashes remain — the tab still
+   exists but reads as "all caught up". No auto-navigation or modal on import
+   (see brief: the tab is the only surface). */
+const _rqOpen={};
+function _rqFmtDate(iso){
+  if(!iso)return '—';
+  try{const d=new Date(iso);if(isNaN(d.getTime()))return '—';return d.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'})+' '+d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});}catch(e){return '—';}
+}
+function _rqLastStatusChange(c){
+  const h=Array.isArray(c.statusHistory)?c.statusHistory:[];
+  if(!h.length)return '';
+  const last=h[h.length-1];
+  if(last&&last.week!=null)return 'W'+last.week+' '+(last.year||'')+' · '+esc(last.status||'');
+  if(last&&last.status)return esc(last.status);
+  return '';
+}
+function rReview(){
+  const pending=(S.clashes||[]).filter(c=>c.pendingReview===true);
+  if(!pending.length){
+    return `<div class="card" style="border-top:3px solid #00B050"><div class="cb" style="padding:24px;text-align:center">
+      <div style="font-size:14px;font-weight:700;color:#00B050;margin-bottom:6px">✓ Review Queue is empty</div>
+      <div style="font-size:11px;color:#64748B;line-height:1.6">Clashes that disappear from a future import will show up here for confirmation.<br>Nothing to review right now.</div>
+    </div></div>`;
+  }
+  const byTest={};
+  pending.forEach(c=>{const t=c.testName||'(unknown test)';(byTest[t]=byTest[t]||[]).push(c);});
+  const testNames=Object.keys(byTest).sort();
+  const groups=testNames.map(tn=>{
+    const rows=byTest[tn];
+    const open=!!_rqOpen[tn];
+    const tnJson=JSON.stringify(tn).replace(/"/g,'&quot;');
+    const rowHtml=rows.map(c=>{
+      const hist=_rqLastStatusChange(c);
+      return `<tr style="border-top:.5px solid var(--bd)">
+        <td style="padding:5px 8px;text-align:center;width:28px" onclick="event.stopPropagation()"><input type="checkbox" class="rq-chk" data-uid="${esc(c.uid)}" onchange="reviewQueueUpdateSelCount()" style="cursor:pointer"></td>
+        <td style="padding:5px 8px;font-family:monospace;font-size:10px;color:var(--tm);white-space:nowrap">${esc(c.uid)}</td>
+        <td style="padding:5px 8px;font-size:11px;font-weight:600;color:var(--t1)">${esc(c.nwOrig||'')}</td>
+        <td style="padding:5px 8px;font-size:11px;color:var(--t2)">${esc(c.elementA||'')}</td>
+        <td style="padding:5px 8px;font-size:11px;color:var(--t2)">${esc(c.elementB||'')}</td>
+        <td style="padding:5px 8px;font-size:10px;color:#64748B;white-space:nowrap">${_rqFmtDate(c.disappearedAt)}</td>
+        <td style="padding:5px 8px;font-size:10px;color:#64748B">${hist}</td>
+      </tr>`;
+    }).join('');
+    return `<div class="card" data-rq-group="${esc(tn)}" style="margin-bottom:8px">
+      <div class="ch" style="cursor:pointer" onclick="reviewQueueToggleGroup(${tnJson})">
+        <span class="ct" style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:11px;color:#64748B">${open?'▼':'▶'}</span>
+          ${esc(tn)}
+          <span style="background:#EA7600;color:#fff;font-size:9px;font-weight:700;padding:1px 6px;border-radius:8px">${rows.length}</span>
+        </span>
+        <button class="btn sm ac" onclick="event.stopPropagation();reviewQueueResolveGroup(${tnJson})" style="font-size:10px">✓ Confirm all in this test as Resolved</button>
+      </div>
+      <div class="cb" style="padding:0;display:${open?'block':'none'}">
+        <table style="width:100%;border-collapse:collapse;font-family:Arial,sans-serif">
+          <thead><tr style="background:#F8FAFC">
+            <th style="padding:5px 8px;text-align:center;width:28px;font-size:10px;color:#64748B;font-weight:600"><input type="checkbox" onclick="reviewQueueToggleAllInGroup(this,${tnJson})" style="cursor:pointer"></th>
+            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#64748B;font-weight:600">UID</th>
+            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#64748B;font-weight:600">Clash</th>
+            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#64748B;font-weight:600">Element A</th>
+            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#64748B;font-weight:600">Element B</th>
+            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#64748B;font-weight:600">Disappeared at</th>
+            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#64748B;font-weight:600">Last status</th>
+          </tr></thead>
+          <tbody>${rowHtml}</tbody>
+        </table>
+      </div>
+    </div>`;
+  }).join('');
+  return `
+    <div class="card" style="border-top:3px solid #EA7600;margin-bottom:9px"><div class="cb" style="padding:10px 14px">
+      <div style="font-size:12px;font-weight:700;color:#0F1824;margin-bottom:3px">${pending.length} clash${pending.length===1?'':'es'} awaiting review</div>
+      <div style="font-size:10.5px;color:#64748B;line-height:1.5">These clashes were in the register but did not appear in the latest import for the same test. They may have been fixed in the model — or the XML may be a partial export. Confirm each: <strong>Resolved</strong> closes the clash and records a status-history entry. <strong>Still Open</strong> keeps the current status and prevents it from being re-flagged on future imports.</div>
+    </div></div>
+    ${groups}
+    <div style="position:sticky;bottom:0;background:#fff;border-top:.5px solid var(--bd);padding:10px;margin-top:10px;display:flex;gap:8px;align-items:center">
+      <span id="rq-sel-count" style="font-size:11px;color:#64748B">0 selected</span>
+      <div style="flex:1"></div>
+      <button class="btn" onclick="reviewQueueMarkStillOpen()" style="font-size:11px">✗ Mark selected as Still Open</button>
+      <button class="btn p" onclick="reviewQueueMarkResolved()" style="font-size:11px">✓ Mark selected as Resolved</button>
+    </div>
+  `;
+}
+function reviewQueueToggleGroup(tn){_rqOpen[tn]=!_rqOpen[tn];nav('review');}
+function reviewQueueToggleAllInGroup(chk,tn){
+  const group=document.querySelector('[data-rq-group="'+CSS.escape(tn)+'"]');
+  if(!group)return;
+  group.querySelectorAll('input.rq-chk').forEach(el=>{el.checked=chk.checked;});
+  reviewQueueUpdateSelCount();
+}
+function reviewQueueGetSelectedUids(){
+  return [...document.querySelectorAll('input.rq-chk:checked')].map(el=>el.getAttribute('data-uid'));
+}
+function reviewQueueUpdateSelCount(){
+  const el=document.getElementById('rq-sel-count');
+  if(el)el.textContent=reviewQueueGetSelectedUids().length+' selected';
+}
+/* REVIEW-QUEUE-VIEW end */
+/* REVIEW-QUEUE-ACTIONS start: mark-Resolved and mark-Still-Open handlers.
+   Both mutate the flagged clashes in S.clashes, clear pendingReview, append a
+   statusHistory entry tagged source='ReviewQueue', persist via sv(), and
+   toast the count. Mark-Resolved flips status='Resolved' (the closing move
+   the queue exists to make easy). Mark-Still-Open sets reviewedStillOpen=true
+   so REVIEW-QUEUE-DETECT skips this clash on future imports — status
+   stays whatever it was (Active, Reviewed, whatever the user's workflow had). */
+function _rqActionOnUids(uids,action){
+  if(!uids||!uids.length){showToast('No clashes selected');return 0;}
+  const now=new Date().toISOString();
+  const cs=S.clashes||[];
+  const idx=new Map();
+  cs.forEach((c,i)=>idx.set(c.uid,i));
+  let n=0;
+  uids.forEach(uid=>{
+    const i=idx.get(uid);if(i==null)return;
+    const c=cs[i];
+    if(c.pendingReview!==true)return;
+    if(!Array.isArray(c.statusHistory))c.statusHistory=[];
+    if(action==='resolved'){
+      if(c.status!=='Resolved'){
+        const wy=_weekYearNow();
+        pushStatusHistory(c,'Resolved',wy);
+        c.status='Resolved';
+      }
+      c.statusHistory.push({reviewedAt:now,reviewedInBatch:c.disappearedInBatch||'',source:'ReviewQueue',status:'Resolved'});
+    } else {
+      c.reviewedStillOpen=true;
+      c.statusHistory.push({reviewedAt:now,reviewedStillOpen:true,source:'ReviewQueue'});
+    }
+    delete c.pendingReview;
+    delete c.disappearedAt;
+    delete c.disappearedInBatch;
+    n++;
+  });
+  if(n){
+    sv('clashes',S.clashes);
+    if(action==='resolved')regenWeeklyFromRegister();
+  }
+  return n;
+}
+function reviewQueueMarkResolved(){
+  const uids=reviewQueueGetSelectedUids();
+  const n=_rqActionOnUids(uids,'resolved');
+  if(!n)return;
+  showToast(`✓ ${n} clash${n===1?'':'es'} marked Resolved`);
+  updSB();updSS();nav('review');
+}
+function reviewQueueMarkStillOpen(){
+  const uids=reviewQueueGetSelectedUids();
+  const n=_rqActionOnUids(uids,'stillOpen');
+  if(!n)return;
+  showToast(`✗ ${n} clash${n===1?'':'es'} kept Still Open`);
+  updSB();updSS();nav('review');
+}
+function reviewQueueResolveGroup(tn){
+  const uids=(S.clashes||[]).filter(c=>c.pendingReview===true&&(c.testName||'(unknown test)')===tn).map(c=>c.uid);
+  if(!uids.length){showToast('Nothing to confirm');return;}
+  const n=_rqActionOnUids(uids,'resolved');
+  if(!n)return;
+  showToast(`✓ ${n} clash${n===1?'':'es'} in "${tn}" marked Resolved`);
+  updSB();updSS();nav('review');
+}
+/* REVIEW-QUEUE-ACTIONS end */
+
 
 async function baianalyse(){
   if(!S.apiKey){alert('Add your Anthropic API key in Settings.');return;}
