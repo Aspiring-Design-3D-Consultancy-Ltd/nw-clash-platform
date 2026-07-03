@@ -8,8 +8,9 @@ const HTML = 'file://' + path.resolve(__dirname, '..', 'working.html');
 // Build a Navisworks-shaped XML with N clashes where the first `withHref`
 // carry an href attribute (viewpoint image reference) and the rest do not.
 // The href value mirrors real archive files: "files\cd000001.jpg" — the
-// parser strips the folder prefix into c.nwImageRef.
-function makeXml(clashCount, withHref, testName = '[H] Img Count Check Test A') {
+// parser strips the folder prefix into c.nwImageRef. idPrefix keeps element
+// IDs unique across multi-file batches so PAIR-ID merge doesn't dedupe them.
+function makeXml(clashCount, withHref, testName = '[H] Img Count Check Test A', idPrefix = 'A') {
   const items = [];
   for (let n = 1; n <= clashCount; n++) {
     const href = n <= withHref ? ` href="files\\cd${String(n).padStart(6,'0')}.jpg"` : '';
@@ -17,8 +18,8 @@ function makeXml(clashCount, withHref, testName = '[H] Img Count Check Test A') 
       <clashpoint><pos3f x="${100*n}" y="${200*n}" z="${300*n}"/></clashpoint>
       <resultstatus>active</resultstatus>
       <createddate><date year="2026" month="7" day="15" hour="10" minute="0" second="0"/></createddate>
-      <clashobject><pathlink><node>ESMC.nwd</node><node>Structural.nwc</node></pathlink><objectattribute><name>Element ID</name><value>EID-A-${n}</value></objectattribute></clashobject>
-      <clashobject><pathlink><node>ESMC.nwd</node><node>MEP.nwc</node></pathlink><objectattribute><name>Element ID</name><value>EID-B-${n}</value></objectattribute></clashobject>
+      <clashobject><pathlink><node>ESMC.nwd</node><node>Structural.nwc</node></pathlink><objectattribute><name>Element ID</name><value>EID-${idPrefix}-A-${n}</value></objectattribute></clashobject>
+      <clashobject><pathlink><node>ESMC.nwd</node><node>MEP.nwc</node></pathlink><objectattribute><name>Element ID</name><value>EID-${idPrefix}-B-${n}</value></objectattribute></clashobject>
     </clashresult>`);
   }
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -185,5 +186,97 @@ test.describe('IMG-COUNT-CHECK (href-based)', () => {
     // belongs to loadNwImages, not this check).
     const bcfImgCountAfter = await page.evaluate(() => _bcfImgCount);
     expect(bcfImgCountAfter).toBe(3);
+  });
+
+  test('multi-file batch (A.xml 5/5, B.xml 10/8, C.xml 20/15) → modal breaks down "7 of 35" by file, imports[] carries missingByFile', async ({ page }) => {
+    await bootstrap(page);
+
+    // Parse each XML into _bcfC individually and stamp sourceFile per
+    // the real batchParse behaviour (parser 1 sets sourceFile:fname; here
+    // we simulate by parsing each XML through bparse then overwriting
+    // sourceFile before concatenating). Unique idPrefix keeps element IDs
+    // distinct so the merge doesn't collapse cross-file duplicates.
+    const XML_A = makeXml(5, 5, '[H] Test A', 'A');
+    const XML_B = makeXml(10, 8, '[H] Test B', 'B');
+    const XML_C = makeXml(20, 15, '[H] Test C', 'C');
+
+    await page.evaluate(({ a, b, c }) => {
+      const capture = (xml, sf) => {
+        document.getElementById('bxml').value = xml;
+        bparse();
+        return _bcfC.slice().map(clash => ({ ...clash, sourceFile: sf }));
+      };
+      const partsA = capture(a, 'A.xml');
+      const partsB = capture(b, 'B.xml');
+      const partsC = capture(c, 'C.xml');
+      _bcfC = [...partsA, ...partsB, ...partsC];
+      window._skipCrossTestDupes = true;
+      _importToRegisterChecked('append');
+    }, { a: XML_A, b: XML_B, c: XML_C });
+
+    const modal = page.locator('#img-count-check-modal');
+    await expect(modal).toBeVisible();
+    // Total mismatch: 5+8+15 = 28 declared, 35 - 28 = 7 missing.
+    await expect(modal).toContainText('7 of 35');
+    // Per-file breakdown: A had all 5 hrefs → not listed; B missing 2; C missing 5.
+    await expect(modal).toContainText('C.xml');
+    await expect(modal).toContainText('5 clashes');
+    await expect(modal).toContainText('B.xml');
+    await expect(modal).toContainText('2 clashes');
+    await expect(modal.locator('text=A.xml')).toHaveCount(0);
+
+    // Sort order: count desc — C.xml (5) should render above B.xml (2).
+    const listText = await modal.locator('div').filter({ hasText: 'Missing viewpoints by file:' }).first().locator('..').textContent();
+    const cIdx = listText.indexOf('C.xml');
+    const bIdx = listText.indexOf('B.xml');
+    expect(cIdx).toBeGreaterThan(-1);
+    expect(bIdx).toBeGreaterThan(-1);
+    expect(cIdx).toBeLessThan(bIdx);
+
+    await page.locator('#img-count-check-continue').click();
+    await expect(modal).toHaveCount(0);
+
+    // Every per-file imports[] entry carries the FULL missingByFile map.
+    const entries = await page.evaluate(() => {
+      const all = (S.weekly || []).flatMap(w => (w.imports || []));
+      return all.filter(e => e.imageCountMismatch === true);
+    });
+    expect(entries.length).toBeGreaterThan(0);
+    for (const e of entries) {
+      expect(e.clashCount).toBe(35);
+      expect(e.declaredImages).toBe(28);
+      expect(e.missing).toBe(7);
+      expect(e.missingByFile).toEqual({ 'B.xml': 2, 'C.xml': 5 });
+    }
+  });
+
+  test('overflow: 25 unique source files → visible list capped at 20 with "…and 5 more files" tail', async ({ page }) => {
+    await bootstrap(page);
+    // Seed 25 hrefless clashes across 25 unique sourceFiles.
+    await page.evaluate(() => {
+      _bcfC = Array.from({ length: 25 }, (_, i) => ({
+        idx: i + 1,
+        tn: '[H] Overflow Test',
+        nwName: 'Clash' + (i + 1),
+        nwCreated: '15/07/26',
+        sourceFile: 'file-' + String(i + 1).padStart(2, '0') + '.xml',
+        nwImageRef: '',
+        x: 100, y: 200, z: 300, depMm: 20,
+        eA: { id: 'EID-OA-' + (i + 1), source: 'S.nwc', item: 'B' + i, layer: '' },
+        eB: { id: 'EID-OB-' + (i + 1), source: 'M.nwc', item: 'D' + i, layer: '' },
+        dA: 'Structural', dB: 'MEP', pri: 'High', mappedSt: 'Active',
+      }));
+      window._skipCrossTestDupes = true;
+      _importToRegisterChecked('append');
+    });
+
+    const modal = page.locator('#img-count-check-modal');
+    await expect(modal).toBeVisible();
+    await expect(modal).toContainText('25 of 25');
+    await expect(modal).toContainText('…and 5 more files');
+    // The full unfiltered map still lands on imports[] after Continue.
+    await page.locator('#img-count-check-continue').click();
+    const entry = await latestImportEntry(page);
+    expect(entry?.missingByFile && Object.keys(entry.missingByFile).length).toBe(25);
   });
 });
