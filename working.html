@@ -7345,7 +7345,18 @@ function _importToRegisterChecked(mode){
     importToRegister(mode);
     return;
   }
-  _showImgCountMismatchModal(clashCount,declaredImages,mode);
+  /* IMG-COUNT-CHECK: group missing-viewpoint clashes by sourceFile so the
+     modal can show which XMLs to re-export and the imports[] audit log
+     records the same map. Clashes with a blank/absent sourceFile bucket
+     under '(unknown)' — parser 1 stamps the real filename, parser 2
+     stamps 'pasted' (see batchParse ~L6832 and bparse ~L7103). */
+  const missingByFile={};
+  (_bcfC||[]).forEach(c=>{
+    if(!c||c.nwImageRef)return;
+    const src=(c.sourceFile||'(unknown)');
+    missingByFile[src]=(missingByFile[src]||0)+1;
+  });
+  _showImgCountMismatchModal(clashCount,declaredImages,missingByFile,mode);
 }
 /* IMG-COUNT-CHECK end */
 /* IMG-COUNT-CHECK-MODAL start: blocking dialog fired by
@@ -7356,20 +7367,39 @@ function _importToRegisterChecked(mode){
    onto the next imports[] push. Meta is consumed exactly once by
    importToRegister so the Data Manager surfaces which batches shipped
    with missing viewpoints. */
-function _showImgCountMismatchModal(clashCount,declaredImages,mode){
+function _showImgCountMismatchModal(clashCount,declaredImages,missingByFile,mode){
   const existing=document.getElementById('img-count-check-modal');
   if(existing)existing.remove();
   const missing=clashCount-declaredImages;
+  const _mbf=(missingByFile&&typeof missingByFile==='object')?missingByFile:{};
+  /* IMG-COUNT-CHECK-MODAL: entries sorted by count desc, alphabetical
+     tiebreak for deterministic ordering (tests + user muscle memory).
+     Cap the visible list at 20 rows with a "…and N more files" tail —
+     full unfiltered map still travels through to imports[] metadata. */
+  const _entries=Object.entries(_mbf).sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0]));
+  const _visible=_entries.slice(0,20);
+  const _overflow=_entries.length-_visible.length;
+  const _listHtml=_entries.length
+    ? `<div style="margin-bottom:6px;font-weight:600;color:#475569">Missing viewpoints by file:</div>
+       <div style="max-height:180px;overflow-y:auto;border:.5px solid #E5E7EB;border-radius:4px;background:#F8FAFC;padding:6px 10px;margin-bottom:12px;font-family:monospace;font-size:11px">
+         ${_visible.map(([f,n])=>`<div><span style="color:#0F1824">${esc(f)}</span> <span style="color:#64748B">— ${n} clash${n===1?'':'es'}</span></div>`).join('')}
+         ${_overflow>0?`<div style="color:#64748B;margin-top:4px">…and ${_overflow} more file${_overflow===1?'':'s'}</div>`:''}
+       </div>`
+    : '';
   const wrap=document.createElement('div');
   wrap.id='img-count-check-modal';
   wrap.style.cssText='position:fixed;inset:0;background:rgba(15,24,36,.6);z-index:9998;display:flex;align-items:center;justify-content:center;font-family:Arial,sans-serif';
-  wrap.innerHTML=`<div role="dialog" aria-modal="true" style="background:#fff;border-radius:8px;max-width:520px;width:calc(100% - 40px);box-shadow:0 20px 60px rgba(0,0,0,.35);overflow:hidden">
-    <div style="padding:16px 22px;border-bottom:1px solid #E5E7EB;background:#FEF3C7;color:#92400E;font-weight:700;font-size:14px">⚠ Missing clash viewpoints</div>
-    <div style="padding:18px 22px;color:#0F1824;font-size:12px;line-height:1.6">
-      <div style="margin-bottom:10px"><strong>${missing} of ${clashCount}</strong> clash${clashCount===1?'':'es'} in this XML have no image reference (no viewpoint captured in Navisworks).</div>
+  /* IMG-COUNT-CHECK-MODAL: flex column with capped max-height so the
+     scrollable file list can't push the Cancel/Continue buttons off the
+     bottom of the viewport when the batch spans lots of XMLs. */
+  wrap.innerHTML=`<div role="dialog" aria-modal="true" style="background:#fff;border-radius:8px;max-width:520px;width:calc(100% - 40px);max-height:calc(100vh - 40px);display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.35);overflow:hidden">
+    <div style="padding:16px 22px;border-bottom:1px solid #E5E7EB;background:#FEF3C7;color:#92400E;font-weight:700;font-size:14px;flex-shrink:0">⚠ Missing clash viewpoints</div>
+    <div style="padding:18px 22px;color:#0F1824;font-size:12px;line-height:1.6;overflow-y:auto;flex:1 1 auto">
+      <div style="margin-bottom:10px"><strong>${missing} of ${clashCount}</strong> clash${clashCount===1?'':'es'} in this batch have no image reference (no viewpoint captured in Navisworks).</div>
+      ${_listHtml}
       <div style="color:#475569">Continue anyway to append them (those clashes will show a placeholder thumbnail) or Cancel to re-export with viewpoints for every clash.</div>
     </div>
-    <div style="padding:14px 22px;border-top:1px solid #E5E7EB;display:flex;justify-content:flex-end;gap:8px;background:#F8FAFC">
+    <div style="padding:14px 22px;border-top:1px solid #E5E7EB;display:flex;justify-content:flex-end;gap:8px;background:#F8FAFC;flex-shrink:0">
       <button id="img-count-check-cancel" style="background:#fff;border:1px solid #CBD5E1;color:#1E293B;padding:8px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Cancel</button>
       <button id="img-count-check-continue" style="background:#EA7600;border:0;color:#fff;padding:8px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Continue anyway</button>
     </div>
@@ -7387,7 +7417,10 @@ function _showImgCountMismatchModal(clashCount,declaredImages,mode){
   });
   document.getElementById('img-count-check-continue').addEventListener('click',()=>{
     close();
-    window._imgMismatchMeta={imageCountMismatch:true,clashCount,declaredImages,missing};
+    /* IMG-COUNT-CHECK-MODAL: stash the FULL unfiltered missingByFile
+       map on the meta so imports[] carries the audit trail even when
+       the modal truncated the visible list. */
+    window._imgMismatchMeta={imageCountMismatch:true,clashCount,declaredImages,missing,missingByFile:_mbf};
     importToRegister(mode);
   });
 }
@@ -7843,12 +7876,15 @@ function importToRegister(mode){
           /* IMG-COUNT-CHECK: stamp the mismatch on every per-file entry
              of this batch — a single Continue click covers them all.
              declaredImages / missing replace the earlier imageCount
-             field so the Data Manager records the href-based semantic. */
+             field so the Data Manager records the href-based semantic.
+             missingByFile carries the full unfiltered per-source map for
+             audit — the modal may have truncated to top 20 for display. */
           if(_imgMm){
             _entry.imageCountMismatch=true;
             _entry.clashCount=_imgMm.clashCount;
             _entry.declaredImages=_imgMm.declaredImages;
             _entry.missing=_imgMm.missing;
+            if(_imgMm.missingByFile)_entry.missingByFile=_imgMm.missingByFile;
           }
           cur.imports.push(_entry);
         });
@@ -7860,6 +7896,7 @@ function importToRegister(mode){
           _entry.clashCount=_imgMm.clashCount;
           _entry.declaredImages=_imgMm.declaredImages;
           _entry.missing=_imgMm.missing;
+          if(_imgMm.missingByFile)_entry.missingByFile=_imgMm.missingByFile;
         }
         cur.imports.push(_entry);
       }
