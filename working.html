@@ -3208,6 +3208,12 @@ function loadNwImages(files,testName){
   if(!files||!files.length)return;
   const imgFiles=[...files].filter(f=>/\.(jpe?g|png)$/i.test(f.name));
   if(!imgFiles.length){showToast('No image files found in that folder');return;}
+  /* IMG-COUNT-CHECK: record intended batch image count so the pre-merge
+     guard can spot clash-vs-image asymmetry. Set (not incremented) — a
+     re-load for the same test replaces the intended count. Async IDB
+     writes fire below; success count and this SET are decoupled because
+     the guard runs synchronously ahead of them. */
+  _bcfImgCount=imgFiles.length;
 
   // Sort numerically by digits in filename so a folder of Clash1.jpg…Clash432.jpg
   // ends up in clash-number order (matches Navisworks' export numbering).
@@ -6383,13 +6389,13 @@ function rBCF(){
             <div style="font-weight:700;color:#1D4ED8;margin-bottom:4px;font-size:12px">Append mode</div>
             <div style="font-size:10px;color:#374151;line-height:1.6;margin-bottom:8px">Add imported clashes to the existing register. Clashes already present (same name) will have their status updated. Existing clashes not in this XML are untouched.</div>
             <div style="font-size:10px;color:#64748B;margin-bottom:10px" id="bappend-info"></div>
-            <button class="btn p" onclick="importToRegister('append')" style="font-size:11px;width:100%">→ Append to Register</button>
+            <button class="btn p" onclick="_importToRegisterChecked('append')" style="font-size:11px;width:100%">→ Append to Register</button>
           </div>
           <div style="background:#FFF0F0;border:.5px solid #FECACA;border-radius:6px;padding:.75rem">
             <div style="font-weight:700;color:#DC2626;margin-bottom:4px;font-size:12px">Replace mode</div>
             <div style="font-size:10px;color:#374151;line-height:1.6;margin-bottom:8px">Clear the entire existing register and replace with these imported clashes. Use for a first import or when starting a new coordination cycle.</div>
             <div style="font-size:10px;color:#64748B;margin-bottom:10px" id="breplace-info"></div>
-            <button class="btn" onclick="importToRegister('replace')" style="font-size:11px;width:100%;background:#DC2626;color:#fff;border-color:#DC2626">⚠ Replace Register</button>
+            <button class="btn" onclick="_importToRegisterChecked('replace')" style="font-size:11px;width:100%;background:#DC2626;color:#fff;border-color:#DC2626">⚠ Replace Register</button>
           </div>
         </div>
         <div style="background:#FFFBE6;border:.5px solid #FDE68A;border-radius:4px;padding:.55rem .75rem;font-size:10px;color:#78350F">
@@ -6411,6 +6417,16 @@ let _batchResults={}; // filename -> parsed clashes
    import-event IIFE when empty. */
 let _bcfFileNames=[];
 /* DUP-FILES-FIX end */
+/* IMG-COUNT-CHECK start: batch-level image count set by loadNwImages when
+   images are queued for the current XML batch. Read by the pre-merge
+   sanity check (_importToRegisterChecked) that compares parsed clash
+   count against images extracted during the same import. A mismatch
+   opens the IMG-COUNT-CHECK-MODAL — user Cancels (discard) or Continues
+   (merge + imports[] metadata flag). Reset by the wrapper after the
+   merge decision so each batch starts self-contained; no reset needed
+   in the parsers. */
+let _bcfImgCount=0;
+/* IMG-COUNT-CHECK end */
 
 function bdragover(e){
   e.preventDefault();
@@ -6610,7 +6626,10 @@ async function importFolderPick(inputEl){
            once the loop finishes (see XTEST-DUP-BATCH-AUDIT below). */
         window._skipCrossTestDupes = true;
         /* XTEST-DUP-BATCH-SKIP end */
-        importToRegister('append');
+        /* IMG-COUNT-CHECK: route the folder-import loop through the
+           image-count guard so multi-test folders get the same
+           Cancel/Continue treatment as single-file imports. */
+        _importToRegisterChecked('append');
         completedCount++;
       }
 
@@ -7303,6 +7322,72 @@ function _xtAuditConfirm(modalId){
 }
 /* XTEST-DUP-AUDIT end */
 
+/* IMG-COUNT-CHECK start: pre-merge sanity check invoked in place of a
+   direct importToRegister call. Compares parsed clash count (_bcfC) to the
+   images extracted during this import (_bcfImgCount, set by loadNwImages).
+   Match → merge immediately. Mismatch → open IMG-COUNT-CHECK-MODAL for a
+   Cancel/Continue decision. Batches reset _bcfImgCount here so the next
+   batch starts self-contained regardless of which decision the user made.
+   Placed here so both parser 1 (batchParse) and parser 2 (bparse) share
+   a single choke point — every UI callsite (Append/Replace buttons,
+   folder-import loop) routes through this wrapper. */
+function _importToRegisterChecked(mode){
+  const clashCount=(_bcfC||[]).length;
+  const imageCount=_bcfImgCount||0;
+  _bcfImgCount=0;
+  if(clashCount===imageCount){
+    importToRegister(mode);
+    return;
+  }
+  _showImgCountMismatchModal(clashCount,imageCount,mode);
+}
+/* IMG-COUNT-CHECK end */
+/* IMG-COUNT-CHECK-MODAL start: blocking dialog fired by
+   _importToRegisterChecked on a clash/image count asymmetry. Cancel
+   discards the parsed batch (clears _bcfC + the preview UI) so the user
+   can re-export from Navisworks with viewpoints enabled. Continue merges
+   anyway with a metadata flag stamped onto the imports[] event so the
+   Data Manager surfaces which batches shipped without full image
+   coverage. Meta is threaded via window._imgMismatchMeta and consumed
+   exactly once by importToRegister's imports[] push. */
+function _showImgCountMismatchModal(clashCount,imageCount,mode){
+  const existing=document.getElementById('img-count-check-modal');
+  if(existing)existing.remove();
+  const diff=Math.abs(clashCount-imageCount);
+  const wrap=document.createElement('div');
+  wrap.id='img-count-check-modal';
+  wrap.style.cssText='position:fixed;inset:0;background:rgba(15,24,36,.6);z-index:9998;display:flex;align-items:center;justify-content:center;font-family:Arial,sans-serif';
+  wrap.innerHTML=`<div role="dialog" aria-modal="true" style="background:#fff;border-radius:8px;max-width:520px;width:calc(100% - 40px);box-shadow:0 20px 60px rgba(0,0,0,.35);overflow:hidden">
+    <div style="padding:16px 22px;border-bottom:1px solid #E5E7EB;background:#FEF3C7;color:#92400E;font-weight:700;font-size:14px">⚠ Image count mismatch</div>
+    <div style="padding:18px 22px;color:#0F1824;font-size:12px;line-height:1.6">
+      <div style="margin-bottom:10px">This import parsed <strong>${clashCount} clash${clashCount===1?'':'es'}</strong> but <strong>${imageCount} image${imageCount===1?'':'s'}</strong>.</div>
+      <div style="margin-bottom:10px">Expected: 1 image per clash. The difference of <strong>${diff}</strong> suggests either the Navisworks export was missing viewpoints, or some image blobs failed to store.</div>
+      <div style="color:#475569">Cancel to review the XML export settings in Navisworks (ensure <em>'Include Clash Viewpoints'</em> is enabled).<br>Continue to append anyway (clashes without images will show broken thumbnails).</div>
+    </div>
+    <div style="padding:14px 22px;border-top:1px solid #E5E7EB;display:flex;justify-content:flex-end;gap:8px;background:#F8FAFC">
+      <button id="img-count-check-cancel" style="background:#fff;border:1px solid #CBD5E1;color:#1E293B;padding:8px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Cancel</button>
+      <button id="img-count-check-continue" style="background:#EA7600;border:0;color:#fff;padding:8px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Continue anyway</button>
+    </div>
+  </div>`;
+  document.body.appendChild(wrap);
+  const close=()=>{const el=document.getElementById('img-count-check-modal');if(el)el.remove();};
+  document.getElementById('img-count-check-cancel').addEventListener('click',()=>{
+    close();
+    // Discard the parsed batch so the user can re-export cleanly.
+    _bcfC=[];
+    const bres=document.getElementById('bres');if(bres)bres.style.display='none';
+    const bimp=document.getElementById('bimport');if(bimp)bimp.style.display='none';
+    if(typeof bmsg==='function')bmsg('Import cancelled — image count mismatch. Re-export from Navisworks with viewpoints enabled and try again.','#EA580C');
+    if(typeof showToast==='function')showToast(`Import cancelled: ${clashCount} clashes vs ${imageCount} images`,5000);
+  });
+  document.getElementById('img-count-check-continue').addEventListener('click',()=>{
+    close();
+    window._imgMismatchMeta={imageCountMismatch:true,clashCount,imageCount};
+    importToRegister(mode);
+  });
+}
+/* IMG-COUNT-CHECK-MODAL end */
+
 function importToRegister(mode){
   if(!_bcfC.length){alert('Parse XML first.');return;}
   /* WEEKLY-SNAP-CONDITIONAL-IMPORT start: derive the anchor from the batch's
@@ -7724,6 +7809,12 @@ function importToRegister(mode){
          present. Falls back to the single-entry shape (count=_bcfC.length, totals)
          if perFile is empty for any reason (defensive). */
       const _perFileKeys=Object.keys(perFile);
+      /* IMG-COUNT-CHECK: consume the one-shot mismatch metadata set by
+         the Continue branch of _showImgCountMismatchModal so imports[]
+         records which batches shipped despite a clash/image asymmetry.
+         Meta is cleared after read regardless of downstream branch. */
+      const _imgMm=(window._imgMismatchMeta&&window._imgMismatchMeta.imageCountMismatch)?window._imgMismatchMeta:null;
+      window._imgMismatchMeta=null;
       if(_perFileKeys.length){
         const _atIso=new Date().toISOString();
         _perFileKeys.forEach(sf=>{
@@ -7731,7 +7822,7 @@ function importToRegister(mode){
           const displayName=(sf==='pasted'||sf==='(unknown)')
             ?((_bcfFileNames&&_bcfFileNames[0])||'(pasted XML)')
             :sf;
-          cur.imports.push({
+          const _entry={
             date:importDateStr,
             count:st.count,
             added:st.added,
@@ -7743,11 +7834,25 @@ function importToRegister(mode){
             disappeared:(_perFileKeys.length===1?_disappeared:Math.round(_disappeared*(st.count||0)/(_bcfC.length||1))),
             at:_atIso,
             files:[displayName]
-          });
+          };
+          /* IMG-COUNT-CHECK: stamp the mismatch on every per-file entry
+             of this batch — a single Continue click covers them all. */
+          if(_imgMm){
+            _entry.imageCountMismatch=true;
+            _entry.clashCount=_imgMm.clashCount;
+            _entry.imageCount=_imgMm.imageCount;
+          }
+          cur.imports.push(_entry);
         });
       } else {
         // Defensive fallback — preserves previous shape if perFile wasn't populated
-        cur.imports.push({date:importDateStr,count:_bcfC.length,added:added,updated:updated,/* PAIR-ID-RESOLVED-COUNT */disappeared:_disappeared,at:new Date().toISOString(),files:importFiles});
+        const _entry={date:importDateStr,count:_bcfC.length,added:added,updated:updated,/* PAIR-ID-RESOLVED-COUNT */disappeared:_disappeared,at:new Date().toISOString(),files:importFiles};
+        if(_imgMm){
+          _entry.imageCountMismatch=true;
+          _entry.clashCount=_imgMm.clashCount;
+          _entry.imageCount=_imgMm.imageCount;
+        }
+        cur.imports.push(_entry);
       }
       sv('weekly',S.weekly);
       /* DUP-FILES-FIX end */
