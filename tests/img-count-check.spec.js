@@ -279,4 +279,72 @@ test.describe('IMG-COUNT-CHECK (href-based)', () => {
     const entry = await latestImportEntry(page);
     expect(entry?.missingByFile && Object.keys(entry.missingByFile).length).toBe(25);
   });
+
+  test('SOURCEFILE-PROPAGATE — bparse threads _bcfFileNames[0] onto c.sourceFile so per-file breakdown shows real XML names, not "pasted"', async ({ page }) => {
+    // Simulates importFolderPick's per-file loop: for each XML the driver
+    // sets _bcfFileNames=[xmlFile.name] and then calls bparse(). Without
+    // the SOURCEFILE-PROPAGATE fix, every clash was stamped 'pasted' and
+    // the per-file breakdown collapsed into a single "pasted — N clashes"
+    // row (the 82-file production report).
+    await bootstrap(page);
+
+    const XML_A = makeXml(5, 3, '[H] Real Test A', 'A');   // 5 clashes, 3 hrefs → 2 missing
+    const XML_B = makeXml(10, 6, '[H] Real Test B', 'B');  // 10 clashes, 6 hrefs → 4 missing
+
+    await page.evaluate(({ a, b }) => {
+      const parseFile = (xml, filename) => {
+        _bcfFileNames = [filename];
+        document.getElementById('bxml').value = xml;
+        bparse();
+        return _bcfC.slice();
+      };
+      const partsA = parseFile(a, 'Exyte_CSA_v_08_AMHS.xml');
+      const partsB = parseFile(b, '04_CHEM_v_08_AHMS.xml');
+      _bcfC = [...partsA, ...partsB];
+      window._skipCrossTestDupes = true;
+      _importToRegisterChecked('append');
+    }, { a: XML_A, b: XML_B });
+
+    // Sanity: parser stamped the real filenames from _bcfFileNames.
+    const parsedSourceFiles = await page.evaluate(() =>
+      [...new Set(_bcfC.map(c => c.sourceFile))].sort()
+    );
+    expect(parsedSourceFiles).toEqual(['04_CHEM_v_08_AHMS.xml', 'Exyte_CSA_v_08_AMHS.xml']);
+    // The old bug would have produced ['pasted'] here.
+    expect(parsedSourceFiles).not.toContain('pasted');
+
+    const modal = page.locator('#img-count-check-modal');
+    await expect(modal).toBeVisible();
+    // Total: 15 clashes, 9 declared → 6 missing.
+    await expect(modal).toContainText('6 of 15');
+    // Per-file rows carry the real names.
+    await expect(modal).toContainText('Exyte_CSA_v_08_AMHS.xml');
+    await expect(modal).toContainText('04_CHEM_v_08_AHMS.xml');
+    // Explicit negative: the 'pasted' sentinel must NOT appear in the
+    // rendered breakdown (that's the exact production regression this
+    // marker exists to prevent).
+    await expect(modal.locator('text=pasted —')).toHaveCount(0);
+
+    await page.locator('#img-count-check-continue').click();
+    const entry = await latestImportEntry(page);
+    expect(entry?.missingByFile).toEqual({
+      'Exyte_CSA_v_08_AMHS.xml': 2,
+      '04_CHEM_v_08_AHMS.xml': 4,
+    });
+  });
+
+  test('SOURCEFILE-PROPAGATE — pure paste (no file picked, _bcfFileNames empty) still falls back to "pasted"', async ({ page }) => {
+    await bootstrap(page);
+    // Reset _bcfFileNames the way the app is on first launch — no file has
+    // ever been picked. Then invoke bparse directly (paste-only path).
+    await page.evaluate(() => {
+      _bcfFileNames = [];
+      document.getElementById('bxml').value = ''; // clear any prior test's textarea
+    });
+    await parseXml(page, makeXml(3, 3, '[H] Paste Only', 'P'));
+    const sourceFiles = await page.evaluate(() =>
+      [...new Set(_bcfC.map(c => c.sourceFile))]
+    );
+    expect(sourceFiles).toEqual(['pasted']);
+  });
 });

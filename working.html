@@ -6831,6 +6831,13 @@ function batchParse(files,errors,readCount){
         _bcfC.push({
           idx:_bcfC.length+1,
           nwName:r.getAttribute('name')||('Clash '+(i+1)),
+          /* SOURCEFILE-PROPAGATE: parser 1 (batchParse) has always stamped
+             the real per-file XML name here via the Object.entries loop
+             above — this is the correct-behaviour anchor the parser-2 fix
+             (see bparse ~L7035) mirrors. Keep both stamps in sync so the
+             IMG-COUNT-CHECK-MODAL per-file breakdown, the DUP-FILES-FIX
+             perFile bucket, and the imports[] Data Manager attribution
+             all see one consistent semantic. */
           nwSt,depMm,tn,sourceFile:fname,
           nwCreated,
           /* REVIEW-QUEUE-DATE-GUARD-CREATEDDATE */ nwCreatedFullISO,
@@ -7032,6 +7039,21 @@ function bparse(){
   if(!batches.length)batches=[...doc.querySelectorAll('batchtest')];
   if(!batches.length){bmsg('No <clashtest> or <batchtest> elements found — is this a Navisworks Clash Detective XML export?','#DC2626');return;}
   _bcfC=[];
+  /* SOURCEFILE-PROPAGATE start: bparse used to hardcode sourceFile:'pasted'
+     on every parsed clash. importFolderPick's per-file loop (~L6616) sets
+     _bcfFileNames=[xmlFile.name] immediately before invoking bparse, so
+     honouring that here threads the actual XML filename through to
+     _bcfC[i].sourceFile — which the IMG-COUNT-CHECK-MODAL per-file
+     breakdown and the imports[] Data Manager attribution both key on.
+     bloadf/bdrop's single-file branches also set _bcfFileNames before the
+     user clicks Parse, so file-pick/drop paths get the real name too.
+     Pure paste (user typed/pasted text and clicked Parse without ever
+     touching a file input) leaves _bcfFileNames untouched — fall back to
+     the historical 'pasted' sentinel so the DUP-FILES-FIX display logic
+     (imports[] IIFE at ~L7861) still renders "(pasted XML)". Mirror
+     annotation on parser 1 batchParse below. */
+  const _srcFile=(Array.isArray(_bcfFileNames)&&_bcfFileNames[0])||'pasted';
+  /* SOURCEFILE-PROPAGATE end */
   batches.forEach(batch=>{
     const tn=batch.getAttribute('name')||'Unnamed Test';
     // clashtest may not carry units attr — inherit from parent batchtest/exchange
@@ -7100,7 +7122,7 @@ function bparse(){
          to enable IMG-POS positional fallback when href is genuinely absent. */
       const hrefRaw=r.getAttribute('href')||'';
       const nwImageRef=hrefRaw?hrefRaw.replace(/.*[\\\/]/,''):'';
-      _bcfC.push({idx:_bcfC.length+1,nwName:r.getAttribute('name')||('Clash '+(i+1)),nwSt,depMm,tn,sourceFile:'pasted',
+      _bcfC.push({idx:_bcfC.length+1,nwName:r.getAttribute('name')||('Clash '+(i+1)),nwSt,depMm,tn,/* SOURCEFILE-PROPAGATE */ sourceFile:_srcFile,
         nwCreated,
         /* REVIEW-QUEUE-DATE-GUARD-CREATEDDATE */ nwCreatedFullISO,
         nwImageRef,
