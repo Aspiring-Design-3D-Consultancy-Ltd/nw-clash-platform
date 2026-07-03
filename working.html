@@ -6417,6 +6417,18 @@ let _batchResults={}; // filename -> parsed clashes
    import-event IIFE when empty. */
 let _bcfFileNames=[];
 /* DUP-FILES-FIX end */
+/* SOURCEFILE-FULLPATH start: mirror of _bcfFileNames / _batchResults that
+   carries webkitRelativePath (e.g. "260601 FAB AMHS v 7 Clash test/99_
+   ESMC_v_08_AMHS.xml") instead of just the leaf filename. Populated
+   wherever _bcfFileNames is set. Used by both parsers to stamp
+   c.sourceFilePath alongside c.sourceFile (leaf preserved for backwards
+   compat), and by the IMG-COUNT-CHECK-MODAL per-file breakdown +
+   imports[] audit trail to disambiguate identically-named files across
+   weekly-scoped folders. Falls back to the leaf name (or 'pasted') when
+   webkitRelativePath is unavailable — single-file picker / paste path. */
+let _bcfFilePaths=[];
+let _batchFilePaths={};
+/* SOURCEFILE-FULLPATH end */
 /* IMG-COUNT-CHECK start: batch-level image count set by loadNwImages when
    images are queued for the current XML batch. Read by the pre-merge
    sanity check (_importToRegisterChecked) that compares parsed clash
@@ -6442,6 +6454,8 @@ function bdrop(e){
   /* DUP-FILES-FIX start: record filename(s) for the import-event tracker */
   _bcfFileNames=files.map(f=>f.name);
   /* DUP-FILES-FIX end */
+  /* SOURCEFILE-FULLPATH: parallel path array for webkitdirectory picks. */
+  _bcfFilePaths=files.map(f=>f.webkitRelativePath||f.name);
   if(files.length===1){
     /* WORKFLOW-GATE-C start: load only — explicit Parse click required to advance */
     const r=new FileReader();
@@ -6462,6 +6476,8 @@ function bloadf(inp){
   /* DUP-FILES-FIX start: record filename(s) for the import-event tracker */
   _bcfFileNames=files.map(f=>f.name);
   /* DUP-FILES-FIX end */
+  /* SOURCEFILE-FULLPATH: parallel path array for webkitdirectory picks. */
+  _bcfFilePaths=files.map(f=>f.webkitRelativePath||f.name);
   if(files.length===1){
     /* WORKFLOW-GATE-C start: load only — explicit Parse click required to advance */
     const r=new FileReader();
@@ -6614,6 +6630,11 @@ async function importFolderPick(inputEl){
       // DUP-FILES-FIX: record filename so the Data Manager attributes the
       // import event to this specific test rather than the previous one.
       _bcfFileNames=[xmlFile.name];
+      /* SOURCEFILE-FULLPATH: use webkitRelativePath so identically-named
+         weekly XMLs (e.g. 260601 …/99_ESMC.xml vs 260608 …/99_ESMC.xml)
+         disambiguate in the IMG-COUNT-CHECK-MODAL per-file breakdown
+         and imports[] audit trail. */
+      _bcfFilePaths=[xmlFile.webkitRelativePath||xmlFile.name];
       bparse();
 
       if(_bcfC.length){
@@ -6657,11 +6678,13 @@ async function importFolderPick(inputEl){
 /* FOLDER-IMPORT end */
 
 function batchLoad(files){
-  _batchFiles=files;_batchResults={};_bcfC=[];
+  _batchFiles=files;_batchResults={};_batchFilePaths={};_bcfC=[];
   /* DUP-FILES-FIX start: record filename(s) for the import-event tracker
      (also set by bloadf/bdrop, harmless to set again) */
   _bcfFileNames=files.map(f=>f.name);
   /* DUP-FILES-FIX end */
+  /* SOURCEFILE-FULLPATH: parallel path array for webkitdirectory picks. */
+  _bcfFilePaths=files.map(f=>f.webkitRelativePath||f.name);
   const wrap=document.getElementById('b-batch-wrap');
   const bar=document.getElementById('b-batch-bar');
   const label=document.getElementById('b-batch-label');
@@ -6690,6 +6713,10 @@ function batchLoad(files){
     const r=new FileReader();
     r.onload=ev=>{
       _batchResults[f.name]=ev.target.result;
+      /* SOURCEFILE-FULLPATH: parallel map keyed by the same leaf filename
+         but valued with the webkitRelativePath so batchParse can stamp
+         c.sourceFilePath alongside c.sourceFile. */
+      _batchFilePaths[f.name]=f.webkitRelativePath||f.name;
       done++;
       const pct=Math.round((done/files.length)*100);
       if(bar)bar.style.width=pct+'%';
@@ -6838,7 +6865,7 @@ function batchParse(files,errors,readCount){
              IMG-COUNT-CHECK-MODAL per-file breakdown, the DUP-FILES-FIX
              perFile bucket, and the imports[] Data Manager attribution
              all see one consistent semantic. */
-          nwSt,depMm,tn,sourceFile:fname,
+          nwSt,depMm,tn,sourceFile:fname,/* SOURCEFILE-FULLPATH */ sourceFilePath:(_batchFilePaths&&_batchFilePaths[fname])||fname,
           nwCreated,
           /* REVIEW-QUEUE-DATE-GUARD-CREATEDDATE */ nwCreatedFullISO,
           nwImageRef,
@@ -7054,6 +7081,11 @@ function bparse(){
      annotation on parser 1 batchParse below. */
   const _srcFile=(Array.isArray(_bcfFileNames)&&_bcfFileNames[0])||'pasted';
   /* SOURCEFILE-PROPAGATE end */
+  /* SOURCEFILE-FULLPATH: mirror of _srcFile carrying webkitRelativePath
+     when the batch came in via a webkitdirectory pick. Falls back to
+     _srcFile (leaf name or 'pasted') when unavailable — single-file
+     picker / paste path — so single-file semantics don't regress. */
+  const _srcPath=(Array.isArray(_bcfFilePaths)&&_bcfFilePaths[0])||_srcFile;
   batches.forEach(batch=>{
     const tn=batch.getAttribute('name')||'Unnamed Test';
     // clashtest may not carry units attr — inherit from parent batchtest/exchange
@@ -7122,7 +7154,7 @@ function bparse(){
          to enable IMG-POS positional fallback when href is genuinely absent. */
       const hrefRaw=r.getAttribute('href')||'';
       const nwImageRef=hrefRaw?hrefRaw.replace(/.*[\\\/]/,''):'';
-      _bcfC.push({idx:_bcfC.length+1,nwName:r.getAttribute('name')||('Clash '+(i+1)),nwSt,depMm,tn,/* SOURCEFILE-PROPAGATE */ sourceFile:_srcFile,
+      _bcfC.push({idx:_bcfC.length+1,nwName:r.getAttribute('name')||('Clash '+(i+1)),nwSt,depMm,tn,/* SOURCEFILE-PROPAGATE */ sourceFile:_srcFile,/* SOURCEFILE-FULLPATH */ sourceFilePath:_srcPath,
         nwCreated,
         /* REVIEW-QUEUE-DATE-GUARD-CREATEDDATE */ nwCreatedFullISO,
         nwImageRef,
@@ -7367,15 +7399,15 @@ function _importToRegisterChecked(mode){
     importToRegister(mode);
     return;
   }
-  /* IMG-COUNT-CHECK: group missing-viewpoint clashes by sourceFile so the
-     modal can show which XMLs to re-export and the imports[] audit log
-     records the same map. Clashes with a blank/absent sourceFile bucket
-     under '(unknown)' — parser 1 stamps the real filename, parser 2
-     stamps 'pasted' (see batchParse ~L6832 and bparse ~L7103). */
+  /* IMG-COUNT-CHECK: group missing-viewpoint clashes by sourceFilePath
+     (SOURCEFILE-FULLPATH) so identically-named weekly XMLs at different
+     paths disambiguate — the leaf name alone collapsed multi-week batches
+     into one row. Falls back to sourceFile (leaf) and finally '(unknown)'
+     when neither is set. */
   const missingByFile={};
   (_bcfC||[]).forEach(c=>{
     if(!c||c.nwImageRef)return;
-    const src=(c.sourceFile||'(unknown)');
+    const src=(c.sourceFilePath||c.sourceFile||'(unknown)');
     missingByFile[src]=(missingByFile[src]||0)+1;
   });
   _showImgCountMismatchModal(clashCount,declaredImages,missingByFile,mode);
@@ -7401,10 +7433,14 @@ function _showImgCountMismatchModal(clashCount,declaredImages,missingByFile,mode
   const _entries=Object.entries(_mbf).sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0]));
   const _visible=_entries.slice(0,20);
   const _overflow=_entries.length-_visible.length;
+  /* SOURCEFILE-FULLPATH: keys can be long relative paths like
+     "260601 FAB AMHS v 7 Clash test/99_ESMC_v_08_AMHS.xml". word-break
+     lets them wrap inside the 520px dialog instead of forcing horizontal
+     scroll or clipping the count on the right. */
   const _listHtml=_entries.length
     ? `<div style="margin-bottom:6px;font-weight:600;color:#475569">Missing viewpoints by file:</div>
        <div style="max-height:180px;overflow-y:auto;border:.5px solid #E5E7EB;border-radius:4px;background:#F8FAFC;padding:6px 10px;margin-bottom:12px;font-family:monospace;font-size:11px">
-         ${_visible.map(([f,n])=>`<div><span style="color:#0F1824">${esc(f)}</span> <span style="color:#64748B">— ${n} clash${n===1?'':'es'}</span></div>`).join('')}
+         ${_visible.map(([f,n])=>`<div style="word-break:break-all;margin-bottom:2px"><span style="color:#0F1824">${esc(f)}</span> <span style="color:#64748B;white-space:nowrap">— ${n} clash${n===1?'':'es'}</span></div>`).join('')}
          ${_overflow>0?`<div style="color:#64748B;margin-top:4px">…and ${_overflow} more file${_overflow===1?'':'s'}</div>`:''}
        </div>`
     : '';
