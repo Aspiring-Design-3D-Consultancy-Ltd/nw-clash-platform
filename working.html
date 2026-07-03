@@ -7323,46 +7323,51 @@ function _xtAuditConfirm(modalId){
 /* XTEST-DUP-AUDIT end */
 
 /* IMG-COUNT-CHECK start: pre-merge sanity check invoked in place of a
-   direct importToRegister call. Compares parsed clash count (_bcfC) to the
-   images extracted during this import (_bcfImgCount, set by loadNwImages).
-   Match → merge immediately. Mismatch → open IMG-COUNT-CHECK-MODAL for a
-   Cancel/Continue decision. Batches reset _bcfImgCount here so the next
-   batch starts self-contained regardless of which decision the user made.
-   Placed here so both parser 1 (batchParse) and parser 2 (bparse) share
-   a single choke point — every UI callsite (Append/Replace buttons,
-   folder-import loop) routes through this wrapper. */
+   direct importToRegister call. Reads each <clashresult>'s href attribute
+   captured at parse time as c.nwImageRef (parser 1 batchParse ~L6830,
+   parser 2 bparse ~L7102, both strip the folder prefix) and compares
+   declared images against total parsed clashes. Fires the modal when any
+   clash lacks an href — the semantic that maps to real Navisworks exports
+   (a clashresult without href = no viewpoint was captured in Navisworks
+   for that clash). Previous version compared _bcfC.length to _bcfImgCount
+   (set only by the Load NWC Images folder picker) and produced a false
+   positive on every XML import that didn't have pre-loaded images.
+   _bcfImgCount is left alone here — it belongs to the separate Load NWC
+   Images flow, not this check.
+   Placed here so both parsers share a single choke point — every UI
+   callsite (Append/Replace buttons, folder-import loop) routes through
+   this wrapper. */
 function _importToRegisterChecked(mode){
   const clashCount=(_bcfC||[]).length;
-  const imageCount=_bcfImgCount||0;
-  _bcfImgCount=0;
-  if(clashCount===imageCount){
+  const declaredImages=(_bcfC||[]).filter(c=>c&&c.nwImageRef).length;
+  const missing=clashCount-declaredImages;
+  if(missing<=0){
     importToRegister(mode);
     return;
   }
-  _showImgCountMismatchModal(clashCount,imageCount,mode);
+  _showImgCountMismatchModal(clashCount,declaredImages,mode);
 }
 /* IMG-COUNT-CHECK end */
 /* IMG-COUNT-CHECK-MODAL start: blocking dialog fired by
-   _importToRegisterChecked on a clash/image count asymmetry. Cancel
-   discards the parsed batch (clears _bcfC + the preview UI) so the user
-   can re-export from Navisworks with viewpoints enabled. Continue merges
-   anyway with a metadata flag stamped onto the imports[] event so the
-   Data Manager surfaces which batches shipped without full image
-   coverage. Meta is threaded via window._imgMismatchMeta and consumed
-   exactly once by importToRegister's imports[] push. */
-function _showImgCountMismatchModal(clashCount,imageCount,mode){
+   _importToRegisterChecked when some parsed clashes have no href attribute
+   (no viewpoint captured in Navisworks). Cancel discards the parsed batch
+   (clears _bcfC + the preview UI) so the user can re-export with
+   viewpoints; Continue merges anyway and stamps window._imgMismatchMeta
+   onto the next imports[] push. Meta is consumed exactly once by
+   importToRegister so the Data Manager surfaces which batches shipped
+   with missing viewpoints. */
+function _showImgCountMismatchModal(clashCount,declaredImages,mode){
   const existing=document.getElementById('img-count-check-modal');
   if(existing)existing.remove();
-  const diff=Math.abs(clashCount-imageCount);
+  const missing=clashCount-declaredImages;
   const wrap=document.createElement('div');
   wrap.id='img-count-check-modal';
   wrap.style.cssText='position:fixed;inset:0;background:rgba(15,24,36,.6);z-index:9998;display:flex;align-items:center;justify-content:center;font-family:Arial,sans-serif';
   wrap.innerHTML=`<div role="dialog" aria-modal="true" style="background:#fff;border-radius:8px;max-width:520px;width:calc(100% - 40px);box-shadow:0 20px 60px rgba(0,0,0,.35);overflow:hidden">
-    <div style="padding:16px 22px;border-bottom:1px solid #E5E7EB;background:#FEF3C7;color:#92400E;font-weight:700;font-size:14px">⚠ Image count mismatch</div>
+    <div style="padding:16px 22px;border-bottom:1px solid #E5E7EB;background:#FEF3C7;color:#92400E;font-weight:700;font-size:14px">⚠ Missing clash viewpoints</div>
     <div style="padding:18px 22px;color:#0F1824;font-size:12px;line-height:1.6">
-      <div style="margin-bottom:10px">This import parsed <strong>${clashCount} clash${clashCount===1?'':'es'}</strong> but <strong>${imageCount} image${imageCount===1?'':'s'}</strong>.</div>
-      <div style="margin-bottom:10px">Expected: 1 image per clash. The difference of <strong>${diff}</strong> suggests either the Navisworks export was missing viewpoints, or some image blobs failed to store.</div>
-      <div style="color:#475569">Cancel to review the XML export settings in Navisworks (ensure <em>'Include Clash Viewpoints'</em> is enabled).<br>Continue to append anyway (clashes without images will show broken thumbnails).</div>
+      <div style="margin-bottom:10px"><strong>${missing} of ${clashCount}</strong> clash${clashCount===1?'':'es'} in this XML have no image reference (no viewpoint captured in Navisworks).</div>
+      <div style="color:#475569">Continue anyway to append them (those clashes will show a placeholder thumbnail) or Cancel to re-export with viewpoints for every clash.</div>
     </div>
     <div style="padding:14px 22px;border-top:1px solid #E5E7EB;display:flex;justify-content:flex-end;gap:8px;background:#F8FAFC">
       <button id="img-count-check-cancel" style="background:#fff;border:1px solid #CBD5E1;color:#1E293B;padding:8px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Cancel</button>
@@ -7377,12 +7382,12 @@ function _showImgCountMismatchModal(clashCount,imageCount,mode){
     _bcfC=[];
     const bres=document.getElementById('bres');if(bres)bres.style.display='none';
     const bimp=document.getElementById('bimport');if(bimp)bimp.style.display='none';
-    if(typeof bmsg==='function')bmsg('Import cancelled — image count mismatch. Re-export from Navisworks with viewpoints enabled and try again.','#EA580C');
-    if(typeof showToast==='function')showToast(`Import cancelled: ${clashCount} clashes vs ${imageCount} images`,5000);
+    if(typeof bmsg==='function')bmsg('Import cancelled — clash viewpoints missing. Re-export from Navisworks with viewpoints enabled and try again.','#EA580C');
+    if(typeof showToast==='function')showToast(`Import cancelled: ${missing} of ${clashCount} clashes had no image reference`,5000);
   });
   document.getElementById('img-count-check-continue').addEventListener('click',()=>{
     close();
-    window._imgMismatchMeta={imageCountMismatch:true,clashCount,imageCount};
+    window._imgMismatchMeta={imageCountMismatch:true,clashCount,declaredImages,missing};
     importToRegister(mode);
   });
 }
@@ -7836,11 +7841,14 @@ function importToRegister(mode){
             files:[displayName]
           };
           /* IMG-COUNT-CHECK: stamp the mismatch on every per-file entry
-             of this batch — a single Continue click covers them all. */
+             of this batch — a single Continue click covers them all.
+             declaredImages / missing replace the earlier imageCount
+             field so the Data Manager records the href-based semantic. */
           if(_imgMm){
             _entry.imageCountMismatch=true;
             _entry.clashCount=_imgMm.clashCount;
-            _entry.imageCount=_imgMm.imageCount;
+            _entry.declaredImages=_imgMm.declaredImages;
+            _entry.missing=_imgMm.missing;
           }
           cur.imports.push(_entry);
         });
@@ -7850,7 +7858,8 @@ function importToRegister(mode){
         if(_imgMm){
           _entry.imageCountMismatch=true;
           _entry.clashCount=_imgMm.clashCount;
-          _entry.imageCount=_imgMm.imageCount;
+          _entry.declaredImages=_imgMm.declaredImages;
+          _entry.missing=_imgMm.missing;
         }
         cur.imports.push(_entry);
       }
