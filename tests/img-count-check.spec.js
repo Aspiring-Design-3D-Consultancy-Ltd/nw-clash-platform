@@ -202,9 +202,11 @@ test.describe('IMG-COUNT-CHECK (href-based)', () => {
 
     await page.evaluate(({ a, b, c }) => {
       const capture = (xml, sf) => {
+        _bcfFileNames = [sf];
+        _bcfFilePaths = [sf]; // SOURCEFILE-FULLPATH: leaf == path when no dir picker
         document.getElementById('bxml').value = xml;
         bparse();
-        return _bcfC.slice().map(clash => ({ ...clash, sourceFile: sf }));
+        return _bcfC.slice();
       };
       const partsA = capture(a, 'A.xml');
       const partsB = capture(b, 'B.xml');
@@ -346,5 +348,78 @@ test.describe('IMG-COUNT-CHECK (href-based)', () => {
       [...new Set(_bcfC.map(c => c.sourceFile))]
     );
     expect(sourceFiles).toEqual(['pasted']);
+  });
+
+  test('SOURCEFILE-FULLPATH — same-named files at different paths disambiguate in the modal + imports[]', async ({ page }) => {
+    // Simulates the archived weekly-folder layout the production user hit:
+    //   Clash Tests/weekA/test.xml
+    //   Clash Tests/weekB/test.xml
+    //   Clash Tests/weekC/test.xml
+    // All three files share the leaf name "test.xml" but sit at distinct
+    // webkitRelativePaths. Pre-fix behaviour collapsed them into a single
+    // "test.xml — N clashes" row; this asserts the modal now shows the
+    // path-scoped rows.
+    await bootstrap(page);
+
+    const XML_A = makeXml(5, 3, '[H] Week A', 'A');   // 5 clashes, 3 hrefs → 2 missing
+    const XML_B = makeXml(5, 4, '[H] Week B', 'B');   // 5 clashes, 4 hrefs → 1 missing
+    const XML_C = makeXml(5, 5, '[H] Week C', 'C');   // 5 clashes, 5 hrefs → 0 missing (fully covered)
+
+    await page.evaluate(({ a, b, c }) => {
+      const parseFile = (xml, filename, path) => {
+        _bcfFileNames = [filename];
+        _bcfFilePaths = [path];
+        document.getElementById('bxml').value = xml;
+        bparse();
+        return _bcfC.slice();
+      };
+      const partsA = parseFile(a, 'test.xml', 'weekA/test.xml');
+      const partsB = parseFile(b, 'test.xml', 'weekB/test.xml');
+      const partsC = parseFile(c, 'test.xml', 'weekC/test.xml');
+      _bcfC = [...partsA, ...partsB, ...partsC];
+      window._skipCrossTestDupes = true;
+      _importToRegisterChecked('append');
+    }, { a: XML_A, b: XML_B, c: XML_C });
+
+    // Sanity: every parsed clash carries the correct sourceFilePath while
+    // sourceFile stays at the leaf name (backwards-compat contract).
+    const parsed = await page.evaluate(() => {
+      const summary = {};
+      _bcfC.forEach(c => {
+        summary[c.sourceFilePath] = (summary[c.sourceFilePath] || 0) + 1;
+      });
+      return {
+        summary,
+        allLeaves: [...new Set(_bcfC.map(c => c.sourceFile))],
+      };
+    });
+    expect(parsed.summary).toEqual({
+      'weekA/test.xml': 5,
+      'weekB/test.xml': 5,
+      'weekC/test.xml': 5,
+    });
+    expect(parsed.allLeaves).toEqual(['test.xml']);
+
+    const modal = page.locator('#img-count-check-modal');
+    await expect(modal).toBeVisible();
+    // Total: 15 clashes, 12 declared → 3 missing.
+    await expect(modal).toContainText('3 of 15');
+    // Path-scoped rows appear; weekC (fully covered) does NOT.
+    await expect(modal).toContainText('weekA/test.xml');
+    await expect(modal).toContainText('2 clashes');
+    await expect(modal).toContainText('weekB/test.xml');
+    await expect(modal).toContainText('1 clash');
+    await expect(modal.locator('text=weekC/')).toHaveCount(0);
+
+    await page.locator('#img-count-check-continue').click();
+    const entry = await latestImportEntry(page);
+    // Full unfiltered map on imports[] uses path keys, not leaf names.
+    expect(entry?.missingByFile).toEqual({
+      'weekA/test.xml': 2,
+      'weekB/test.xml': 1,
+    });
+    // Explicit negative: no leaf-only 'test.xml' key from the pre-fix
+    // grouping should survive.
+    expect(entry?.missingByFile).not.toHaveProperty('test.xml');
   });
 });
