@@ -395,6 +395,9 @@ tbody td:last-child{border-right:none;}
       <!-- REVIEW-QUEUE-TAB start: nav entry + badge for disappeared-clash queue -->
       <div class="na" id="na-review" onclick="nav('review')"><span class="ni">🔍</span>Review Queue<span class="na-badge" id="na-review-badge" hidden>0</span></div>
       <!-- REVIEW-QUEUE-TAB end -->
+      <!-- DEDUP-QUEUE-TAB start: nav entry + badge for candidate duplicate pairs -->
+      <div class="na" id="na-dedup" onclick="nav('dedup')"><span class="ni">🧬</span>Dedup Queue<span class="na-badge" id="na-dedup-badge" hidden>0</span></div>
+      <!-- DEDUP-QUEUE-TAB end -->
       <div class="nav-sec">Tools</div>
       <div class="na" id="na-bcf" onclick="nav('bcf')" data-minrole="manager"><span class="ni">⚡</span>BCF Generator</div>
       <div class="na" id="na-priority" onclick="nav('priority')"><span class="ni">⚖</span>Priority Guide</div>
@@ -965,6 +968,10 @@ async function initAuth(){
        across page loads. Set by REVIEW-QUEUE-DATE-GUARD when it fails
        closed; cleared when the next import resolves a date. */
     S.reviewQueueNoDateBanner=lv('reviewQueueNoDateBanner',false)===true;
+    /* DEDUP-QUEUE-DETECT: hydrate the persisted candidate queue so the
+       badge + view survive reloads. Defaults to [] on first launch. */
+    S.dedupQueue=lv('dedupQueue',[])||[];
+    if(!Array.isArray(S.dedupQueue))S.dedupQueue=[];
     // Only load demo data if nothing has EVER been saved (null = first launch).
     // An empty array [] means the user intentionally cleared their data — respect that.
     if(!Array.isArray(S.clashes)){S.clashes=DC.map(c=>({...c}));sv('clashes',S.clashes);_uid=104;}
@@ -1062,6 +1069,16 @@ async function initAuth(){
     });
     if(_sfCleaned)sv('clashes',S.clashes);
   }catch(e){console.warn('SOURCEFILE-FULLPATH-PERSIST back-fill error:',e);}
+  /* DEDUP-QUEUE-DETECT: one-shot initial scan so pre-existing register
+     duplicates surface without needing a fresh import. Runs once per
+     browser, gated on nw:dedupInitialScan. Idempotent — subsequent
+     scans are triggered by importToRegister via DEDUP-QUEUE-DETECT. */
+  try{
+    if(!localStorage.getItem('nw:dedupInitialScan')){
+      if(typeof scanForDedupCandidates==='function')scanForDedupCandidates();
+      localStorage.setItem('nw:dedupInitialScan','1');
+    }
+  }catch(e){console.warn('DEDUP-QUEUE-DETECT initial scan error:',e);}
   if(!S.pin){
     document.getElementById('ath').textContent='Set Up Your PIN';
     document.getElementById('asub').textContent='Choose a 4-digit PIN to protect your data';
@@ -1119,7 +1136,7 @@ function doLock(){
 }
 
 /* ═══════ NAV ═══════ */
-const VT={dashboard:'Dashboard',heatmap:'Spatial Heatmap',register:'Clash Register',board:'Board View',/* REVIEW-QUEUE-TAB */review:'Review Queue',bcf:'BCF Generator',priority:'Priority Guide',help:'User Guide',data:'Data Manager',settings:'Settings'};
+const VT={dashboard:'Dashboard',heatmap:'Spatial Heatmap',register:'Clash Register',board:'Board View',/* REVIEW-QUEUE-TAB */review:'Review Queue',/* DEDUP-QUEUE-TAB */dedup:'Dedup Queue',bcf:'BCF Generator',priority:'Priority Guide',help:'User Guide',data:'Data Manager',settings:'Settings'};
 const VA={
   dashboard:'<div style="display:flex;gap:6px"><button class="tbtn ac" onclick="exportReport(&apos;report&apos;)" style="flex:1;text-align:center">&#x1F4CB; Weekly Report</button><button class="tbtn" onclick="exportPPTX()" style="flex:1;text-align:center;background:#EA7600;color:#fff;border-color:#EA7600">&#x1F4CA; Export PPTX</button><button class="tbtn" onclick="closeApp()" style="flex:1;text-align:center;background:#475569;color:#fff;border-color:#475569">&#x2715; Close</button></div>',
   register:'<button class="tbtn tbtn-fw" onclick="showAF()">+ Add clash</button><button class="tbtn tbtn-fw" onclick="dlCSV()">&#x2193; CSV</button><button class="tbtn tbtn-fw" onclick="showBCFImportPanel()">&#x2191; BCF In</button><button class="tbtn tbtn-fw" onclick="dlBCF()">&#x2193; BCF Out</button><button class="tbtn tbtn-fw" onclick="showIsoRenameModal()">🏷 Rename Clashes</button>',
@@ -1142,7 +1159,7 @@ function nav(v){
   if(v==='heatmap')initHeatmap();
   if(v==='register')setTimeout(filterReg,0);
 }
-function rv(v){switch(v){case 'dashboard':return rDash();case 'heatmap':return rHeatmap();case 'register':return rReg();case 'board':return rBoard();/* REVIEW-QUEUE-VIEW */case 'review':return rReview();case 'bcf':return rBCF();case 'priority':return rPri();case 'help':return rHelp();case 'data':return rData();case 'settings':return rSet();default:return '';}}
+function rv(v){switch(v){case 'dashboard':return rDash();case 'heatmap':return rHeatmap();case 'register':return rReg();case 'board':return rBoard();/* REVIEW-QUEUE-VIEW */case 'review':return rReview();/* DEDUP-QUEUE-VIEW */case 'dedup':return rDedup();case 'bcf':return rBCF();case 'priority':return rPri();case 'help':return rHelp();case 'data':return rData();case 'settings':return rSet();default:return '';}}
 
 /* ═══════ SIDEBAR & STRIP ═══════ */
 function updSB(){
@@ -1160,6 +1177,14 @@ function updSB(){
     if(_rqN>0)_rqBadge.removeAttribute('hidden');else _rqBadge.setAttribute('hidden','');
   }
   /* REVIEW-QUEUE-TAB end */
+  /* DEDUP-QUEUE-TAB start: candidate pair count on the sidebar badge. */
+  const _dqBadge=document.getElementById('na-dedup-badge');
+  if(_dqBadge){
+    const _dqN=(Array.isArray(S.dedupQueue)?S.dedupQueue:[]).length;
+    _dqBadge.textContent=String(_dqN);
+    if(_dqN>0)_dqBadge.removeAttribute('hidden');else _dqBadge.setAttribute('hidden','');
+  }
+  /* DEDUP-QUEUE-TAB end */
 }
 function updSS(){
   ST.forEach(s=>{const el=document.getElementById('cn-'+s);if(el)el.textContent=(S.clashes||[]).filter(c=>c.status===s).length;});
@@ -6145,6 +6170,67 @@ function pairKey(c){
   return'LEGACY::'+(c.testName||'')+'::'+(c.nwOrig||'');
 }
 /* PAIR-ID-COMPOSITE-FALLBACK end */
+/* DEDUP-QUEUE-DETECT start: shared candidate-pair scanner. Same testName
+   + normalised sourceA/B basename + 1mm < euclidean ≤ 500mm + neither
+   clash already flagged dedupResolved. Called post-import (see the
+   IIFE in importToRegister after the merge sv) and from the one-shot
+   DEDUP-QUEUE initial-scan migration so pre-existing register dupes
+   surface without needing a new import. dedupPairId keys the pair by
+   (older uid, newer uid) so re-running the scan is idempotent — the
+   Set-based existing check skips pairs already in the queue.
+   Returns count of NEW candidates added. */
+function _dedupCoordNorm(s){return String(s||'').toLowerCase().replace(/\\/g,'/').replace(/^.*\//,'').trim();}
+function _dedupCellKey(x){return (x.testName||'')+'::'+_dedupCoordNorm(x.sourceA)+'::'+_dedupCoordNorm(x.sourceB);}
+function scanForDedupCandidates(){
+  if(!Array.isArray(S.clashes))return 0;
+  if(!Array.isArray(S.dedupQueue))S.dedupQueue=[];
+  // Prune queue entries whose uids no longer exist in the register
+  // (defensive: merge/keep-separate flows should already remove pairs
+  // but stale entries would freeze the badge count).
+  const _regUids=new Set(S.clashes.map(c=>c.uid));
+  S.dedupQueue=S.dedupQueue.filter(p=>_regUids.has(p.a)&&_regUids.has(p.b));
+  const _existing=new Set(S.dedupQueue.map(p=>p.a+'::'+p.b));
+  const buckets=new Map();
+  S.clashes.forEach(x=>{
+    if(x.dedupResolved===true||x.status==='Resolved')return;
+    const xn=typeof x.x==='number'?x.x:parseFloat(x.x);
+    const yn=typeof x.y==='number'?x.y:parseFloat(x.y);
+    const zn=typeof x.z==='number'?x.z:parseFloat(x.z);
+    if(!isFinite(xn)||!isFinite(yn)||!isFinite(zn))return;
+    if(!x.sourceA||!x.sourceB)return;
+    const k=_dedupCellKey(x);
+    let list=buckets.get(k);
+    if(!list){list=[];buckets.set(k,list);}
+    list.push({x:xn,y:yn,z:zn,ref:x});
+  });
+  const uidNum=u=>parseInt(String(u||'').replace(/\D/g,''),10)||0;
+  let added=0;
+  buckets.forEach(list=>{
+    for(let i=0;i<list.length;i++){
+      for(let j=i+1;j<list.length;j++){
+        const a=list[i],b=list[j];
+        const dx=a.x-b.x,dy=a.y-b.y,dz=a.z-b.z;
+        const d=Math.sqrt(dx*dx+dy*dy+dz*dz);
+        if(d<=1.0||d>500)continue;
+        const uidA=a.ref.uid,uidB=b.ref.uid;
+        const [older,newer]=uidNum(uidA)<=uidNum(uidB)?[uidA,uidB]:[uidB,uidA];
+        const pairKey2=older+'::'+newer;
+        if(_existing.has(pairKey2))continue;
+        S.dedupQueue.push({
+          dedupPairId:'dq-'+older+'-'+newer,
+          a:older,b:newer,
+          distMm:Math.round(d*100)/100,
+          detectedAt:new Date().toISOString(),
+        });
+        _existing.add(pairKey2);
+        added++;
+      }
+    }
+  });
+  sv('dedupQueue',S.dedupQueue);
+  return added;
+}
+/* DEDUP-QUEUE-DETECT end */
 function bmsg(t,c){const el=document.getElementById('bmsg');if(el){el.textContent=t;el.style.color=c||'#374151';}}
 
 function inferDisc(src,layer){
@@ -7662,6 +7748,54 @@ function importToRegister(mode){
     if(k&&!_existByKey.has(k))_existByKey.set(k,x);
   });
   /* PAIR-ID-COMPOSITE-FALLBACK-USE end */
+  /* PAIR-KEY-COORD-TIER start: strict coordinate-based auto-merge tier
+     inserted between COMP and LEGACY in the merge lookup order. Revit
+     Element IDs are re-assigned when source Revits republish (side A
+     shifts) and Muratec/AMHS .nwc GUIDs are re-issued (side B shifts)
+     which architecturally defeats PAIR-ID-MERGE across weekly imports.
+     Only stable identity across republishes: XYZ + testName + source
+     .nwc file. Auto-merge fires ONLY when: same testName, same sourceA
+     basename (case-insensitive), same sourceB basename, euclidean
+     distance ≤ 1.0mm. Anything looser goes to DEDUP-QUEUE-DETECT below
+     for human confirmation — no auto-merge above 1mm.
+     Merged clashes are stamped pairIdSource='coord' for downstream
+     diagnostics and their register coordinates are refreshed to the
+     incoming values so future coord matches stay aligned as source
+     models keep shifting. */
+  const _coordNorm=s=>String(s||'').toLowerCase().replace(/\\/g,'/').replace(/^.*\//,'').trim();
+  function _coordCellKey(testName,sourceA,sourceB){
+    return (testName||'')+'::'+_coordNorm(sourceA)+'::'+_coordNorm(sourceB);
+  }
+  const _existByCoord=new Map();
+  (S.clashes||[]).forEach(x=>{
+    if(x.status==='Resolved')return;
+    const xn=typeof x.x==='number'?x.x:parseFloat(x.x);
+    const yn=typeof x.y==='number'?x.y:parseFloat(x.y);
+    const zn=typeof x.z==='number'?x.z:parseFloat(x.z);
+    if(!isFinite(xn)||!isFinite(yn)||!isFinite(zn))return;
+    if(!x.sourceA||!x.sourceB)return;
+    const k=_coordCellKey(x.testName,x.sourceA,x.sourceB);
+    let list=_existByCoord.get(k);
+    if(!list){list=[];_existByCoord.set(k,list);}
+    list.push({x:xn,y:yn,z:zn,ref:x});
+  });
+  function _findCoordMatch(testName,sourceA,sourceB,x,y,z){
+    if(!sourceA||!sourceB)return null;
+    const cx=typeof x==='number'?x:parseFloat(x);
+    const cy=typeof y==='number'?y:parseFloat(y);
+    const cz=typeof z==='number'?z:parseFloat(z);
+    if(!isFinite(cx)||!isFinite(cy)||!isFinite(cz))return null;
+    const list=_existByCoord.get(_coordCellKey(testName,sourceA,sourceB));
+    if(!list)return null;
+    for(const it of list){
+      const dx=it.x-cx, dy=it.y-cy, dz=it.z-cz;
+      const d=Math.sqrt(dx*dx+dy*dy+dz*dz);
+      if(d<=1.0)return it.ref;
+    }
+    return null;
+  }
+  let _coordAutoMergedCount=0;
+  /* PAIR-KEY-COORD-TIER end */
 
   _bcfC.forEach(c=>{
     /* PAIR-ID-MERGE start: match incoming clash to an existing register entry
@@ -7686,9 +7820,19 @@ function importToRegister(mode){
       testName:c.tn||'',
       nwOrig:c.nwName||'',
     };
-    const exist=_existByKey.get(pairKey(_incoming))||null;
+    const _idcompExist=_existByKey.get(pairKey(_incoming))||null;
     /* PAIR-ID-COMPOSITE-FALLBACK-USE end */
     /* PAIR-ID-MERGE end */
+    /* PAIR-KEY-COORD-TIER-USE start: fall-through coord match when the
+       ID/COMP/LEGACY tiers all missed. Runs only when both sources +
+       valid coords are present; skips otherwise. */
+    let _coordExist=null;
+    if(!_idcompExist){
+      _coordExist=_findCoordMatch(c.tn,(c.eA&&c.eA.source)||'',(c.eB&&c.eB.source)||'',c.x,c.y,c.z);
+      if(_coordExist)_coordAutoMergedCount++;
+    }
+    const exist=_idcompExist||_coordExist;
+    /* PAIR-KEY-COORD-TIER-USE end */
 
     if(exist&&mode==='append'){
       /* PAIR-ID-RESOLVED-COUNT start: record that this existing clash got
@@ -7711,6 +7855,16 @@ function importToRegister(mode){
       }
       exist.status=c.mappedSt;// NW is the authoritative source for clash status
       if(geomChanged){exist.penetration=newPen;exist.x=c.x;exist.y=c.y;exist.z=c.z;}
+      /* PAIR-KEY-COORD-TIER-USE: stamp tier + refresh coordinates when the
+         match came from the coord fall-through (source-model republishing
+         shifts elements slowly over time — keep the register aligned so
+         next week's ≤1mm match still fires). */
+      if(_coordExist&&!_idcompExist){
+        exist.pairIdSource='coord';
+        if(typeof c.x==='number')exist.x=c.x;
+        if(typeof c.y==='number')exist.y=c.y;
+        if(typeof c.z==='number')exist.z=c.z;
+      }
       /* IMG-REF-REFRESH start: Navisworks renumbers cdNNNNNN.jpg across exports —
          the same logical clash (matched by testName::nwName here) can carry a
          different href filename in each weekly XML (e.g. Clash1 was cd000148.jpg
@@ -7798,6 +7952,18 @@ function importToRegister(mode){
   });
 
   sv('clashes',S.clashes);
+  /* DEDUP-QUEUE-DETECT start: scan the post-merge register for candidate
+     duplicate pairs and stash per-batch counts for the imports[] event
+     log. Auto-merges from PAIR-KEY-COORD-TIER were already applied above;
+     these are the >1mm-to-500mm pairs that need human confirmation via
+     the Dedup Queue tab. */
+  let _dqCandidatesAdded=0;
+  if(mode==='append'){
+    try{_dqCandidatesAdded=scanForDedupCandidates();}
+    catch(e){console.warn('DEDUP-QUEUE-DETECT scan error:',e);}
+  }
+  window._dqBatchMeta={autoMerged:(typeof _coordAutoMergedCount==='number'?_coordAutoMergedCount:0),candidatesAdded:_dqCandidatesAdded};
+  /* DEDUP-QUEUE-DETECT end */
   /* PAIR-ID-RESOLVED-COUNT start: compute disappeared count = pre-existing
      UIDs in batch's tests that weren't matched by any incoming clash. Stored
      for downstream toast + success card + per-import log entry. Append mode
@@ -7944,6 +8110,10 @@ function importToRegister(mode){
          Meta is cleared after read regardless of downstream branch. */
       const _imgMm=(window._imgMismatchMeta&&window._imgMismatchMeta.imageCountMismatch)?window._imgMismatchMeta:null;
       window._imgMismatchMeta=null;
+      /* DEDUP-QUEUE-DETECT: consume the one-shot batch meta stashed by
+         the post-merge scan. Records per-batch counts for later audit. */
+      const _dqM=window._dqBatchMeta||null;
+      window._dqBatchMeta=null;
       if(_perFileKeys.length){
         const _atIso=new Date().toISOString();
         _perFileKeys.forEach(sf=>{
@@ -7977,6 +8147,11 @@ function importToRegister(mode){
             _entry.missing=_imgMm.missing;
             if(_imgMm.missingByFile)_entry.missingByFile=_imgMm.missingByFile;
           }
+          /* DEDUP-QUEUE-DETECT: coordAutoMerged / dedupCandidates per file. */
+          if(_dqM){
+            _entry.coordAutoMerged=_dqM.autoMerged||0;
+            _entry.dedupCandidates=_dqM.candidatesAdded||0;
+          }
           cur.imports.push(_entry);
         });
       } else {
@@ -7988,6 +8163,11 @@ function importToRegister(mode){
           _entry.declaredImages=_imgMm.declaredImages;
           _entry.missing=_imgMm.missing;
           if(_imgMm.missingByFile)_entry.missingByFile=_imgMm.missingByFile;
+        }
+        /* DEDUP-QUEUE-DETECT: single-entry fallback. */
+        if(_dqM){
+          _entry.coordAutoMerged=_dqM.autoMerged||0;
+          _entry.dedupCandidates=_dqM.candidatesAdded||0;
         }
         cur.imports.push(_entry);
       }
@@ -8204,6 +8384,127 @@ function reviewQueueResolveGroup(tn){
   updSB();updSS();nav('review');
 }
 /* REVIEW-QUEUE-ACTIONS end */
+
+/* DEDUP-QUEUE-VIEW start: side-by-side render of every candidate pair in
+   S.dedupQueue. Each pair shows both clashes (older on the left, newer
+   on the right) with element data, coordinates, distance, and a status/
+   priority strip. Empty state renders when the queue is empty. Image
+   thumbnails are deferred — the async IDB round-trip would fight the
+   synchronous render function; a follow-up can hook via getNwImgHtml. */
+function rDedup(){
+  const queue=Array.isArray(S.dedupQueue)?S.dedupQueue:[];
+  const cs=S.clashes||[];
+  const byUid=new Map(cs.map(c=>[c.uid,c]));
+  // Filter out pairs whose clashes vanished from the register (defensive
+  // — the scan already prunes but a stale in-memory queue could linger).
+  const live=queue.filter(p=>byUid.has(p.a)&&byUid.has(p.b));
+  if(!live.length){
+    return `<div class="card" style="border-top:3px solid #00B050"><div class="cb" style="padding:24px;text-align:center">
+      <div style="font-size:14px;font-weight:700;color:#00B050;margin-bottom:6px">✓ Dedup Queue is empty</div>
+      <div style="font-size:11px;color:#64748B;line-height:1.6">Candidate duplicate pairs surface here after each import when two clashes with the same testName + source .nwc files sit between 1mm and 500mm apart. Nothing to review right now.</div>
+    </div></div>`;
+  }
+  const cell=(c)=>{
+    if(!c)return `<div style="padding:10px;color:#94A3B8">(missing)</div>`;
+    const st=nwc(c.status);
+    return `<div style="padding:10px;border:.5px solid var(--bd);border-radius:6px;background:#fff">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <span style="font-family:monospace;font-size:10px;color:var(--tm)">${esc(c.uid)}</span>
+        <span style="background:${st.bg};color:${st.c};font-size:9px;font-weight:700;padding:1px 6px;border-radius:3px">${esc(c.status||'—')}</span>
+      </div>
+      <div style="font-size:11px;font-weight:600;color:var(--t1);margin-bottom:4px">${esc(c.nwOrig||c.name||'')}</div>
+      <div style="font-size:10.5px;color:#475569;line-height:1.5">
+        <div><strong>Test:</strong> ${esc(c.testName||'')}</div>
+        <div><strong>A:</strong> ${esc(c.elementA||'')} <span style="color:#94A3B8">(${esc(c.sourceA||'')})</span></div>
+        <div><strong>B:</strong> ${esc(c.elementB||'')} <span style="color:#94A3B8">(${esc(c.sourceB||'')})</span></div>
+        <div><strong>XYZ:</strong> ${Number(c.x).toFixed(2)}, ${Number(c.y).toFixed(2)}, ${Number(c.z).toFixed(2)}</div>
+        <div><strong>Date:</strong> ${esc(c.date||'')}</div>
+        ${c.notes?`<div style="margin-top:4px;padding:4px 6px;background:#F8FAFC;border-left:2px solid #94A3B8;font-size:10px;color:#334155">${esc(c.notes)}</div>`:''}
+      </div>
+    </div>`;
+  };
+  const rows=live.map(p=>{
+    const a=byUid.get(p.a), b=byUid.get(p.b);
+    const pid=JSON.stringify(p.dedupPairId).replace(/"/g,'&quot;');
+    return `<div class="card" style="margin-bottom:10px;border-top:3px solid #EA7600" data-dedup-pair="${esc(p.dedupPairId)}">
+      <div class="ch">
+        <span class="ct">Candidate pair · <span style="color:#EA7600">${(p.distMm||0).toFixed(2)}mm apart</span></span>
+        <span style="font-size:10px;color:#64748B">Detected ${esc((p.detectedAt||'').slice(0,10))}</span>
+      </div>
+      <div class="cb" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        ${cell(a)}
+        ${cell(b)}
+      </div>
+      <div style="padding:10px 14px;border-top:.5px solid var(--bd);background:#F8FAFC;display:flex;justify-content:flex-end;gap:8px">
+        <button class="btn" onclick="dedupSkip(${pid})" style="font-size:11px">↷ Skip</button>
+        <button class="btn" onclick="dedupKeepSeparate(${pid})" style="font-size:11px">✗ Keep separate</button>
+        <button class="btn p" onclick="dedupMerge(${pid})" style="font-size:11px">✓ Merge (keep ${esc(a?a.uid:'')})</button>
+      </div>
+    </div>`;
+  }).join('');
+  return `
+    <div class="card" style="border-top:3px solid #EA7600;margin-bottom:9px"><div class="cb" style="padding:10px 14px">
+      <div style="font-size:12px;font-weight:700;color:#0F1824;margin-bottom:3px">${live.length} candidate pair${live.length===1?'':'s'} awaiting review</div>
+      <div style="font-size:10.5px;color:#64748B;line-height:1.5">These pairs share the same test and source .nwc files and sit between 1mm and 500mm apart — likely the same physical clash after model coordination shifted elements. Merge keeps the older record's uid / status / notes; Keep separate marks both records reviewed so they never re-surface.</div>
+    </div></div>
+    ${rows}
+  `;
+}
+/* DEDUP-QUEUE-VIEW end */
+/* DEDUP-QUEUE-ACTIONS start: Merge / Keep separate / Skip handlers.
+   Merge deletes the newer record from S.clashes, transfers its notes
+   into the older record with a merge banner, marks the older
+   dedupResolved=true, and drops the pair from the queue. Keep separate
+   marks both dedupResolved=true so the pair never re-appears. Skip is
+   a no-op (leaves the pair for later). Every path sv()s the register
+   and the queue, then re-renders. */
+function _dedupFindPair(pid){
+  const q=Array.isArray(S.dedupQueue)?S.dedupQueue:[];
+  const idx=q.findIndex(p=>p.dedupPairId===pid);
+  if(idx<0)return null;
+  return {idx,pair:q[idx]};
+}
+function _dedupRemovePair(pid){
+  if(!Array.isArray(S.dedupQueue))return;
+  S.dedupQueue=S.dedupQueue.filter(p=>p.dedupPairId!==pid);
+  sv('dedupQueue',S.dedupQueue);
+}
+function dedupMerge(pid){
+  const p=_dedupFindPair(pid);if(!p)return;
+  const cs=S.clashes||[];
+  const older=cs.find(c=>c.uid===p.pair.a);
+  const newer=cs.find(c=>c.uid===p.pair.b);
+  if(!older||!newer){_dedupRemovePair(pid);updSB();nav('dedup');return;}
+  if(newer.notes && newer.notes.trim()){
+    const banner='[Merged from '+newer.uid+' via Dedup Queue on '+new Date().toISOString().slice(0,10)+']';
+    older.notes=(older.notes?older.notes.trim()+'\n\n':'')+banner+'\n'+newer.notes.trim();
+  }
+  older.dedupResolved=true;
+  S.clashes=cs.filter(c=>c.uid!==newer.uid);
+  sv('clashes',S.clashes);
+  _dedupRemovePair(pid);
+  regenWeeklyFromRegister();
+  showToast('✓ Merged '+newer.uid+' into '+older.uid);
+  updSB();updSS();nav('dedup');
+}
+function dedupKeepSeparate(pid){
+  const p=_dedupFindPair(pid);if(!p)return;
+  const cs=S.clashes||[];
+  const a=cs.find(c=>c.uid===p.pair.a);
+  const b=cs.find(c=>c.uid===p.pair.b);
+  if(a)a.dedupResolved=true;
+  if(b)b.dedupResolved=true;
+  sv('clashes',S.clashes);
+  _dedupRemovePair(pid);
+  showToast('✗ Kept '+p.pair.a+' and '+p.pair.b+' as separate clashes');
+  updSB();nav('dedup');
+}
+function dedupSkip(pid){
+  const p=_dedupFindPair(pid);if(!p)return;
+  showToast('↷ Skipped — pair stays in the queue');
+  nav('dedup');
+}
+/* DEDUP-QUEUE-ACTIONS end */
 
 
 async function baianalyse(){
