@@ -11637,10 +11637,129 @@ async function chgPin(){
   S.pin=await hashPin(np);sv('pin',S.pin);['op','np','cp'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
   if(m){m.textContent='✓ PIN updated.';m.style.color='#007A38';}
 }
+/* WIPE-VERIFY start: fail-loud helpers for the two reset paths. The old
+   _wipeAllStorage / SELECTIVE-RESET both resolved silently on IDB open
+   error, transaction error, or the 3-second timeout — production incident:
+   after a reset that appeared successful, IndexedDB still held 10 stale
+   testName entries in the metadata record, which initNwImages revived on
+   reload; loadNwImages then summed counts across the ghosts and produced
+   count=5736 instead of 40 on the next image load. This block replaces
+   the silent-fail primitives with:
+     _closeSharedIdb()         — drop the module-level _idb handle so
+                                 deleteDatabase isn't blocked.
+     _deleteIdbDatabase(name)  — deleteDatabase promise that REJECTS on
+                                 error / blocked / timeout.
+     _clearIdbStores(name,ss)  — .clear() transaction that REJECTS on
+                                 error / timeout (partial-wipe path).
+     _verifyIdbEmpty(name,ss)  — reopen and assert getAllKeys()===[] on
+                                 each store; returns boolean.
+     _wipeIdbWithVerify(mode,stores) — dispatches full vs partial, verifies
+                                 afterwards, retries once, THROWS if the
+                                 second attempt also fails to verify. */
+function _closeSharedIdb(){
+  try{if(typeof _idb!=='undefined'&&_idb){try{_idb.close();}catch(e){}_idb=null;}}catch(e){}
+}
+function _deleteIdbDatabase(name,timeoutMs){
+  return new Promise((resolve,reject)=>{
+    let settled=false;
+    const done=fn=>{if(!settled){settled=true;fn();}};
+    _closeSharedIdb();
+    try{
+      const req=indexedDB.deleteDatabase(name);
+      req.onsuccess=()=>done(()=>resolve());
+      req.onerror=()=>done(()=>reject(new Error('deleteDatabase error: '+(req.error&&req.error.message||req.error||'unknown'))));
+      req.onblocked=()=>done(()=>reject(new Error('deleteDatabase blocked (another connection is holding '+name+' open)')));
+      setTimeout(()=>done(()=>reject(new Error('deleteDatabase timeout after '+(timeoutMs||3000)+'ms'))),timeoutMs||3000);
+    }catch(e){done(()=>reject(new Error('deleteDatabase threw: '+e.message)));}
+  });
+}
+function _clearIdbStores(name,storesWanted,timeoutMs){
+  return new Promise((resolve,reject)=>{
+    let settled=false;
+    const done=fn=>{if(!settled){settled=true;fn();}};
+    _closeSharedIdb();
+    try{
+      const req=indexedDB.open(name,2);
+      req.onsuccess=()=>{
+        const db=req.result;
+        try{
+          const stores=storesWanted.filter(s=>db.objectStoreNames.contains(s));
+          if(!stores.length){db.close();done(()=>resolve());return;}
+          const tx=db.transaction(stores,'readwrite');
+          stores.forEach(s=>tx.objectStore(s).clear());
+          tx.oncomplete=()=>{db.close();done(()=>resolve());};
+          tx.onerror=()=>{db.close();done(()=>reject(new Error('clear tx error: '+(tx.error&&tx.error.message||'unknown'))));};
+          tx.onabort=()=>{db.close();done(()=>reject(new Error('clear tx aborted: '+(tx.error&&tx.error.message||'unknown'))));};
+        }catch(e){try{db.close();}catch(_e){}done(()=>reject(new Error('clear inner: '+e.message)));}
+      };
+      req.onerror=()=>done(()=>reject(new Error('open for clear error: '+(req.error&&req.error.message||'unknown'))));
+      setTimeout(()=>done(()=>reject(new Error('clear timeout after '+(timeoutMs||3000)+'ms'))),timeoutMs||3000);
+    }catch(e){done(()=>reject(new Error('clear threw: '+e.message)));}
+  });
+}
+function _verifyIdbEmpty(name,storesWanted,timeoutMs){
+  return new Promise(resolve=>{
+    let settled=false;
+    const done=v=>{if(!settled){settled=true;resolve(v);}};
+    try{
+      const req=indexedDB.open(name,2);
+      req.onsuccess=()=>{
+        const db=req.result;
+        try{
+          const stores=storesWanted.filter(s=>db.objectStoreNames.contains(s));
+          if(!stores.length){db.close();done({ok:true});return;}
+          const tx=db.transaction(stores,'readonly');
+          const results={};
+          let pending=stores.length;
+          stores.forEach(s=>{
+            const kreq=tx.objectStore(s).getAllKeys();
+            kreq.onsuccess=()=>{
+              results[s]=(kreq.result||[]).length;
+              if(--pending===0){
+                db.close();
+                const bad=stores.filter(x=>results[x]>0);
+                done(bad.length?{ok:false,leftovers:results}:{ok:true});
+              }
+            };
+            kreq.onerror=()=>{db.close();done({ok:false,error:'getAllKeys error on '+s});};
+          });
+        }catch(e){try{db.close();}catch(_e){}done({ok:false,error:'verify inner: '+e.message});}
+      };
+      req.onerror=()=>done({ok:false,error:'verify open error'});
+      setTimeout(()=>done({ok:false,error:'verify timeout'}),timeoutMs||2000);
+    }catch(e){done({ok:false,error:'verify threw: '+e.message});}
+  });
+}
+async function _wipeIdbWithVerify(mode,storesWanted){
+  /* Full wipe (both stores) uses deleteDatabase — atomic. Partial wipe
+     (SELECTIVE-RESET picking only images OR only plans) has to use
+     .clear() to preserve the untouched store. Both branches verify with
+     getAllKeys() and retry ONCE before throwing. */
+  const stores=storesWanted&&storesWanted.length?storesWanted:['images','plans'];
+  for(let attempt=1;attempt<=2;attempt++){
+    try{
+      if(mode==='full'){
+        await _deleteIdbDatabase('NWClashImages',3000);
+      } else {
+        await _clearIdbStores('NWClashImages',stores,3000);
+      }
+    }catch(e){
+      if(attempt===2)throw new Error('IndexedDB wipe failed after retry: '+e.message);
+      continue;
+    }
+    const check=await _verifyIdbEmpty('NWClashImages',stores,2000);
+    if(check.ok)return;
+    if(attempt===2){
+      throw new Error('IndexedDB wipe verify failed: '+(check.error||('leftovers '+JSON.stringify(check.leftovers))));
+    }
+  }
+}
+/* WIPE-VERIFY end */
 /* RESET-HELPERS start: shared wipe + two top-level actions
    - _wipeAllStorage(clearPin): atomic teardown of localStorage and IDB.
-     Removes every nw:* key, optionally clears the Admin PIN, clears both
-     IndexedDB object stores (NWClashImages.images, .plans). Awaitable.
+     Removes every nw:* key, optionally clears the Admin PIN, deletes the
+     NWClashImages database (WIPE-VERIFY). Throws on IDB failure so the
+     caller can alert the user instead of silently reloading with ghosts.
    - factoryReset(): full wipe followed by demo dataset install.
    - clearAll():    full wipe, then persists empty arrays for clashes /
                     weekly so launch()'s demo-data fallback at lines ~953
@@ -11662,28 +11781,9 @@ async function _wipeAllStorage(clearPin){
   }catch(e){console.warn('_wipeAllStorage localStorage:',e);}
   // 3. Restore PIN if the user wants to keep it
   if(preservedPin)try{sv('pin',preservedPin);}catch(e){}
-  // 4. Clear both IDB stores inside a single transaction. 3-second safety
-  //    timeout so the UI never hangs if IDB itself stalls.
-  await new Promise(resolve=>{
-    try{
-      const req=indexedDB.open('NWClashImages',2);
-      req.onsuccess=()=>{
-        const db=req.result;
-        try{
-          const stores=[];
-          if(db.objectStoreNames.contains('images'))stores.push('images');
-          if(db.objectStoreNames.contains('plans'))stores.push('plans');
-          if(!stores.length){db.close();resolve();return;}
-          const tx=db.transaction(stores,'readwrite');
-          stores.forEach(s=>tx.objectStore(s).clear());
-          tx.oncomplete=()=>{db.close();resolve();};
-          tx.onerror=()=>{db.close();console.warn('_wipeAllStorage IDB tx:',tx.error);resolve();};
-        }catch(e){console.warn('_wipeAllStorage IDB inner:',e);db.close();resolve();}
-      };
-      req.onerror=()=>{console.warn('_wipeAllStorage IDB open:',req.error);resolve();};
-      setTimeout(resolve,3000);
-    }catch(e){console.warn('_wipeAllStorage IDB outer:',e);resolve();}
-  });
+  /* WIPE-VERIFY: deleteDatabase for atomic teardown; retry once + verify
+     inside the helper. Throws on failure — callers must catch and alert. */
+  await _wipeIdbWithVerify('full');
 }
 /* Retained: legacy quick-swap to demo dataset without wiping settings.
    Used by the checkDataFresh() banner ("Outdated demo data detected") to
@@ -11708,7 +11808,13 @@ async function factoryReset(){
   if(!confirm(msg))return;
   const clearPin=confirm('Also clear the Admin PIN?\n\nOK = clear the PIN (you\'ll set a new one on next launch)\nCancel = keep the current PIN');
   if(!confirm('Last chance — click Cancel if you have NOT exported your data via Backup JSON.\n\nClick OK to proceed with factory reset.'))return;
-  await _wipeAllStorage(clearPin);
+  /* WIPE-VERIFY: catch and surface — old code reloaded even when IDB
+     silently failed, which is how ghost image metadata survived resets. */
+  try{ await _wipeAllStorage(clearPin); }
+  catch(e){
+    alert('Factory reset FAILED — IndexedDB wipe could not be verified.\n\n'+e.message+'\n\nThe page will NOT reload. Try closing every other tab open on this file:// URL and running the reset again. If that doesn\'t help, open DevTools > Application > IndexedDB and delete NWClashImages manually before reloading.');
+    return;
+  }
   // Install demo data immediately so it lands in localStorage before reload.
   // launch() picks it up on reload via the normal lv('clashes') path.
   try{
@@ -11739,7 +11845,13 @@ async function clearAll(){
   if(!confirm(msg))return;
   const clearPin=confirm('Also clear the Admin PIN?\n\nOK = clear the PIN (you\'ll set a new one on next launch)\nCancel = keep the current PIN');
   if(!confirm('Last chance — click Cancel if you have NOT exported your data via Backup JSON.\n\nClick OK to proceed.'))return;
-  await _wipeAllStorage(clearPin);
+  /* WIPE-VERIFY: same fail-loud contract as factoryReset — abort the
+     reload if the IDB wipe couldn't be verified. */
+  try{ await _wipeAllStorage(clearPin); }
+  catch(e){
+    alert('Clear All FAILED — IndexedDB wipe could not be verified.\n\n'+e.message+'\n\nThe page will NOT reload. Try closing every other tab open on this file:// URL and running the reset again. If that doesn\'t help, open DevTools > Application > IndexedDB and delete NWClashImages manually before reloading.');
+    return;
+  }
   // Persist EMPTY arrays so launch()'s demo-data fallback (lines ~953/~1007)
   // sees Array.isArray(true) and skips installing the demo dataset.
   try{
@@ -12260,29 +12372,21 @@ async function _executeSelectiveReset(cats,modalId){
   //    installing the 104-clash demo dataset on next reload.
   if(lsKill.has('clashes')){try{sv('clashes',[]);}catch(e){}}
   if(lsKill.has('weekly')){try{sv('weekly',[]);}catch(e){}}
-  // 5) IDB wipes — single transaction across whichever stores are ticked.
-  //    3-second safety timeout mirrors _wipeAllStorage.
+  // 5) IDB wipes — route through the WIPE-VERIFY helper so a stalled or
+  //    errored transaction throws instead of silently proceeding to
+  //    reload. If BOTH stores are ticked, treat as a full wipe and use
+  //    deleteDatabase (atomic). If only one, .clear() with verify.
   if(killImages||killPlans){
-    await new Promise(resolve=>{
-      try{
-        const req=indexedDB.open('NWClashImages',2);
-        req.onsuccess=()=>{
-          const db=req.result;
-          try{
-            const stores=[];
-            if(killImages&&db.objectStoreNames.contains('images'))stores.push('images');
-            if(killPlans&&db.objectStoreNames.contains('plans'))stores.push('plans');
-            if(!stores.length){db.close();resolve();return;}
-            const tx=db.transaction(stores,'readwrite');
-            stores.forEach(s=>tx.objectStore(s).clear());
-            tx.oncomplete=()=>{db.close();resolve();};
-            tx.onerror=()=>{db.close();console.warn('selective-reset IDB tx:',tx.error);resolve();};
-          }catch(e){console.warn('selective-reset IDB inner:',e);db.close();resolve();}
-        };
-        req.onerror=()=>{console.warn('selective-reset IDB open:',req.error);resolve();};
-        setTimeout(resolve,3000);
-      }catch(e){console.warn('selective-reset IDB outer:',e);resolve();}
-    });
+    const _stores=[];
+    if(killImages)_stores.push('images');
+    if(killPlans)_stores.push('plans');
+    const _mode=(killImages&&killPlans)?'full':'partial';
+    try{
+      await _wipeIdbWithVerify(_mode,_stores);
+    }catch(e){
+      alert('Selective reset FAILED — IndexedDB wipe could not be verified.\n\n'+e.message+'\n\nThe page will NOT reload. Try closing every other tab open on this file:// URL and re-running the reset. If that doesn\'t help, open DevTools > Application > IndexedDB and delete NWClashImages manually before reloading.');
+      return;
+    }
   }
   alert('Selective reset complete. The page will reload.');
   location.reload();
