@@ -1048,6 +1048,20 @@ async function initAuth(){
     }
   }catch(e){console.warn('REVIEW-QUEUE-MIGRATE-DATE-GUARD-FIX error:',e);}
   /* REVIEW-QUEUE-MIGRATE-DATE-GUARD-FIX end */
+  /* SOURCEFILE-FULLPATH-PERSIST: back-fill clashes that were merged before
+     this fix shipped — they carry sourceFile (or nothing) but no
+     sourceFilePath. Set sourceFilePath := sourceFile so downstream code
+     sees one consistent field, never undefined. Idempotent — a subsequent
+     load with paths already set is a no-op. */
+  try{
+    let _sfCleaned=0;
+    (S.clashes||[]).forEach(c=>{
+      if(!c.sourceFilePath){
+        if(c.sourceFile){c.sourceFilePath=c.sourceFile;_sfCleaned++;}
+      }
+    });
+    if(_sfCleaned)sv('clashes',S.clashes);
+  }catch(e){console.warn('SOURCEFILE-FULLPATH-PERSIST back-fill error:',e);}
   if(!S.pin){
     document.getElementById('ath').textContent='Set Up Your PIN';
     document.getElementById('asub').textContent='Choose a 4-digit PIN to protect your data';
@@ -7711,6 +7725,14 @@ function importToRegister(mode){
       exist.nwImageRef=c.nwImageRef||'';
       if(typeof c.testIdx==='number')exist.testIdx=c.testIdx;
       /* IMG-REF-REFRESH end */
+      /* SOURCEFILE-FULLPATH-PERSIST: refresh sourceFile / sourceFilePath
+         on re-import so a clash first ingested via a paste (leaf-only)
+         and later re-imported via the folder picker learns the
+         weekly-scoped path. Guards against overwriting a known path
+         with a blank/undefined value from a hand-crafted re-import. */
+      if(c.sourceFile)exist.sourceFile=c.sourceFile;
+      if(c.sourceFilePath)exist.sourceFilePath=c.sourceFilePath;
+      else if(c.sourceFile&&!exist.sourceFilePath)exist.sourceFilePath=c.sourceFile;
       if(stChanged||geomChanged){updated++;/* DUP-FILES-FIX */_bumpPF(c,'updated');}else{unchanged++;/* DUP-FILES-FIX */_bumpPF(c,'unchanged');}
       return;
     }
@@ -7755,6 +7777,17 @@ function importToRegister(mode){
       date:c.nwCreated||dateStr,
       x:c.x,y:c.y,z:c.z,
       nwImageRef:c.nwImageRef||'',
+      /* SOURCEFILE-FULLPATH-PERSIST start: carry the parser's sourceFile
+         (leaf) and sourceFilePath (webkitRelativePath, or leaf fallback)
+         onto the register clash so downstream code — Data Manager
+         attribution, IMG-COUNT-CHECK-MODAL breakdown on a register-first
+         audit — can read one field consistently instead of undefined.
+         Fallback: sourceFilePath defaults to sourceFile when the parser
+         couldn't resolve a path (paste path or a browser without
+         webkitRelativePath support). */
+      sourceFile:c.sourceFile||'',
+      sourceFilePath:c.sourceFilePath||c.sourceFile||'',
+      /* SOURCEFILE-FULLPATH-PERSIST end */
       /* IMG-POS: persist positional index for later positional fallback lookup */
       testIdx:typeof c.testIdx==='number'?c.testIdx:undefined,
       /* STATUS-HIST: initial history entry */

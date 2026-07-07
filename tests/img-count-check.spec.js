@@ -422,4 +422,68 @@ test.describe('IMG-COUNT-CHECK (href-based)', () => {
     // grouping should survive.
     expect(entry?.missingByFile).not.toHaveProperty('test.xml');
   });
+
+  test('SOURCEFILE-FULLPATH-PERSIST — merge-copy carries sourceFile + sourceFilePath onto every S.clashes entry', async ({ page }) => {
+    // Regression against production: a 40-clash folder-import landed
+    // every register entry with sourceFilePath: undefined because the
+    // importToRegister push at ~L7725 never copied it. This asserts both
+    // fields survive the merge — the fully-covered case (no modal fires,
+    // straight to importToRegister).
+    await bootstrap(page);
+    const XML = makeXml(5, 5, '[H] Persist Test', 'P');
+    await page.evaluate((xml) => {
+      _bcfFileNames = ['ESMC_v_08_AMHS.xml'];
+      _bcfFilePaths = ['260601 FAB AMHS v 7 Clash test/ESMC_v_08_AMHS.xml'];
+      document.getElementById('bxml').value = xml;
+      bparse();
+      window._skipCrossTestDupes = true;
+      _importToRegisterChecked('append');
+    }, XML);
+    const registered = await page.evaluate(() => (S.clashes || []).map(c => ({
+      uid: c.uid,
+      sourceFile: c.sourceFile,
+      sourceFilePath: c.sourceFilePath,
+    })));
+    expect(registered.length).toBe(5);
+    for (const c of registered) {
+      expect(c.sourceFile).toBe('ESMC_v_08_AMHS.xml');
+      expect(c.sourceFilePath).toBe('260601 FAB AMHS v 7 Clash test/ESMC_v_08_AMHS.xml');
+    }
+  });
+
+  test('SOURCEFILE-FULLPATH-PERSIST — back-fill fills sourceFilePath from sourceFile on load for pre-fix registers', async ({ page }) => {
+    // Seed a register whose clashes were merged before this fix shipped:
+    // sourceFile set, sourceFilePath undefined. Then reload to trigger
+    // the init-path back-fill.
+    await page.goto(HTML, { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => typeof S !== 'undefined' && Array.isArray(S.clashes) && S.projName);
+    await page.evaluate(() => {
+      Object.keys(localStorage).filter(k => k.startsWith('nw:')).forEach(k => localStorage.removeItem(k));
+      localStorage.setItem('nw:reviewQueueScopeFixed', '1');
+      localStorage.setItem('nw:reviewQueueDateGuardFixed', '1');
+      // Match the current DATA_VERSION so initAuth loads our seed instead
+      // of the DC demo dataset (CLAUDE.md invariant — mirror, don't bump).
+      localStorage.setItem('nw:dataVersion', JSON.stringify('v4-correct-dates-jan25'));
+      const clashes = [
+        // Pre-fix shape: sourceFile set, sourceFilePath missing.
+        { uid: 'CLX-001', testName: 'T', nwOrig: 'C1', status: 'Active', sourceFile: 'legacy.xml' },
+        { uid: 'CLX-002', testName: 'T', nwOrig: 'C2', status: 'Active' }, // truly ancient, no sourceFile either
+      ];
+      localStorage.setItem('nw:clashes', JSON.stringify(clashes));
+    });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => (S.clashes || []).some(c => c.uid === 'CLX-001'));
+
+    const backfilled = await page.evaluate(() => S.clashes.map(c => ({
+      uid: c.uid,
+      sourceFile: c.sourceFile,
+      sourceFilePath: c.sourceFilePath,
+    })));
+    // CLX-001 gets its sourceFilePath back-filled from sourceFile.
+    expect(backfilled.find(c => c.uid === 'CLX-001').sourceFilePath).toBe('legacy.xml');
+    // CLX-002 has neither — no field to back-fill from; sourceFilePath
+    // stays undefined (won't cause the modal to break because
+    // _importToRegisterChecked reads from _bcfC, not S.clashes).
+    expect(backfilled.find(c => c.uid === 'CLX-002').sourceFilePath).toBeUndefined();
+  });
 });
