@@ -296,4 +296,180 @@ test.describe('RQ-NW-EXPORT', () => {
     expect(result.unmatchedNames).toHaveLength(1);
     expect(result.unmatchedNames[0].name).toBe('Clash1');
   });
+
+  // ── RQ-NW-EXPORT-BREAKDOWN + RQ-NW-EXPORT-DATE-MATCH ──────────────────
+  // The date-hinting phase. Groups pending clashes by (source basename,
+  // DD/MM/YY) so the user can see which weekly archive each cluster came
+  // from, then parses the first <createddate> from every provided file
+  // and renders a ✓/✗/⚠ table describing how well their selection covers
+  // the expected buckets.
+  function buildFixtureXmlDated(names, year, month, day, testName = 'GAS vs Structure') {
+    const results = names.map((n, i) => `      <clashresult name="${n}" href="files\\cd0000${(i+1).toString().padStart(2,'0')}.jpg" distance="-0.02">
+        <clashpoint><pos3f x="${100+i*3}" y="100" z="100"/></clashpoint>
+        <resultstatus>active</resultstatus>
+        <createddate><date year="${year}" month="${month}" day="${day}" hour="10" minute="0" second="0"/></createddate>
+        <clashobject>
+          <pathlink><node>ESMC.nwd</node><node>GAS_v_08_AMHS.nwc</node></pathlink>
+        </clashobject>
+        <clashobject>
+          <pathlink><node>ESMC.nwd</node><node>Structure.nwc</node></pathlink>
+        </clashobject>
+      </clashresult>`).join('\n');
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<exchange units="mm" filename="03_GAS_v_08_AMHS.xml">
+  <batchtest units="mm">
+    <clashtest name="${testName}">
+${results}
+    </clashtest>
+  </batchtest>
+</exchange>
+`;
+  }
+
+  // 5 pending clashes across 2 distinct dates from the same filename —
+  // BREAKDOWN must list both rows with the right per-date count.
+  test('RQ-NW-EXPORT-BREAKDOWN — groups Review Queue clashes by (source, date) and shows counts per group', async ({ page }) => {
+    await bootstrap(page);
+    await seed(page, [
+      { ...seedClash('CLX-101', 'Clash1'), date: '15/05/26' },
+      { ...seedClash('CLX-102', 'Clash2'), date: '15/05/26' },
+      { ...seedClash('CLX-103', 'Clash3'), date: '15/05/26' },
+      { ...seedClash('CLX-201', 'Clash4'), date: '22/05/26' },
+      { ...seedClash('CLX-202', 'Clash5'), date: '22/05/26' },
+    ]);
+
+    // Drive the grouper directly first — the render is a straight
+    // mapping over its output, so this pins the invariant.
+    const groups = await page.evaluate(() => {
+      const pending = (S.clashes || []).filter(c => c.pendingReview === true);
+      return _rqNwGroupByFileDate(pending).map(g => ({ base: g.base, date: g.date, count: g.count }));
+    });
+    expect(groups).toEqual([
+      { base: '03_gas_v_08_amhs.xml', date: '15/05/26', count: 3 },
+      { base: '03_gas_v_08_amhs.xml', date: '22/05/26', count: 2 },
+    ]);
+
+    // Modal renders both rows in date-ascending order.
+    await page.evaluate(() => showRqNwExportModal());
+    const breakdown = page.locator('#rq-nw-breakdown');
+    await expect(breakdown).toBeVisible();
+    await expect(breakdown).toContainText('15/05/26');
+    await expect(breakdown).toContainText('22/05/26');
+    await expect(breakdown).toContainText('3 clashes');
+    await expect(breakdown).toContainText('2 clashes');
+  });
+
+  // Provide the earlier week's XML only — DATE-MATCH shows ✓ for the
+  // 15/05 bucket and ✗ for the 22/05 bucket with the clash count that
+  // won't export.
+  test('RQ-NW-EXPORT-DATE-MATCH — ✓ for provided week, ✗ for missing week with clash count', async ({ page }) => {
+    await bootstrap(page);
+    await seed(page, [
+      { ...seedClash('CLX-101', 'Clash1'), date: '15/05/26' },
+      { ...seedClash('CLX-102', 'Clash2'), date: '15/05/26' },
+      { ...seedClash('CLX-103', 'Clash3'), date: '15/05/26' },
+      { ...seedClash('CLX-201', 'Clash4'), date: '22/05/26' },
+      { ...seedClash('CLX-202', 'Clash5'), date: '22/05/26' },
+    ]);
+    await page.evaluate(() => showRqNwExportModal());
+    const earlierXml = buildFixtureXmlDated(['Clash1', 'Clash2', 'Clash3'], 2026, 5, 15);
+    await page.locator('#rq-nw-file-input').setInputFiles({
+      name: '03_GAS_v_08_AMHS.xml',
+      mimeType: 'application/xml',
+      buffer: Buffer.from(earlierXml, 'utf-8'),
+    });
+    // Wait for the async parse+render to complete.
+    await page.waitForFunction(() => document.querySelector('#rq-nw-match-summary')?.innerHTML.length > 0);
+    const match = page.locator('#rq-nw-match-summary');
+    await expect(match).toContainText('✓');
+    await expect(match).toContainText('✗');
+    await expect(match).toContainText('15/05/26');
+    await expect(match).toContainText('matches 3 clashes');
+    await expect(match).toContainText('22/05/26');
+    await expect(match).toContainText('2 clashes will not export');
+    await expect(match).toContainText('1 of 2 expected weeks covered');
+  });
+
+  // Provide a file whose <createddate> doesn't match any expected date —
+  // DATE-MATCH ⚠'s the file with "wrong week?" copy.
+  test('RQ-NW-EXPORT-DATE-MATCH — ⚠ when a provided file\'s date isn\'t in the Review Queue', async ({ page }) => {
+    await bootstrap(page);
+    await seed(page, [
+      { ...seedClash('CLX-101', 'Clash1'), date: '15/05/26' },
+      { ...seedClash('CLX-102', 'Clash2'), date: '15/05/26' },
+    ]);
+    await page.evaluate(() => showRqNwExportModal());
+    // Provided file dated 08/07/26 — not in the queue. Different basename
+    // so Playwright's setInputFiles preserves both entries (browsers
+    // dedupe file inputs by name; distinct names sidestep that here).
+    const strayXml = buildFixtureXmlDated(['ClashX', 'ClashY'], 2026, 7, 8);
+    await page.locator('#rq-nw-file-input').setInputFiles([
+      // A correctly-dated file plus the stray so we get both ✓ and ⚠.
+      { name: '03_GAS_v_08_AMHS.xml', mimeType: 'application/xml',
+        buffer: Buffer.from(buildFixtureXmlDated(['Clash1', 'Clash2'], 2026, 5, 15), 'utf-8') },
+      { name: '05_HVAC_wrong_week.xml', mimeType: 'application/xml',
+        buffer: Buffer.from(strayXml, 'utf-8') },
+    ]);
+    await page.waitForFunction(() => document.querySelector('#rq-nw-match-summary')?.innerHTML.length > 0);
+    const match = page.locator('#rq-nw-match-summary');
+    await expect(match).toContainText('⚠');
+    await expect(match).toContainText('08/07/26');
+    await expect(match).toContainText('wrong week');
+    // The ✓ row for the good file is still there.
+    await expect(match).toContainText('✓');
+    await expect(match).toContainText('15/05/26');
+  });
+
+  // Provide files covering all expected dates — DATE-MATCH shows all ✓
+  // with no ✗ / no ⚠.
+  test('RQ-NW-EXPORT-DATE-MATCH — all dates covered, no ✗ / no ⚠ rows', async ({ page }) => {
+    await bootstrap(page);
+    await seed(page, [
+      { ...seedClash('CLX-101', 'Clash1'), date: '15/05/26' },
+      { ...seedClash('CLX-102', 'Clash2'), date: '15/05/26' },
+      { ...seedClash('CLX-201', 'Clash3'), date: '22/05/26' },
+    ]);
+    await page.evaluate(() => showRqNwExportModal());
+    await page.locator('#rq-nw-file-input').setInputFiles([
+      { name: '03_GAS_v_08_AMHS.xml', mimeType: 'application/xml',
+        buffer: Buffer.from(buildFixtureXmlDated(['Clash1', 'Clash2'], 2026, 5, 15), 'utf-8') },
+      { name: '03_GAS_v_08_AMHS.xml', mimeType: 'application/xml',
+        buffer: Buffer.from(buildFixtureXmlDated(['Clash3'], 2026, 5, 22), 'utf-8') },
+    ]);
+    await page.waitForFunction(() => document.querySelector('#rq-nw-match-summary')?.innerHTML.length > 0);
+    const summary = await page.locator('#rq-nw-match-summary').innerHTML();
+    expect(summary).toContain('All expected weeks covered');
+    expect(summary).toContain('2 of 2');
+    // No ✗ or ⚠ characters anywhere in the panel.
+    expect(summary).not.toContain('✗');
+    expect(summary).not.toContain('⚠');
+    expect((summary.match(/✓/g) || []).length).toBeGreaterThanOrEqual(2);
+  });
+
+  // Sanity: _rqNwParseFirstDate returns null on XMLs without a
+  // <createddate> so DATE-MATCH treats the file as "no matching clashes"
+  // rather than crashing.
+  test('RQ-NW-EXPORT-DATE-MATCH — files without <createddate> parse to null and surface as ⚠', async ({ page }) => {
+    await bootstrap(page);
+    await seed(page, [{ ...seedClash('CLX-001', 'Clash1'), date: '15/05/26' }]);
+    const noDateXml = `<?xml version="1.0" encoding="UTF-8"?>
+<exchange units="mm">
+  <batchtest units="mm">
+    <clashtest name="dated">
+      <clashresult name="Clash1"><clashpoint><pos3f x="0" y="0" z="0"/></clashpoint></clashresult>
+    </clashtest>
+  </batchtest>
+</exchange>`;
+    const parsed = await page.evaluate((xml) => _rqNwParseFirstDate(xml), noDateXml);
+    expect(parsed).toBeNull();
+    // And in the modal path — an ⚠ surfaces for the file.
+    await page.evaluate(() => showRqNwExportModal());
+    await page.locator('#rq-nw-file-input').setInputFiles({
+      name: 'no-date.xml',
+      mimeType: 'application/xml',
+      buffer: Buffer.from(noDateXml, 'utf-8'),
+    });
+    await page.waitForFunction(() => document.querySelector('#rq-nw-match-summary')?.innerHTML.length > 0);
+    await expect(page.locator('#rq-nw-match-summary')).toContainText('no <createddate> element found');
+  });
 });

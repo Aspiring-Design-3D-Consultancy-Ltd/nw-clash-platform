@@ -8487,6 +8487,123 @@ function _rqNwTodayStamp(){
   const dd=String(d.getDate()).padStart(2,'0');
   return `${y}${m}${dd}`;
 }
+/* RQ-NW-EXPORT-BREAKDOWN start: (basename, date) grouping the modal shows
+   before the user picks any files. Production trigger: 86 clashes with the
+   same sourceFile spanning 9 distinct <createddate> values — the flat
+   file+count list gave the user no way to know which weekly archive
+   contained each cluster. Return shape is deterministic (sorted by date
+   ascending, unknown/no-date bucket last) so DATE-MATCH and the tests can
+   depend on a stable row order. */
+function _rqNwNormDate(s){
+  if(!s)return '';
+  const p=String(s).split(/[\/\-]/);
+  if(p.length!==3)return '';
+  const d=parseInt(p[0],10),m=parseInt(p[1],10),yr=parseInt(p[2],10);
+  if(!isFinite(d)||!isFinite(m)||!isFinite(yr))return '';
+  const yy=yr<100?yr:(yr%100);
+  return String(d).padStart(2,'0')+'/'+String(m).padStart(2,'0')+'/'+String(yy).padStart(2,'0');
+}
+function _rqNwSortKey(dateStr){
+  // Convert DD/MM/YY to a sortable YYYY-MM-DD key. Blank/unknown dates
+  // sort to the end via a Z-prefix so the BREAKDOWN + DATE-MATCH lists
+  // put dated rows first.
+  if(!dateStr)return 'Z';
+  const p=dateStr.split('/');
+  if(p.length!==3)return 'Z';
+  return '20'+p[2]+'-'+p[1]+'-'+p[0];
+}
+function _rqNwGroupByFileDate(pending){
+  const _p=Array.isArray(pending)?pending.filter(c=>c):[];
+  const groups=new Map();
+  _p.forEach(c=>{
+    const raw=c.sourceFilePath||c.sourceFile||'(unknown source)';
+    const base=_rqNwBasename(raw)||raw;
+    const date=_rqNwNormDate(c.date)||'';
+    const key=base+'::'+date;
+    if(!groups.has(key)){
+      groups.set(key,{base,path:raw,date,count:0,names:new Set()});
+    }
+    const g=groups.get(key);
+    g.count++;
+    if(c.nwOrig)g.names.add(c.nwOrig);
+  });
+  return [...groups.values()].sort((a,b)=>{
+    const sa=_rqNwSortKey(a.date), sb=_rqNwSortKey(b.date);
+    if(sa!==sb)return sa<sb?-1:1;
+    return a.base.localeCompare(b.base);
+  });
+}
+/* RQ-NW-EXPORT-BREAKDOWN end */
+/* RQ-NW-EXPORT-DATE-MATCH start: parse the first <createddate> element out
+   of a provided XML so we can tell the user, before the export runs,
+   whether their file selection covers every expected (basename, date)
+   bucket. Regex-based — the parsers extract the same data but require the
+   full XML DOM which is overkill for a single field. Returns DD/MM/YY or
+   null if no createddate element is present (in which case DATE-MATCH
+   falls back to a name-only ✓ if any clashresult name lines up). */
+function _rqNwParseFirstDate(xml){
+  if(!xml)return null;
+  const m=xml.match(/<createddate>\s*<date\b([^\/>]*)\/?>/);
+  if(!m)return null;
+  const attrs=m[1];
+  const y=attrs.match(/\byear\s*=\s*["'](\d+)["']/);
+  const mo=attrs.match(/\bmonth\s*=\s*["'](\d+)["']/);
+  const d=attrs.match(/\bday\s*=\s*["'](\d+)["']/);
+  if(!y||!mo||!d)return null;
+  const yr=parseInt(y[1],10);
+  const yy=(yr<100?yr:(yr%100));
+  return String(parseInt(d[1],10)).padStart(2,'0')+'/'
+        +String(parseInt(mo[1],10)).padStart(2,'0')+'/'
+        +String(yy).padStart(2,'0');
+}
+/* RQ-NW-EXPORT-DATE-MATCH: build the ✓/✗/⚠ rows the modal renders after
+   the user picks files. Return shape:
+     rows: Array<{ status:'ok'|'missing'|'extra', file, base, date, count, message }>
+     coveredExpected: number of expected buckets marked ✓
+     totalExpected:   number of expected buckets
+   `providedFiles` is an Array<{name, xml, date}>. */
+function _rqNwBuildDateMatch(pending,providedFiles){
+  const expected=_rqNwGroupByFileDate(pending);
+  const provided=(Array.isArray(providedFiles)?providedFiles:[]).map(p=>({
+    name:p.name,
+    base:_rqNwBasename(p.name)||String(p.name||''),
+    date:_rqNwNormDate(p.date||''),
+    xml:p.xml,
+  }));
+  const rows=[];
+  // Map provided (base,date) → provided-file entry so we can ✓ each
+  // expected bucket exactly once (multiple picks of the same file only
+  // count for the first). Also tracks which provided files ended up
+  // covering an expected bucket so we can flag the leftovers as ⚠.
+  const providedByKey=new Map();
+  provided.forEach(p=>{
+    const k=p.base+'::'+p.date;
+    if(!providedByKey.has(k))providedByKey.set(k,p);
+  });
+  const usedProvided=new Set();
+  let covered=0;
+  expected.forEach(e=>{
+    const k=e.base+'::'+e.date;
+    const hit=providedByKey.get(k);
+    if(hit){
+      covered++;
+      usedProvided.add(hit.name);
+      rows.push({status:'ok',file:hit.name,base:e.base,date:e.date,count:e.count,
+        message:`matches ${e.count} clash${e.count===1?'':'es'}`});
+    }else{
+      rows.push({status:'missing',file:null,base:e.base,date:e.date||'(no date)',count:e.count,
+        message:`${e.count} clash${e.count===1?'':'es'} will not export`});
+    }
+  });
+  // Anything the user provided that didn't fulfil an expected bucket.
+  provided.forEach(p=>{
+    if(usedProvided.has(p.name))return;
+    rows.push({status:'extra',file:p.name,base:p.base,date:p.date||'(no date)',count:0,
+      message:p.date?'no matching clashes (wrong week?)':'no <createddate> element found'});
+  });
+  return {rows,coveredExpected:covered,totalExpected:expected.length};
+}
+/* RQ-NW-EXPORT-DATE-MATCH end */
 /* RQ-NW-EXPORT-FILTER: scan xmlText once and return a Map<name, rawSpan>
    for every <clashresult> whose name attribute matches an entry in
    nameSet. Handles both self-closing (rare) and open/close forms.
@@ -8633,16 +8750,20 @@ function showRqNwExportModal(){
     if(typeof showToast==='function')showToast('Review Queue is empty — nothing to export');
     return;
   }
-  // Build the per-file summary the user sees on entry.
-  const byFile=new Map();
-  pending.forEach(c=>{
-    const raw=c.sourceFilePath||c.sourceFile||'(unknown source)';
-    const base=_rqNwBasename(raw)||raw;
-    if(!byFile.has(base))byFile.set(base,{path:raw,count:0});
-    byFile.get(base).count++;
-  });
-  const _fileRows=[...byFile.entries()].sort((a,b)=>b[1].count-a[1].count||a[0].localeCompare(b[0]))
-    .map(([base,info])=>`<div style="word-break:break-all;margin-bottom:2px"><span style="color:#0F1824">${esc(info.path||base)}</span> <span style="color:#64748B;white-space:nowrap">— ${info.count} clash${info.count===1?'':'es'}</span></div>`).join('');
+  /* RQ-NW-EXPORT-BREAKDOWN: (basename, date) rows the user sees on entry.
+     A single filename can span N weekly Navisworks exports (verified: 86
+     clashes / 1 filename / 9 distinct <createddate> values) — the flat
+     file+count list gave the user no way to tell which archives to grab.
+     Each row surfaces the source-file basename, the DD/MM/YY the clashes
+     inside it were authored on, and the count. `#rq-nw-breakdown` also
+     seeds the counts DATE-MATCH will compare against once files land. */
+  const _breakdownGroups=_rqNwGroupByFileDate(pending);
+  const _distinctFiles=new Set(_breakdownGroups.map(g=>g.base)).size;
+  const _breakdownRows=_breakdownGroups.map(g=>`<div style="word-break:break-all;margin-bottom:2px;display:flex;gap:8px;align-items:baseline">
+      <span style="color:#0F1824;flex:1;min-width:0;word-break:break-all">${esc(g.path||g.base)}</span>
+      <span style="color:#475569;white-space:nowrap;font-weight:600">${esc(g.date||'(no date)')}</span>
+      <span style="color:#64748B;white-space:nowrap">${g.count} clash${g.count===1?'':'es'}</span>
+    </div>`).join('');
   const existing=document.getElementById('rq-nw-export-modal');
   if(existing)existing.remove();
   const wrap=document.createElement('div');
@@ -8651,11 +8772,14 @@ function showRqNwExportModal(){
   wrap.innerHTML=`<div role="dialog" aria-modal="true" style="background:#fff;border-radius:8px;max-width:580px;width:calc(100% - 40px);max-height:calc(100vh - 40px);display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.35);overflow:hidden">
     <div style="padding:16px 22px;border-bottom:1px solid #E5E7EB;background:#0F1824;color:#fff;font-weight:700;font-size:14px;flex-shrink:0">↓ Export Review Queue for Navisworks review</div>
     <div id="rq-nw-modal-body" style="padding:18px 22px;color:#0F1824;font-size:12px;line-height:1.6;overflow-y:auto;flex:1 1 auto">
-      <div style="margin-bottom:10px">The <strong>${pending.length}</strong> clash${pending.length===1?'':'es'} in the Review Queue reference the following source XML file${byFile.size===1?'':'s'}:</div>
-      <div style="max-height:180px;overflow-y:auto;border:.5px solid #E5E7EB;border-radius:4px;background:#F8FAFC;padding:6px 10px;margin-bottom:14px;font-family:monospace;font-size:11px">${_fileRows}</div>
-      <div style="margin-bottom:10px;color:#475569">Provide the original Navisworks XML file${byFile.size===1?'':'s'} — the app will filter each one down to just the Review Queue clashes and produce a single combined XML for Navisworks import.</div>
+      <div style="margin-bottom:10px">This Review Queue references <strong>${pending.length}</strong> clash${pending.length===1?'':'es'} from ${_breakdownGroups.length} weekly export${_breakdownGroups.length===1?'':'s'}${_distinctFiles>1?` across ${_distinctFiles} source files`:''}:</div>
+      <div id="rq-nw-breakdown" style="max-height:180px;overflow-y:auto;border:.5px solid #E5E7EB;border-radius:4px;background:#F8FAFC;padding:6px 10px;margin-bottom:14px;font-family:monospace;font-size:11px">${_breakdownRows}</div>
+      <div style="margin-bottom:10px;color:#475569">Provide the original Navisworks XML file${_breakdownGroups.length===1?'':'s'} matching the${_breakdownGroups.length===1?'':' se'} date${_breakdownGroups.length===1?'':'s'}. The app will filter each one down to just the Review Queue clashes and produce a single combined XML for Navisworks import.</div>
       <div style="margin-bottom:6px"><input type="file" id="rq-nw-file-input" accept=".xml,text/xml,application/xml" multiple style="font-size:12px"></div>
       <div id="rq-nw-file-status" style="font-size:11px;color:#64748B;margin-top:6px">No files chosen yet.</div>
+      <!-- RQ-NW-EXPORT-DATE-MATCH: ✓/✗/⚠ summary rendered after files are
+           picked. Empty until _rqNwRenderDateMatch() populates it. -->
+      <div id="rq-nw-match-summary" style="margin-top:10px"></div>
     </div>
     <div id="rq-nw-modal-footer" style="padding:14px 22px;border-top:1px solid #E5E7EB;display:flex;justify-content:flex-end;gap:8px;background:#F8FAFC;flex-shrink:0">
       <button id="rq-nw-cancel" style="background:#fff;border:1px solid #CBD5E1;color:#1E293B;padding:8px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Cancel</button>
@@ -8672,30 +8796,80 @@ function showRqNwExportModal(){
   document.getElementById('rq-nw-cancel').addEventListener('click',close);
   const fileInput=document.getElementById('rq-nw-file-input');
   const statusEl=document.getElementById('rq-nw-file-status');
+  const matchEl=document.getElementById('rq-nw-match-summary');
   const exportBtn=document.getElementById('rq-nw-export');
-  let picked=[]; // Array<File>
-  fileInput.addEventListener('change',()=>{
-    picked=[...(fileInput.files||[])];
-    if(picked.length){
-      statusEl.textContent=`${picked.length} file${picked.length===1?'':'s'} selected: ${picked.map(f=>f.name).join(', ')}`;
-      exportBtn.disabled=false;
-      exportBtn.style.background='#EA7600';
-      exportBtn.style.cursor='pointer';
-    }else{
+  // Cache of parsed file contents so Export doesn't re-read from disk
+  // after DATE-MATCH already did. Shape: Array<{name,xml,date}>.
+  let picked=[];
+  /* RQ-NW-EXPORT-DATE-MATCH: renderer for the ✓/✗/⚠ panel. Pulled out so
+     tests can drive it directly with a synthesised provided-files array. */
+  function _rqNwRenderDateMatch(providedFiles){
+    if(!providedFiles||!providedFiles.length){
+      matchEl.innerHTML='';return;
+    }
+    const {rows,coveredExpected,totalExpected}=_rqNwBuildDateMatch(pending,providedFiles);
+    const _row=(r)=>{
+      const icon=r.status==='ok'?'<span style="color:#16A34A;font-weight:700">✓</span>'
+                 :r.status==='missing'?'<span style="color:#DC2626;font-weight:700">✗</span>'
+                 :'<span style="color:#F59E0B;font-weight:700">⚠</span>';
+      const prefix=r.status==='missing'?'Missing: ':'';
+      const fileLabel=r.file||r.base;
+      return `<div style="display:flex;gap:8px;align-items:baseline;margin-bottom:2px;word-break:break-all">
+        <span style="width:14px;text-align:center;flex-shrink:0">${icon}</span>
+        <span style="color:#0F1824;flex:1;min-width:0">${esc(prefix+fileLabel)}</span>
+        <span style="color:#475569;white-space:nowrap;font-weight:600">${esc(r.date)}</span>
+        <span style="color:#64748B;white-space:nowrap">${esc(r.message)}</span>
+      </div>`;
+    };
+    const _summary=coveredExpected===totalExpected
+      ? `<div style="color:#166534;font-weight:600;margin-bottom:6px">✓ All expected weeks covered (${coveredExpected} of ${totalExpected})</div>`
+      : `<div style="color:#92400E;font-weight:600;margin-bottom:6px">⚠ ${coveredExpected} of ${totalExpected} expected week${totalExpected===1?'':'s'} covered — export will skip the missing rows</div>`;
+    matchEl.innerHTML=`<div style="border:.5px solid #E5E7EB;border-radius:4px;background:#FFFFFF;padding:8px 10px;font-family:monospace;font-size:11px">
+      ${_summary}
+      ${rows.map(_row).join('')}
+    </div>`;
+  }
+  window._rqNwRenderDateMatch=_rqNwRenderDateMatch;
+  fileInput.addEventListener('change',async()=>{
+    const files=[...(fileInput.files||[])];
+    if(!files.length){
+      picked=[];
       statusEl.textContent='No files chosen yet.';
+      matchEl.innerHTML='';
       exportBtn.disabled=true;
       exportBtn.style.background='#94A3B8';
       exportBtn.style.cursor='not-allowed';
+      return;
     }
+    statusEl.textContent=`Reading ${files.length} file${files.length===1?'':'s'}…`;
+    /* RQ-NW-EXPORT-DATE-MATCH: read each XML once, parse the first
+       <createddate>, and cache the raw text so Export doesn't re-read.
+       f.text() rejects only on read errors — the parseFirstDate step is
+       best-effort (falls to null and DATE-MATCH flags the row ⚠). */
+    const parsed=[];
+    for(const f of files){
+      let xml='';
+      try{ xml=await f.text(); }
+      catch(e){ console.warn('RQ-NW-EXPORT-DATE-MATCH read error:',f.name,e); xml=''; }
+      const date=_rqNwParseFirstDate(xml);
+      parsed.push({name:f.name,xml,date:date||''});
+    }
+    picked=parsed;
+    statusEl.textContent=`${files.length} file${files.length===1?'':'s'} selected: ${files.map(f=>f.name).join(', ')}`;
+    _rqNwRenderDateMatch(parsed);
+    exportBtn.disabled=false;
+    exportBtn.style.background='#EA7600';
+    exportBtn.style.cursor='pointer';
   });
   exportBtn.addEventListener('click',async()=>{
     if(!picked.length)return;
     exportBtn.disabled=true;exportBtn.textContent='Exporting…';
     try{
       const sourceMap=new Map();
-      for(const f of picked){
-        const text=await f.text();
-        sourceMap.set(f.name,text);
+      // picked is Array<{name,xml,date}> (cached from the DATE-MATCH
+      // parse step) so Export is instant even for many-MB weekly XMLs.
+      for(const p of picked){
+        sourceMap.set(p.name,p.xml);
       }
       const result=_rqNwBuildExportXml(pending,sourceMap);
       _rqNwRenderExportResult(result);
