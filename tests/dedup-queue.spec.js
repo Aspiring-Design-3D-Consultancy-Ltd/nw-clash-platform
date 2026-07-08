@@ -153,4 +153,113 @@ test.describe('DEDUP-QUEUE', () => {
     });
     await expect(page.locator('text=Dedup Queue is empty')).toBeVisible();
   });
+
+  test('DEDUP-QUEUE-IMAGES — both cells render <img> tags when nwImageRef + IDB blob are present', async ({ page }) => {
+    await bootstrap(page);
+    const pair = makePair();
+    pair[0].nwImageRef = 'clashA.jpg';
+    pair[1].nwImageRef = 'clashB.jpg';
+    await seed(page, pair);
+    // Seed the IDB image store the way loadNwImages does: idbPut per blob,
+    // set _nwImages composite key → idx, set _nwImgByTest per test.
+    await page.evaluate(async () => {
+      // Minimal 3-byte "base64" payload — the browser won't render it as
+      // an image but our assertions only care that the <img> tag is
+      // built with a data:image/jpeg;base64,... src.
+      await idbPut(1, 'AAAA'); // clashA.jpg blob
+      await idbPut(2, 'BBBB'); // clashB.jpg blob
+      _nwImages.set('[H] Dedup Test::clashA.jpg', 1);
+      _nwImages.set('[H] Dedup Test::clashB.jpg', 2);
+      _nwImagesByIndex[1] = 'AAAA';
+      _nwImagesByIndex[2] = 'BBBB';
+      _nwImgByTest['[H] Dedup Test'] = { firstIdx: 1, count: 2, filenames: ['clashA.jpg', 'clashB.jpg'] };
+      _nwImgCount = 2;
+    });
+    await page.evaluate(() => nav('dedup'));
+
+    const slots = page.locator('.dq-img[data-dq-uid]');
+    await expect(slots).toHaveCount(2);
+    // Wait for the async fill to swap the placeholder text for an <img>.
+    await page.waitForFunction(() => {
+      const s = document.querySelectorAll('.dq-img[data-dq-uid]');
+      return s.length === 2 && [...s].every(el => el.querySelector('img'));
+    });
+    const imgA = page.locator('.dq-img[data-dq-uid="CLX-001"] img');
+    const imgB = page.locator('.dq-img[data-dq-uid="CLX-002"] img');
+    await expect(imgA).toBeVisible();
+    await expect(imgB).toBeVisible();
+    const srcA = await imgA.getAttribute('src');
+    const srcB = await imgB.getAttribute('src');
+    expect(srcA).toMatch(/^data:image\/jpeg;base64,/);
+    expect(srcB).toMatch(/^data:image\/jpeg;base64,/);
+    // Sanity: the base64 payloads survive the round-trip unchanged.
+    expect(srcA.endsWith(',AAAA')).toBe(true);
+    expect(srcB.endsWith(',BBBB')).toBe(true);
+  });
+
+  test('DEDUP-QUEUE-IMAGES — placeholder renders on the side with no nwImageRef; the other side still renders <img>', async ({ page }) => {
+    await bootstrap(page);
+    const pair = makePair();
+    pair[0].nwImageRef = 'clashA.jpg';
+    pair[1].nwImageRef = ''; // no viewpoint captured on side B
+    await seed(page, pair);
+    await page.evaluate(async () => {
+      await idbPut(1, 'AAAA');
+      _nwImages.set('[H] Dedup Test::clashA.jpg', 1);
+      _nwImagesByIndex[1] = 'AAAA';
+      _nwImgByTest['[H] Dedup Test'] = { firstIdx: 1, count: 1, filenames: ['clashA.jpg'] };
+      _nwImgCount = 1;
+    });
+    await page.evaluate(() => nav('dedup'));
+
+    // Wait for the async fill to resolve at least one slot.
+    await page.waitForFunction(() => {
+      const a = document.querySelector('.dq-img[data-dq-uid="CLX-001"]');
+      const b = document.querySelector('.dq-img[data-dq-uid="CLX-002"]');
+      return a && b && (a.querySelector('img') || a.textContent.trim() === 'No viewpoint available')
+                    && (b.querySelector('img') || b.textContent.trim() === 'No viewpoint available');
+    });
+
+    const cellA = page.locator('.dq-img[data-dq-uid="CLX-001"]');
+    const cellB = page.locator('.dq-img[data-dq-uid="CLX-002"]');
+    await expect(cellA.locator('img')).toHaveCount(1);
+    await expect(cellB).toHaveText('No viewpoint available');
+  });
+
+  test('DEDUP-QUEUE-IMAGES — placeholder + no console errors when nwImageRef is set but the IDB blob is missing', async ({ page }) => {
+    const errors = [];
+    page.on('pageerror', e => errors.push(e.message));
+    page.on('console', m => {
+      if (m.type() !== 'error') return;
+      const text = m.text();
+      // Filter sandbox-level network noise (the pptx CDN loader at
+      // working.html:351 races the file:// bootstrap and reports a
+      // tunnel failure from the container's egress proxy — unrelated
+      // to the DEDUP-QUEUE-IMAGES path).
+      if (/ERR_TUNNEL_CONNECTION_FAILED|Failed to load resource/.test(text)) return;
+      errors.push(text);
+    });
+
+    await bootstrap(page);
+    const pair = makePair();
+    pair[0].nwImageRef = 'ghost.jpg'; // nwImageRef points nowhere
+    pair[1].nwImageRef = 'alsoGhost.jpg';
+    await seed(page, pair);
+    await page.evaluate(() => {
+      // _nwImgCount > 0 so getNwImageB64 doesn't short-circuit — but the
+      // composite key isn't in _nwImages, so idbGet is never called and
+      // the resolver returns null.
+      _nwImgCount = 1;
+    });
+    await page.evaluate(() => nav('dedup'));
+
+    await page.waitForFunction(() => {
+      const s = document.querySelectorAll('.dq-img[data-dq-uid]');
+      return s.length === 2 && [...s].every(el => el.textContent.trim() === 'No viewpoint available');
+    });
+
+    await expect(page.locator('.dq-img[data-dq-uid="CLX-001"]')).toHaveText('No viewpoint available');
+    await expect(page.locator('.dq-img[data-dq-uid="CLX-002"]')).toHaveText('No viewpoint available');
+    expect(errors).toEqual([]);
+  });
 });
