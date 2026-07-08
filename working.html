@@ -12870,6 +12870,26 @@ function _selectiveResetCategories(){
     {id:'weekly',  label:'Weekly snapshots',
       count:()=>`${(S.weekly||[]).length} weeks`,
       lsKeys:['weekly','week']},
+    /* SELECTIVE-RESET-DEDUP-RQ start: Dedup Queue + Review Queue workflow
+       keys. Path D (re-import from scratch) leaves both queues' state
+       stranded when only "Clash records" is ticked — that's how PR #19
+       inherited 39 orphan candidates in the first place. Adding these as
+       distinct ticks lets the user wipe queue-state independently of the
+       register (rare) and forces a co-selection during the full-reset
+       workflow (common). Both entries slot after "Weekly snapshots" so
+       the modal reads register → snapshots → queues → scope-config.
+         Dedup Queue clears the candidate store, the initial-scan gate
+       (so a subsequent load re-scans the register), and the show-skipped
+       toggle. Review Queue flags clear the per-project migration/scope
+       gates + suppressed-import banner map — a fresh set of imports
+       repopulates them. */
+    {id:'dedup',   label:'Dedup Queue',
+      count:()=>`${((S.dedupQueue||[]).length).toLocaleString()} candidate${(S.dedupQueue||[]).length===1?'':'s'}`,
+      lsKeys:['dedupQueue','dedupInitialScan','dqShowSkipped']},
+    {id:'reviewq', label:'Review Queue flags',
+      count:()=>'3 workflow flags',
+      lsKeys:['reviewQueueScopeFixed','reviewQueueBanners','reviewQueueDateGuardFixed']},
+    /* SELECTIVE-RESET-DEDUP-RQ end */
     {id:'levels',  label:'Levels and grids',
       count:()=>'FAB / BSGS / CUP',
       lsKeys:['levels','grid','gridActiveB','levelCodeMode']},
