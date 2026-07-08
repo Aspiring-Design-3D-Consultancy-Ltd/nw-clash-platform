@@ -8388,9 +8388,8 @@ function reviewQueueResolveGroup(tn){
 /* DEDUP-QUEUE-VIEW start: side-by-side render of every candidate pair in
    S.dedupQueue. Each pair shows both clashes (older on the left, newer
    on the right) with element data, coordinates, distance, and a status/
-   priority strip. Empty state renders when the queue is empty. Image
-   thumbnails are deferred — the async IDB round-trip would fight the
-   synchronous render function; a follow-up can hook via getNwImgHtml. */
+   priority strip. Empty state renders when the queue is empty. Viewport
+   thumbnails hydrate asynchronously via DEDUP-QUEUE-IMAGES below. */
 function rDedup(){
   const queue=Array.isArray(S.dedupQueue)?S.dedupQueue:[];
   const cs=S.clashes||[];
@@ -8413,6 +8412,13 @@ function rDedup(){
         <span style="background:${st.bg};color:${st.c};font-size:9px;font-weight:700;padding:1px 6px;border-radius:3px">${esc(c.status||'—')}</span>
       </div>
       <div style="font-size:11px;font-weight:600;color:var(--t1);margin-bottom:4px">${esc(c.nwOrig||c.name||'')}</div>
+      <!-- DEDUP-QUEUE-IMAGES: viewport slot hydrated after the nav()
+           innerHTML swap by _fillDedupImages via getNwImageB64 — same
+           testName::nwImageRef composite key the Clash Register modal
+           uses (IMG-FIX + IMG-POS fallback both apply). Fixed aspect
+           ratio + max-width so ~200px sizing is stable while text is
+           being rendered. -->
+      <div class="dq-img" data-dq-uid="${esc(c.uid)}" style="width:100%;max-width:220px;aspect-ratio:4/3;background:#F1F5F9;border:.5px dashed #CBD5E1;border-radius:4px;margin:2px 0 8px;display:flex;align-items:center;justify-content:center;color:#94A3B8;font-size:10px;text-align:center;padding:6px">Loading viewpoint…</div>
       <div style="font-size:10.5px;color:#475569;line-height:1.5">
         <div><strong>Test:</strong> ${esc(c.testName||'')}</div>
         <div><strong>A:</strong> ${esc(c.elementA||'')} <span style="color:#94A3B8">(${esc(c.sourceA||'')})</span></div>
@@ -8442,6 +8448,11 @@ function rDedup(){
       </div>
     </div>`;
   }).join('');
+  /* DEDUP-QUEUE-IMAGES: schedule the async fill AFTER nav()'s innerHTML
+     swap so document.querySelectorAll finds the fresh slots. setTimeout
+     yields the current tick — nav() writes `<div class="fia">${rv(v)}</div>`
+     into #va synchronously right after rDedup returns. */
+  setTimeout(()=>{try{_fillDedupImages();}catch(e){console.warn('DEDUP-QUEUE-IMAGES fill error:',e);}},0);
   return `
     <div class="card" style="border-top:3px solid #EA7600;margin-bottom:9px"><div class="cb" style="padding:10px 14px">
       <div style="font-size:12px;font-weight:700;color:#0F1824;margin-bottom:3px">${live.length} candidate pair${live.length===1?'':'s'} awaiting review</div>
@@ -8450,6 +8461,35 @@ function rDedup(){
     ${rows}
   `;
 }
+/* DEDUP-QUEUE-IMAGES start: async slot hydration for the side-by-side
+   candidate cells. Uses the same testName::nwImageRef composite key +
+   IDB round-trip as the Clash Register modal (getNwImageB64), and falls
+   back to a "No viewpoint available" placeholder when either the ref
+   is absent, the composite key isn't in _nwImages, or the blob is
+   missing from IndexedDB. Click enlarges via the existing openImgLightbox
+   which already binds Escape-to-close. Fills run in parallel and each
+   slot updates independently. */
+async function _fillDedupImages(){
+  const slots=document.querySelectorAll('.dq-img[data-dq-uid]');
+  const cs=S.clashes||[];
+  const byUid=new Map(cs.map(c=>[c.uid,c]));
+  await Promise.all([...slots].map(async el=>{
+    const uid=el.getAttribute('data-dq-uid');
+    const c=byUid.get(uid);
+    if(!c){el.textContent='(missing clash)';return;}
+    let b64=null;
+    try{ b64=await getNwImageB64(c); }catch(e){ b64=null; }
+    if(b64){
+      el.style.padding='0';
+      el.style.background='#0F1824';
+      el.style.border='.5px solid var(--bd)';
+      el.innerHTML='<img src="data:image/jpeg;base64,'+b64+'" alt="Navisworks viewport for '+esc(uid)+'" style="width:100%;height:100%;object-fit:contain;cursor:zoom-in;display:block" onclick="openImgLightbox(this.src,\''+esc(uid)+'\')" title="Click to view fullscreen">';
+    } else {
+      el.textContent='No viewpoint available';
+    }
+  }));
+}
+/* DEDUP-QUEUE-IMAGES end */
 /* DEDUP-QUEUE-VIEW end */
 /* DEDUP-QUEUE-ACTIONS start: Merge / Keep separate / Skip handlers.
    Merge deletes the newer record from S.clashes, transfers its notes
