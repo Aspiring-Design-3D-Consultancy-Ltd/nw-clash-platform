@@ -1069,6 +1069,45 @@ async function initAuth(){
     });
     if(_sfCleaned)sv('clashes',S.clashes);
   }catch(e){console.warn('SOURCEFILE-FULLPATH-PERSIST back-fill error:',e);}
+  /* DEDUP-QUEUE-SCHEMA-MIGRATE start: candidate records used to hold only
+     {dedupPairId,a,b,distMm,detectedAt}. The Merge / Keep separate / Skip
+     handlers now write resolved / resolvedAction / resolvedAt / skipped,
+     and the active-view filter + badge count depend on those fields
+     being non-undefined. Backfill defaults in place on every load —
+     idempotent (records that already have the fields aren't touched)
+     and no version gate needed because the shape is additive. */
+  try{
+    if(Array.isArray(S.dedupQueue)&&S.dedupQueue.length){
+      let _dqSchemaCleaned=0;
+      S.dedupQueue.forEach(p=>{
+        if(!p||typeof p!=='object')return;
+        if(p.skipped===undefined){p.skipped=false;_dqSchemaCleaned++;}
+        if(p.resolved===undefined){p.resolved=false;_dqSchemaCleaned++;}
+        if(p.resolvedAction===undefined){p.resolvedAction=null;_dqSchemaCleaned++;}
+        if(p.resolvedAt===undefined){p.resolvedAt=null;_dqSchemaCleaned++;}
+      });
+      if(_dqSchemaCleaned)sv('dedupQueue',S.dedupQueue);
+    }
+  }catch(e){console.warn('DEDUP-QUEUE-SCHEMA-MIGRATE error:',e);}
+  /* DEDUP-QUEUE-SCHEMA-MIGRATE end */
+  /* DEDUP-QUEUE-ORPHAN-CLEANUP start: prune candidates whose register
+     entries no longer exist. Production incident: 44 candidates
+     survived a series of Merge operations that deleted the newer
+     clashes but never touched the queue store — 39 orphan records
+     inflated the badge to 44 while the view (which filters at render
+     time) showed only 5. Runs unconditionally on every load, before
+     the initial-scan gate so a first-time user with a clean register
+     still gets the noop. Persist only if at least one entry was
+     removed to avoid needless storage writes. */
+  try{
+    if(Array.isArray(S.dedupQueue)&&S.dedupQueue.length&&Array.isArray(S.clashes)){
+      const _liveUids=new Set(S.clashes.map(c=>c.uid));
+      const _before=S.dedupQueue.length;
+      S.dedupQueue=S.dedupQueue.filter(p=>p&&_liveUids.has(p.a)&&_liveUids.has(p.b));
+      if(S.dedupQueue.length!==_before)sv('dedupQueue',S.dedupQueue);
+    }
+  }catch(e){console.warn('DEDUP-QUEUE-ORPHAN-CLEANUP error:',e);}
+  /* DEDUP-QUEUE-ORPHAN-CLEANUP end */
   /* DEDUP-QUEUE-DETECT: one-shot initial scan so pre-existing register
      duplicates surface without needing a fresh import. Runs once per
      browser, gated on nw:dedupInitialScan. Idempotent — subsequent
@@ -1180,7 +1219,15 @@ function updSB(){
   /* DEDUP-QUEUE-TAB start: candidate pair count on the sidebar badge. */
   const _dqBadge=document.getElementById('na-dedup-badge');
   if(_dqBadge){
-    const _dqN=(Array.isArray(S.dedupQueue)?S.dedupQueue:[]).length;
+    /* DEDUP-QUEUE-BADGE-FILTER start: count only pairs awaiting review.
+       Resolved pairs (Merge / Keep separate) and Skipped pairs are excluded
+       so the badge matches the active view's filter and header count.
+       Production incident: badge read raw .length while the view filtered
+       resolved orphans at render time — the two drifted (44 vs 5) until
+       ORPHAN-CLEANUP + RESOLVE-PERSIST + this filter converged them. */
+    const _dqAll=Array.isArray(S.dedupQueue)?S.dedupQueue:[];
+    const _dqN=_dqAll.filter(p=>p&&!p.resolved&&!p.skipped).length;
+    /* DEDUP-QUEUE-BADGE-FILTER end */
     _dqBadge.textContent=String(_dqN);
     if(_dqN>0)_dqBadge.removeAttribute('hidden');else _dqBadge.setAttribute('hidden','');
   }
@@ -6184,12 +6231,17 @@ function _dedupCellKey(x){return (x.testName||'')+'::'+_dedupCoordNorm(x.sourceA
 function scanForDedupCandidates(){
   if(!Array.isArray(S.clashes))return 0;
   if(!Array.isArray(S.dedupQueue))S.dedupQueue=[];
-  // Prune queue entries whose uids no longer exist in the register
-  // (defensive: merge/keep-separate flows should already remove pairs
-  // but stale entries would freeze the badge count).
+  /* DEDUP-QUEUE-DETECT-IDEMPOTENT start: preserve resolution state
+     (skipped / resolved / resolvedAction / resolvedAt) on any pair
+     already in the store. Orphan cleanup on load handles register-side
+     deletions separately (DEDUP-QUEUE-ORPHAN-CLEANUP); this scan only
+     appends genuinely new pairs. The _existing set skips-if-present
+     lookup below inherently preserves flags because we never overwrite
+     entries — the marker exists so the intent survives future edits. */
   const _regUids=new Set(S.clashes.map(c=>c.uid));
   S.dedupQueue=S.dedupQueue.filter(p=>_regUids.has(p.a)&&_regUids.has(p.b));
   const _existing=new Set(S.dedupQueue.map(p=>p.a+'::'+p.b));
+  /* DEDUP-QUEUE-DETECT-IDEMPOTENT end */
   const buckets=new Map();
   S.clashes.forEach(x=>{
     if(x.dedupResolved===true||x.status==='Resolved')return;
@@ -6221,6 +6273,12 @@ function scanForDedupCandidates(){
           a:older,b:newer,
           distMm:Math.round(d*100)/100,
           detectedAt:new Date().toISOString(),
+          /* DEDUP-QUEUE-DETECT-IDEMPOTENT: default resolution fields
+             so downstream filters (view + badge) never see undefined. */
+          skipped:false,
+          resolved:false,
+          resolvedAction:null,
+          resolvedAt:null,
         });
         _existing.add(pairKey2);
         added++;
@@ -8397,7 +8455,15 @@ function rDedup(){
   // Filter out pairs whose clashes vanished from the register (defensive
   // — the scan already prunes but a stale in-memory queue could linger).
   const live=queue.filter(p=>byUid.has(p.a)&&byUid.has(p.b));
-  if(!live.length){
+  /* DEDUP-QUEUE-SKIP-FILTER start: partition live pairs into active
+     (awaiting review) and skipped. Resolved pairs (Merge / Keep separate)
+     never render in either bucket — they're the audit trail only. The
+     empty-state card shows only when BOTH buckets are empty; when there's
+     skipped-only content the toggle button still needs to appear. */
+  const activeQueue=live.filter(p=>!p.resolved&&!p.skipped);
+  const skippedQueue=live.filter(p=>p.skipped&&!p.resolved);
+  /* DEDUP-QUEUE-SKIP-FILTER end */
+  if(!activeQueue.length&&!skippedQueue.length){
     return `<div class="card" style="border-top:3px solid #00B050"><div class="cb" style="padding:24px;text-align:center">
       <div style="font-size:14px;font-weight:700;color:#00B050;margin-bottom:6px">✓ Dedup Queue is empty</div>
       <div style="font-size:11px;color:#64748B;line-height:1.6">Candidate duplicate pairs surface here after each import when two clashes with the same testName + source .nwc files sit between 1mm and 500mm apart. Nothing to review right now.</div>
@@ -8429,12 +8495,21 @@ function rDedup(){
       </div>
     </div>`;
   };
-  const rows=live.map(p=>{
+  /* DEDUP-QUEUE-SKIP-FILTER: renderRow builds a single candidate card.
+     `isSkipped` flips the Skip button to Unskip and adds a "Skipped" pill
+     next to the header; SKIP-TOGGLE reuses this to render the expanded
+     skipped list below the active list. */
+  const renderRow=(p,isSkipped)=>{
     const a=byUid.get(p.a), b=byUid.get(p.b);
     const pid=JSON.stringify(p.dedupPairId).replace(/"/g,'&quot;');
-    return `<div class="card" style="margin-bottom:10px;border-top:3px solid #EA7600" data-dedup-pair="${esc(p.dedupPairId)}">
+    const skipPill=isSkipped?'<span style="background:#E2E8F0;color:#475569;font-size:9px;font-weight:700;padding:1px 6px;border-radius:3px;margin-left:6px">SKIPPED</span>':'';
+    const cardOpacity=isSkipped?'opacity:.82;':'';
+    const skipBtn=isSkipped
+      ?`<button class="btn" onclick="dedupUnskip(${pid})" style="font-size:11px">↶ Unskip</button>`
+      :`<button class="btn" onclick="dedupSkip(${pid})" style="font-size:11px">↷ Skip</button>`;
+    return `<div class="card" style="margin-bottom:10px;border-top:3px solid #EA7600;${cardOpacity}" data-dedup-pair="${esc(p.dedupPairId)}">
       <div class="ch">
-        <span class="ct">Candidate pair · <span style="color:#EA7600">${(p.distMm||0).toFixed(2)}mm apart</span></span>
+        <span class="ct">Candidate pair · <span style="color:#EA7600">${(p.distMm||0).toFixed(2)}mm apart</span>${skipPill}</span>
         <span style="font-size:10px;color:#64748B">Detected ${esc((p.detectedAt||'').slice(0,10))}</span>
       </div>
       <div class="cb" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
@@ -8442,24 +8517,63 @@ function rDedup(){
         ${cell(b)}
       </div>
       <div style="padding:10px 14px;border-top:.5px solid var(--bd);background:#F8FAFC;display:flex;justify-content:flex-end;gap:8px">
-        <button class="btn" onclick="dedupSkip(${pid})" style="font-size:11px">↷ Skip</button>
+        ${skipBtn}
         <button class="btn" onclick="dedupKeepSeparate(${pid})" style="font-size:11px">✗ Keep separate</button>
         <button class="btn p" onclick="dedupMerge(${pid})" style="font-size:11px">✓ Merge (keep ${esc(a?a.uid:'')})</button>
       </div>
     </div>`;
-  }).join('');
+  };
+  const activeRows=activeQueue.map(p=>renderRow(p,false)).join('');
+  /* DEDUP-QUEUE-SKIP-TOGGLE start: header button to reveal skipped pairs
+     inline. Hidden entirely when there are no skipped pairs. Global
+     _dqShowSkipped survives view swaps within the same session so a user
+     who expanded, resolved one skipped pair, and returned still sees the
+     rest — reset on reload (initial value undefined = collapsed). Persists
+     to localStorage via nw:dqShowSkipped so the state survives reloads too. */
+  if(typeof _dqShowSkipped==='undefined'){
+    try{ window._dqShowSkipped=localStorage.getItem('nw:dqShowSkipped')==='1'; }
+    catch(e){ window._dqShowSkipped=false; }
+  }
+  const skippedN=skippedQueue.length;
+  const toggleBtn=skippedN>0?`
+    <div style="margin:6px 0 10px;display:flex;justify-content:flex-end">
+      <button class="btn" onclick="dedupToggleSkipped()" style="font-size:11px">
+        ${_dqShowSkipped?'▲ Hide skipped':'▼ Show skipped'} (${skippedN})
+      </button>
+    </div>`:'';
+  const skippedRows=(skippedN>0&&_dqShowSkipped)
+    ?`<div style="margin-top:14px;padding:8px 12px 4px;border-top:1px dashed var(--bd)">
+        <div style="font-size:11px;font-weight:700;color:#64748B;margin-bottom:8px">Skipped pairs (${skippedN}) — kept for later review. Merge / Keep separate still work; Unskip returns them to the active queue.</div>
+        ${skippedQueue.map(p=>renderRow(p,true)).join('')}
+      </div>`
+    :'';
+  /* DEDUP-QUEUE-SKIP-TOGGLE end */
   /* DEDUP-QUEUE-IMAGES: schedule the async fill AFTER nav()'s innerHTML
      swap so document.querySelectorAll finds the fresh slots. setTimeout
      yields the current tick — nav() writes `<div class="fia">${rv(v)}</div>`
      into #va synchronously right after rDedup returns. */
   setTimeout(()=>{try{_fillDedupImages();}catch(e){console.warn('DEDUP-QUEUE-IMAGES fill error:',e);}},0);
+  /* DEDUP-QUEUE-SKIP-FILTER: header count reads activeQueue.length so it
+     matches the badge (which uses the same filter via BADGE-FILTER).
+     Empty active queue but skipped-only case renders the toggle only. */
+  const headerLine=activeQueue.length>0
+    ?`${activeQueue.length} candidate pair${activeQueue.length===1?'':'s'} awaiting review`
+    :`No candidate pairs awaiting review${skippedN>0?` — ${skippedN} skipped`:''}`;
   return `
     <div class="card" style="border-top:3px solid #EA7600;margin-bottom:9px"><div class="cb" style="padding:10px 14px">
-      <div style="font-size:12px;font-weight:700;color:#0F1824;margin-bottom:3px">${live.length} candidate pair${live.length===1?'':'s'} awaiting review</div>
+      <div style="font-size:12px;font-weight:700;color:#0F1824;margin-bottom:3px">${headerLine}</div>
       <div style="font-size:10.5px;color:#64748B;line-height:1.5">These pairs share the same test and source .nwc files and sit between 1mm and 500mm apart — likely the same physical clash after model coordination shifted elements. Merge keeps the older record's uid / status / notes; Keep separate marks both records reviewed so they never re-surface.</div>
     </div></div>
-    ${rows}
+    ${toggleBtn}
+    ${activeRows}
+    ${skippedRows}
   `;
+}
+/* DEDUP-QUEUE-SKIP-TOGGLE: expand/collapse handler + persistence. */
+function dedupToggleSkipped(){
+  window._dqShowSkipped=!_dqShowSkipped;
+  try{ localStorage.setItem('nw:dqShowSkipped',_dqShowSkipped?'1':'0'); }catch(e){}
+  nav('dedup');
 }
 /* DEDUP-QUEUE-IMAGES start: async slot hydration for the side-by-side
    candidate cells. Uses the same testName::nwImageRef composite key +
@@ -8491,30 +8605,38 @@ async function _fillDedupImages(){
 }
 /* DEDUP-QUEUE-IMAGES end */
 /* DEDUP-QUEUE-VIEW end */
-/* DEDUP-QUEUE-ACTIONS start: Merge / Keep separate / Skip handlers.
-   Merge deletes the newer record from S.clashes, transfers its notes
-   into the older record with a merge banner, marks the older
-   dedupResolved=true, and drops the pair from the queue. Keep separate
-   marks both dedupResolved=true so the pair never re-appears. Skip is
-   a no-op (leaves the pair for later). Every path sv()s the register
-   and the queue, then re-renders. */
+/* DEDUP-QUEUE-ACTIONS start: Merge / Keep separate / Skip / Unskip.
+   Merge and Keep separate stamp the candidate record with resolved=true
+   (DEDUP-QUEUE-RESOLVE-PERSIST) so the pair filters out of the active
+   view and badge without losing the audit trail. Register-side merge
+   behaviour (delete newer clash, transfer notes, mark older
+   dedupResolved=true, regen weekly) is unchanged. Skip stamps
+   skipped=true (DEDUP-QUEUE-SKIP-PERSIST) which the SKIP-FILTER excludes
+   from the active view and the SKIP-TOGGLE surfaces on demand. Unskip
+   flips it back. Every path persists nw:dedupQueue so the state
+   survives reloads. */
 function _dedupFindPair(pid){
   const q=Array.isArray(S.dedupQueue)?S.dedupQueue:[];
   const idx=q.findIndex(p=>p.dedupPairId===pid);
   if(idx<0)return null;
   return {idx,pair:q[idx]};
 }
-function _dedupRemovePair(pid){
-  if(!Array.isArray(S.dedupQueue))return;
-  S.dedupQueue=S.dedupQueue.filter(p=>p.dedupPairId!==pid);
-  sv('dedupQueue',S.dedupQueue);
-}
 function dedupMerge(pid){
   const p=_dedupFindPair(pid);if(!p)return;
   const cs=S.clashes||[];
   const older=cs.find(c=>c.uid===p.pair.a);
   const newer=cs.find(c=>c.uid===p.pair.b);
-  if(!older||!newer){_dedupRemovePair(pid);updSB();nav('dedup');return;}
+  if(!older||!newer){
+    /* DEDUP-QUEUE-RESOLVE-PERSIST start: mark resolved even in the defensive
+       branch so a repaired-later register can never re-surface a pair
+       whose newer clash the user chose to delete out-of-band. */
+    p.pair.resolved=true;
+    p.pair.resolvedAction='merge';
+    p.pair.resolvedAt=new Date().toISOString();
+    sv('dedupQueue',S.dedupQueue);
+    /* DEDUP-QUEUE-RESOLVE-PERSIST end */
+    updSB();nav('dedup');return;
+  }
   if(newer.notes && newer.notes.trim()){
     const banner='[Merged from '+newer.uid+' via Dedup Queue on '+new Date().toISOString().slice(0,10)+']';
     older.notes=(older.notes?older.notes.trim()+'\n\n':'')+banner+'\n'+newer.notes.trim();
@@ -8522,7 +8644,14 @@ function dedupMerge(pid){
   older.dedupResolved=true;
   S.clashes=cs.filter(c=>c.uid!==newer.uid);
   sv('clashes',S.clashes);
-  _dedupRemovePair(pid);
+  /* DEDUP-QUEUE-RESOLVE-PERSIST start: mark the candidate resolved BEFORE the
+     newer-clash deletion propagates through orphan cleanup on next
+     reload — persists to nw:dedupQueue so the audit trail is durable. */
+  p.pair.resolved=true;
+  p.pair.resolvedAction='merge';
+  p.pair.resolvedAt=new Date().toISOString();
+  sv('dedupQueue',S.dedupQueue);
+  /* DEDUP-QUEUE-RESOLVE-PERSIST end */
   regenWeeklyFromRegister();
   showToast('✓ Merged '+newer.uid+' into '+older.uid);
   updSB();updSS();nav('dedup');
@@ -8535,14 +8664,37 @@ function dedupKeepSeparate(pid){
   if(a)a.dedupResolved=true;
   if(b)b.dedupResolved=true;
   sv('clashes',S.clashes);
-  _dedupRemovePair(pid);
+  /* DEDUP-QUEUE-RESOLVE-PERSIST start: same shape as Merge — both records
+     survive the register but the candidate is filed away. */
+  p.pair.resolved=true;
+  p.pair.resolvedAction='keep-separate';
+  p.pair.resolvedAt=new Date().toISOString();
+  sv('dedupQueue',S.dedupQueue);
+  /* DEDUP-QUEUE-RESOLVE-PERSIST end */
   showToast('✗ Kept '+p.pair.a+' and '+p.pair.b+' as separate clashes');
   updSB();nav('dedup');
 }
 function dedupSkip(pid){
   const p=_dedupFindPair(pid);if(!p)return;
-  showToast('↷ Skipped — pair stays in the queue');
-  nav('dedup');
+  /* DEDUP-QUEUE-SKIP-PERSIST start: flip skipped=true; SKIP-FILTER hides
+     the pair from the active view, SKIP-TOGGLE surfaces it via the header
+     button. Not the same as resolved — the pair can still be Merged
+     or Kept separate later from the toggle-expanded view. */
+  p.pair.skipped=true;
+  sv('dedupQueue',S.dedupQueue);
+  /* DEDUP-QUEUE-SKIP-PERSIST end */
+  showToast('↷ Skipped — click "Show skipped" above to review later');
+  updSB();nav('dedup');
+}
+function dedupUnskip(pid){
+  const p=_dedupFindPair(pid);if(!p)return;
+  /* DEDUP-QUEUE-SKIP-PERSIST start: flip skipped=false — SKIP-FILTER now
+     lets the pair back into the active view. */
+  p.pair.skipped=false;
+  sv('dedupQueue',S.dedupQueue);
+  /* DEDUP-QUEUE-SKIP-PERSIST end */
+  showToast('↶ Unskipped — pair back in the active queue');
+  updSB();nav('dedup');
 }
 /* DEDUP-QUEUE-ACTIONS end */
 
