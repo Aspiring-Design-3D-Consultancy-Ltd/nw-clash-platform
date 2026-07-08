@@ -6600,6 +6600,26 @@ let _bcfFileNames=[];
 let _bcfFilePaths=[];
 let _batchFilePaths={};
 /* SOURCEFILE-FULLPATH end */
+/* BATCH-IMPORT-FOLDER-CAPTURE start: shared helper the two parsers use to
+   derive `sourceFolder` from the webkitRelativePath (or the bare name
+   fallback). Returns the FIRST path segment when the path carries one —
+   e.g. "260601 FAB AMHS v 7 Clash test/03_GAS_v_08_AMHS/03_GAS_v_08_AMHS.xml"
+   → "260601 FAB AMHS v 7 Clash test" — and null when the path is just a
+   bare filename (single-file picker, paste path, browsers without
+   webkitRelativePath). Explicit null (not undefined) so downstream code
+   can distinguish "captured via folder pick, no parent folder" from
+   "never captured at all" if it ever needs to. Handles both / and \\
+   separators because Windows drag-drop paths mix them. */
+function _extractSourceFolder(fullPath){
+  if(!fullPath)return null;
+  const s=String(fullPath);
+  const iFwd=s.indexOf('/');
+  const iBk=s.indexOf('\\');
+  const i=(iFwd<0)?iBk:(iBk<0?iFwd:Math.min(iFwd,iBk));
+  if(i<=0)return null;
+  return s.slice(0,i);
+}
+/* BATCH-IMPORT-FOLDER-CAPTURE end */
 /* IMG-COUNT-CHECK start: batch-level image count set by loadNwImages when
    images are queued for the current XML batch. Read by the pre-merge
    sanity check (_importToRegisterChecked) that compares parsed clash
@@ -7036,7 +7056,17 @@ function batchParse(files,errors,readCount){
              IMG-COUNT-CHECK-MODAL per-file breakdown, the DUP-FILES-FIX
              perFile bucket, and the imports[] Data Manager attribution
              all see one consistent semantic. */
-          nwSt,depMm,tn,sourceFile:fname,/* SOURCEFILE-FULLPATH */ sourceFilePath:(_batchFilePaths&&_batchFilePaths[fname])||fname,
+          nwSt,depMm,tn,sourceFile:fname,
+          /* BATCH-IMPORT-FOLDER-CAPTURE start: parser 1 (batchParse) —
+             stamp sourceFolder + sourceFilePath from the webkitRelativePath
+             stashed in _batchFilePaths at bloadf/bdrop-folder time. Bare
+             filename falls through as sourceFilePath when the path map
+             lacks an entry (paste path or non-folder pick); sourceFolder
+             is explicit null in that case so downstream code can flag
+             "captured but no parent folder" without ambiguity. */
+          sourceFilePath:(_batchFilePaths&&_batchFilePaths[fname])||fname,
+          sourceFolder:_extractSourceFolder((_batchFilePaths&&_batchFilePaths[fname])||''),
+          /* BATCH-IMPORT-FOLDER-CAPTURE end */
           nwCreated,
           /* REVIEW-QUEUE-DATE-GUARD-CREATEDDATE */ nwCreatedFullISO,
           nwImageRef,
@@ -7325,7 +7355,16 @@ function bparse(){
          to enable IMG-POS positional fallback when href is genuinely absent. */
       const hrefRaw=r.getAttribute('href')||'';
       const nwImageRef=hrefRaw?hrefRaw.replace(/.*[\\\/]/,''):'';
+      /* BATCH-IMPORT-FOLDER-CAPTURE start: parser 2 (bparse) — mirror of
+         parser 1's stamp. _srcPath was hydrated from _bcfFilePaths[0]
+         earlier in this function (webkitRelativePath if the batch came
+         through the folder picker, bare filename otherwise), so passing
+         it to the folder helper is enough. Dual-parser discipline
+         (CLAUDE.md) — any change here needs the matching change at parser
+         1's push site. */
       _bcfC.push({idx:_bcfC.length+1,nwName:r.getAttribute('name')||('Clash '+(i+1)),nwSt,depMm,tn,/* SOURCEFILE-PROPAGATE */ sourceFile:_srcFile,/* SOURCEFILE-FULLPATH */ sourceFilePath:_srcPath,
+        sourceFolder:_extractSourceFolder(_srcPath),
+        /* BATCH-IMPORT-FOLDER-CAPTURE end */
         nwCreated,
         /* REVIEW-QUEUE-DATE-GUARD-CREATEDDATE */ nwCreatedFullISO,
         nwImageRef,
@@ -7954,10 +7993,18 @@ function importToRegister(mode){
          on re-import so a clash first ingested via a paste (leaf-only)
          and later re-imported via the folder picker learns the
          weekly-scoped path. Guards against overwriting a known path
-         with a blank/undefined value from a hand-crafted re-import. */
+         with a blank/undefined value from a hand-crafted re-import.
+         BATCH-IMPORT-FOLDER-CAPTURE also refreshes sourceFolder here:
+         only overwrite when the incoming record actually captured a
+         folder (parser sets `null` when the batch was a paste / single
+         file). A legacy clash with `undefined` sourceFolder that gets
+         re-imported through the folder picker learns the folder; a
+         legacy clash whose re-import came through a single-file picker
+         keeps its prior state instead of getting silently blanked. */
       if(c.sourceFile)exist.sourceFile=c.sourceFile;
       if(c.sourceFilePath)exist.sourceFilePath=c.sourceFilePath;
       else if(c.sourceFile&&!exist.sourceFilePath)exist.sourceFilePath=c.sourceFile;
+      if(c.sourceFolder)exist.sourceFolder=c.sourceFolder;
       if(stChanged||geomChanged){updated++;/* DUP-FILES-FIX */_bumpPF(c,'updated');}else{unchanged++;/* DUP-FILES-FIX */_bumpPF(c,'unchanged');}
       return;
     }
@@ -8012,6 +8059,12 @@ function importToRegister(mode){
          webkitRelativePath support). */
       sourceFile:c.sourceFile||'',
       sourceFilePath:c.sourceFilePath||c.sourceFile||'',
+      /* BATCH-IMPORT-FOLDER-CAPTURE persist: sourceFolder rides alongside
+         sourceFile / sourceFilePath. Parser stamps `null` explicitly on
+         the paste / single-file paths — carry that through verbatim so
+         downstream code can render a distinct "(no folder captured)"
+         label instead of falling back to a bare filename. */
+      sourceFolder:(c.sourceFolder!==undefined?c.sourceFolder:null),
       /* SOURCEFILE-FULLPATH-PERSIST end */
       /* IMG-POS: persist positional index for later positional fallback lookup */
       testIdx:typeof c.testIdx==='number'?c.testIdx:undefined,
@@ -8519,9 +8572,18 @@ function _rqNwGroupByFileDate(pending){
     const raw=c.sourceFilePath||c.sourceFile||'(unknown source)';
     const base=_rqNwBasename(raw)||raw;
     const date=_rqNwNormDate(c.date)||'';
-    const key=base+'::'+date;
+    /* RQ-EXPORT-FOLDER-DISPLAY: folder is part of the group identity so
+       identical basenames in different weekly archives become distinct
+       rows in the BREAKDOWN. Clashes ingested before
+       BATCH-IMPORT-FOLDER-CAPTURE shipped carry `undefined` sourceFolder
+       — treat that the same as the parser's explicit `null` (single-file
+       pick) so the display bucket collapses into "(no folder captured)"
+       either way. */
+    const folder=(c.sourceFolder==null?null:String(c.sourceFolder));
+    const folderKey=folder==null?'':folder;
+    const key=folderKey+'::'+base+'::'+date;
     if(!groups.has(key)){
-      groups.set(key,{base,path:raw,date,count:0,names:new Set()});
+      groups.set(key,{folder,base,path:raw,date,count:0,names:new Set()});
     }
     const g=groups.get(key);
     g.count++;
@@ -8530,6 +8592,8 @@ function _rqNwGroupByFileDate(pending){
   return [...groups.values()].sort((a,b)=>{
     const sa=_rqNwSortKey(a.date), sb=_rqNwSortKey(b.date);
     if(sa!==sb)return sa<sb?-1:1;
+    const fa=a.folder||'~', fb=b.folder||'~';
+    if(fa!==fb)return fa<fb?-1:1;
     return a.base.localeCompare(b.base);
   });
 }
@@ -8571,34 +8635,45 @@ function _rqNwBuildDateMatch(pending,providedFiles){
     xml:p.xml,
   }));
   const rows=[];
-  // Map provided (base,date) → provided-file entry so we can ✓ each
-  // expected bucket exactly once (multiple picks of the same file only
-  // count for the first). Also tracks which provided files ended up
-  // covering an expected bucket so we can flag the leftovers as ⚠.
+  /* RQ-EXPORT-FOLDER-DISPLAY: expected buckets are keyed by
+     (folder, base, date) — see _rqNwGroupByFileDate — but the modal's
+     <input type="file"> can't reveal the parent folder of a picked file
+     (would need webkitdirectory). So match provided files against
+     expected buckets by (base, date) only, but consume each expected
+     bucket at most once. Same-(base,date) buckets in different folders
+     therefore compete for a single provided file: the first bucket in
+     the sorted expected list wins, subsequent buckets fall to ✗ so the
+     user knows to grab the second folder's copy too. */
   const providedByKey=new Map();
   provided.forEach(p=>{
     const k=p.base+'::'+p.date;
-    if(!providedByKey.has(k))providedByKey.set(k,p);
+    if(!providedByKey.has(k))providedByKey.set(k,[]);
+    providedByKey.get(k).push(p);
   });
+  // Track how many provided files remain for each (base, date) key so
+  // that N same-(base,date) picks fulfil N expected buckets in order.
+  const remaining=new Map();
+  providedByKey.forEach((arr,k)=>remaining.set(k,arr.slice()));
   const usedProvided=new Set();
   let covered=0;
   expected.forEach(e=>{
     const k=e.base+'::'+e.date;
-    const hit=providedByKey.get(k);
+    const pool=remaining.get(k);
+    const hit=(pool&&pool.length)?pool.shift():null;
     if(hit){
       covered++;
       usedProvided.add(hit.name);
-      rows.push({status:'ok',file:hit.name,base:e.base,date:e.date,count:e.count,
+      rows.push({status:'ok',file:hit.name,folder:e.folder,base:e.base,date:e.date,count:e.count,
         message:`matches ${e.count} clash${e.count===1?'':'es'}`});
     }else{
-      rows.push({status:'missing',file:null,base:e.base,date:e.date||'(no date)',count:e.count,
+      rows.push({status:'missing',file:null,folder:e.folder,base:e.base,date:e.date||'(no date)',count:e.count,
         message:`${e.count} clash${e.count===1?'':'es'} will not export`});
     }
   });
   // Anything the user provided that didn't fulfil an expected bucket.
   provided.forEach(p=>{
     if(usedProvided.has(p.name))return;
-    rows.push({status:'extra',file:p.name,base:p.base,date:p.date||'(no date)',count:0,
+    rows.push({status:'extra',file:p.name,folder:null,base:p.base,date:p.date||'(no date)',count:0,
       message:p.date?'no matching clashes (wrong week?)':'no <createddate> element found'});
   });
   return {rows,coveredExpected:covered,totalExpected:expected.length};
@@ -8759,11 +8834,27 @@ function showRqNwExportModal(){
      seeds the counts DATE-MATCH will compare against once files land. */
   const _breakdownGroups=_rqNwGroupByFileDate(pending);
   const _distinctFiles=new Set(_breakdownGroups.map(g=>g.base)).size;
+  /* RQ-EXPORT-FOLDER-DISPLAY start: prefix each breakdown row with the
+     capturing folder so identical basenames across weekly archives are
+     visually distinct. Legacy clashes (`sourceFolder === undefined`) and
+     single-file / paste imports (parser stamps null) both fall through
+     to "(no folder captured) / basename" — the user then knows to pick
+     the right week's file even when they can't tell from the leaf.
+     Uses the leaf from g.path (original casing) rather than g.base
+     (lowercased by _rqNwBasename) so the display matches what the user
+     sees in File Explorer. */
+  const _leaf=(g)=>{
+    const p=String(g.path||g.base||'');
+    const i=Math.max(p.lastIndexOf('/'),p.lastIndexOf('\\'));
+    return i>=0?p.slice(i+1):p;
+  };
+  const _folderLabel=(g)=>g.folder?`${esc(g.folder)} / ${esc(_leaf(g))}`:`<span style="color:#94A3B8">(no folder captured)</span> / ${esc(_leaf(g))}`;
   const _breakdownRows=_breakdownGroups.map(g=>`<div style="word-break:break-all;margin-bottom:2px;display:flex;gap:8px;align-items:baseline">
-      <span style="color:#0F1824;flex:1;min-width:0;word-break:break-all">${esc(g.path||g.base)}</span>
+      <span style="color:#0F1824;flex:1;min-width:0;word-break:break-all">${_folderLabel(g)}</span>
       <span style="color:#475569;white-space:nowrap;font-weight:600">${esc(g.date||'(no date)')}</span>
       <span style="color:#64748B;white-space:nowrap">${g.count} clash${g.count===1?'':'es'}</span>
     </div>`).join('');
+  /* RQ-EXPORT-FOLDER-DISPLAY end */
   const existing=document.getElementById('rq-nw-export-modal');
   if(existing)existing.remove();
   const wrap=document.createElement('div');
@@ -8808,15 +8899,34 @@ function showRqNwExportModal(){
       matchEl.innerHTML='';return;
     }
     const {rows,coveredExpected,totalExpected}=_rqNwBuildDateMatch(pending,providedFiles);
+    /* RQ-EXPORT-FOLDER-DISPLAY: each ✓/✗/⚠ row prefixes the label with the
+       captured folder when the expected bucket has one — the user can
+       tell which weekly archive a ✗ row is pointing at even when several
+       weeks share the same basename. Provided-file ⚠ rows use the file's
+       own name (no folder) since the picker can't reveal one. On ✗ rows
+       the bucket has no provided-file name to fall back to; use
+       breakdownLeaf() so the original casing wins over r.base (which
+       _rqNwBasename lowercased). */
+    const _matchLeaf=(r)=>{
+      if(r.file)return r.file;
+      // Look the leaf up on the group so we preserve original casing.
+      const g=_breakdownGroups.find(x=>x.folder===r.folder&&_leaf(x).toLowerCase()===String(r.base||'').toLowerCase());
+      return g?_leaf(g):(r.base||'');
+    };
+    const _labelFor=(r)=>{
+      const prefix=r.status==='missing'?'Missing: ':'';
+      const leaf=_matchLeaf(r);
+      if(r.status==='missing'&&r.folder){return prefix+r.folder+' / '+leaf;}
+      if(r.status==='ok'&&r.folder){return `${r.folder} / ${leaf}`;}
+      return prefix+leaf;
+    };
     const _row=(r)=>{
       const icon=r.status==='ok'?'<span style="color:#16A34A;font-weight:700">✓</span>'
                  :r.status==='missing'?'<span style="color:#DC2626;font-weight:700">✗</span>'
                  :'<span style="color:#F59E0B;font-weight:700">⚠</span>';
-      const prefix=r.status==='missing'?'Missing: ':'';
-      const fileLabel=r.file||r.base;
       return `<div style="display:flex;gap:8px;align-items:baseline;margin-bottom:2px;word-break:break-all">
         <span style="width:14px;text-align:center;flex-shrink:0">${icon}</span>
-        <span style="color:#0F1824;flex:1;min-width:0">${esc(prefix+fileLabel)}</span>
+        <span style="color:#0F1824;flex:1;min-width:0">${esc(_labelFor(r))}</span>
         <span style="color:#475569;white-space:nowrap;font-weight:600">${esc(r.date)}</span>
         <span style="color:#64748B;white-space:nowrap">${esc(r.message)}</span>
       </div>`;
