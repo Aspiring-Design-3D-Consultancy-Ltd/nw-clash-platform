@@ -6457,6 +6457,20 @@ function rBCF(){
         <span style="font-size:9px;color:#94A3B8;font-weight:600;letter-spacing:.05em">OR</span>
         <div style="flex:1;height:.5px;background:#E2E8F0"></div>
       </div>
+      <!-- BATCH-IMPORT-GUIDANCE start: amber-warning callout that tells the
+           user to pick the archives ROOT folder, not an individual weekly
+           archive. Chromium's webkitRelativePath strips the picked
+           folder itself and only exposes its CONTENTS, so picking
+           "260601 FAB AMHS v 7 Clash test" leaves BATCH-IMPORT-FOLDER-CAPTURE
+           stamping the inner "03_GAS_v_08_AMHS" subfolder as sourceFolder
+           — verified from a live 36-clash diagnostic. This label is the
+           primary preventive; BATCH-IMPORT-SHAPE-WARN is the fallback if
+           the user picks wrong anyway. -->
+      <div style="background:#FEF3C7;border:.5px solid #F59E0B;border-radius:5px;padding:8px 10px;margin-bottom:8px;font-size:10.5px;color:#92400E;line-height:1.5">
+        <div style="font-weight:700;margin-bottom:2px">Pick your archives root folder</div>
+        The folder containing all your weekly archive folders (e.g. <code style="background:#FEF9E7;padding:1px 4px;border-radius:3px">Clash Tests</code>) — <strong>not</strong> an individual archive. If you pick a single archive, folder identity will be captured incorrectly.
+      </div>
+      <!-- BATCH-IMPORT-GUIDANCE end -->
       <button class="btn p" onclick="document.getElementById('bfolder').click()" style="width:100%;font-size:12px;padding:10px;display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:8px">
         <span style="font-size:16px">🗂️</span>
         <span>Import Folder (single test or multi-test parent folder)</span>
@@ -6702,9 +6716,75 @@ function bloadf(inp){
    so .html, no extension, or .xml all work. Test name is derived from the
    report's basename, which is what subsequent image lookups use under the
    IMG-FIX composite key `testName::filename`. */
+/* BATCH-IMPORT-SHAPE-WARN start: fallback for when the BATCH-IMPORT-GUIDANCE
+   label above the button didn't stick. Chrome's webkitRelativePath strips
+   the picked folder itself and only exposes its CONTENTS, so a pick that
+   consists of exactly one unique top-level segment PLUS a name matching
+   the archive-file convention (contains "_v_" or ends in "_AMHS") is
+   almost certainly a single-archive pick that will mis-tag every clash.
+   Modal offers Cancel (recover) or Continue anyway (legit isolated
+   imports still ship). Kept as its own async helper so importFolderPick
+   can `await` a boolean and stay readable. */
+function _bifDetectsSingleArchive(files){
+  const tops=new Set();
+  for(const f of files){
+    const path=f.webkitRelativePath||f.name;
+    const i=path.indexOf('/');
+    if(i<=0)return null; // no folder segment → treat as bare pick, no warning
+    tops.add(path.slice(0,i));
+    if(tops.size>1)return null;
+  }
+  if(tops.size!==1)return null;
+  const seg=[...tops][0];
+  // Archive-name pattern: Muratec convention. "_v_" catches version tokens
+  // like "03_GAS_v_08_AMHS"; "_AMHS" catches the AMHS suffix these teams
+  // reliably use. False-positive risk: an archives-root with only ONE
+  // weekly archive inside. Acceptable — the modal is a Continue-anyway
+  // warning, not a block.
+  if(!/_v_|_AMHS$/i.test(seg))return null;
+  return seg;
+}
+function _bifShowShapeWarn(archiveName){
+  return new Promise(resolve=>{
+    const prior=document.getElementById('bif-shape-warn');
+    if(prior)prior.remove();
+    const wrap=document.createElement('div');
+    wrap.id='bif-shape-warn';
+    wrap.style.cssText='position:fixed;inset:0;background:rgba(15,24,36,.6);z-index:9998;display:flex;align-items:center;justify-content:center;font-family:Arial,sans-serif';
+    wrap.innerHTML=`<div role="dialog" aria-modal="true" style="background:#fff;border-radius:8px;max-width:520px;width:calc(100% - 40px);box-shadow:0 20px 60px rgba(0,0,0,.35);overflow:hidden">
+      <div style="padding:16px 22px;border-bottom:1px solid #E5E7EB;background:#FEF3C7;color:#92400E;font-weight:700;font-size:14px">⚠ This looks like a single archive, not an archives root</div>
+      <div style="padding:18px 22px;color:#0F1824;font-size:12px;line-height:1.6">
+        <div style="margin-bottom:10px">The folder you picked (<code style="background:#F1F5F9;padding:1px 4px;border-radius:3px">${esc(archiveName)}</code>) looks like an individual weekly archive rather than the parent folder that contains all your archives.</div>
+        <div style="margin-bottom:10px">If you continue, the archive folder name <strong>will not</strong> be captured on each clash — <code style="background:#F1F5F9;padding:1px 4px;border-radius:3px">sourceFolder</code> will contain the inner subfolder name instead.</div>
+        <div style="color:#475569">Recommended: go back and pick the parent folder (the one that contains this archive plus every other weekly archive).</div>
+      </div>
+      <div style="padding:14px 22px;border-top:1px solid #E5E7EB;display:flex;justify-content:flex-end;gap:8px;background:#F8FAFC">
+        <button id="bif-shape-back" style="background:#EA7600;border:0;color:#fff;padding:8px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Go back and pick parent</button>
+        <button id="bif-shape-continue" style="background:#fff;border:1px solid #CBD5E1;color:#1E293B;padding:8px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Continue anyway</button>
+      </div>
+    </div>`;
+    document.body.appendChild(wrap);
+    const close=(result)=>{const el=document.getElementById('bif-shape-warn');if(el)el.remove();document.removeEventListener('keydown',onKey);resolve(result);};
+    const onKey=(e)=>{if(e.key==='Escape')close(false);};
+    document.addEventListener('keydown',onKey);
+    document.getElementById('bif-shape-back').addEventListener('click',()=>close(false));
+    document.getElementById('bif-shape-continue').addEventListener('click',()=>close(true));
+  });
+}
+/* BATCH-IMPORT-SHAPE-WARN end */
 async function importFolderPick(inputEl){
   const all=[...inputEl.files];
   if(!all.length)return;
+
+  /* BATCH-IMPORT-SHAPE-WARN: gate — if the pick looks like a single
+     archive, ask before parsing. Cancel path clears the input so a
+     subsequent identical pick still fires (browsers no-op the change
+     event when files === the previous selection unless value clears). */
+  const _sfArchive=_bifDetectsSingleArchive(all);
+  if(_sfArchive){
+    const _proceed=await _bifShowShapeWarn(_sfArchive);
+    if(!_proceed){inputEl.value='';return;}
+  }
 
   // Bucket files. Images by their parent _files folder (handles nested folders).
   const reportCandidates=[];
