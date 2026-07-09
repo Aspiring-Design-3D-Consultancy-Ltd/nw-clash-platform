@@ -46,22 +46,19 @@ async function bootstrap(page, view = 'bcf') {
 }
 
 test.describe('BATCH-IMPORT-FOLDER-CAPTURE', () => {
-  test('_extractSourceFolder — third-from-last path segment (archive folder) for the canonical layout', async ({ page }) => {
+  test('_extractSourceFolder — index [1] (archive folder) for both 3-seg and 4-seg layouts', async ({ page }) => {
     await bootstrap(page);
     const cases = await page.evaluate(() => {
       return {
-        // Canonical: picked / archive / test-subfolder / XML — archive is
-        // the third-from-last segment.
-        canonical: _extractSourceFolder('Clash Tests/260601 FAB AMHS v 7 Clash test/03_GAS_v_08_AMHS/03_GAS_v_08_AMHS.xml'),
+        // AMHS side, 4-segment: picked / archive / test-subfolder / XML.
+        amhsFourSeg: _extractSourceFolder('Clash Tests/260601 FAB AMHS v 7 Clash test/03_GAS_v_08_AMHS/03_GAS_v_08_AMHS.xml'),
         // Windows separators must resolve the same way.
-        windowsCanonical: _extractSourceFolder('Clash Tests\\260601 FAB AMHS v 7 Clash test\\03_GAS_v_08_AMHS\\03_GAS_v_08_AMHS.xml'),
-        // 3 segments: third-from-last is the picked root — technically
-        // wrong archive, but this state is blocked by
-        // BATCH-IMPORT-PICK-VALIDATION before it reaches the parser.
-        // Helper still returns something sensible.
-        threeSeg: _extractSourceFolder('Clash Tests/260601 FAB AMHS v 7 Clash test/03_GAS_v_08_AMHS.xml'),
-        // 2 segments: shorter than the archive layer — returns first
-        // segment as best-effort (this is also PICK-VALIDATION territory).
+        windowsAmhs: _extractSourceFolder('Clash Tests\\260601 FAB AMHS v 7 Clash test\\03_GAS_v_08_AMHS\\03_GAS_v_08_AMHS.xml'),
+        // Exyte side, 3-segment: picked / archive / XML (no test subfolder).
+        exyteThreeSeg: _extractSourceFolder('Clash Tests/260629 FAB Exyte v AMHS Clash test/Exyte AAS_v_08_AMHS.xml'),
+        windowsExyte: _extractSourceFolder('Clash Tests\\260629 FAB Exyte v AMHS Clash test\\Exyte AAS_v_08_AMHS.xml'),
+        // 2 segments: BATCH-IMPORT-PICK-VALIDATION blocks these before
+        // parse, so we don't need the helper to invent an archive.
         twoSeg: _extractSourceFolder('Week1/testA.xml'),
         // Bare filename: no folder captured.
         bare: _extractSourceFolder('03_GAS_v_08_AMHS.xml'),
@@ -69,9 +66,10 @@ test.describe('BATCH-IMPORT-FOLDER-CAPTURE', () => {
         nullIn: _extractSourceFolder(null),
       };
     });
-    expect(cases.canonical).toBe('260601 FAB AMHS v 7 Clash test');
-    expect(cases.windowsCanonical).toBe('260601 FAB AMHS v 7 Clash test');
-    expect(cases.threeSeg).toBe('Clash Tests');
+    expect(cases.amhsFourSeg).toBe('260601 FAB AMHS v 7 Clash test');
+    expect(cases.windowsAmhs).toBe('260601 FAB AMHS v 7 Clash test');
+    expect(cases.exyteThreeSeg).toBe('260629 FAB Exyte v AMHS Clash test');
+    expect(cases.windowsExyte).toBe('260629 FAB Exyte v AMHS Clash test');
     expect(cases.twoSeg).toBeNull(); // fewer than 3 → null (no archive layer)
     expect(cases.bare).toBeNull();
     expect(cases.empty).toBeNull();
@@ -122,6 +120,52 @@ test.describe('BATCH-IMPORT-FOLDER-CAPTURE', () => {
     expect(clash.sourceFile).toBe('03_GAS_v_08_AMHS.xml');
     expect(clash.sourceFilePath).toBe('Clash Tests/260601 FAB AMHS v 7 Clash test/03_GAS_v_08_AMHS/03_GAS_v_08_AMHS.xml');
     expect(clash.sourceFolder).toBe('260601 FAB AMHS v 7 Clash test');
+  });
+
+  test('parser 2 (bparse) — 3-segment Exyte path stamps archive folder as sourceFolder', async ({ page }) => {
+    await bootstrap(page);
+    const clash = await page.evaluate((xml) => {
+      _bcfFileNames = ['Exyte AAS_v_08_AMHS.xml'];
+      _bcfFilePaths = ['Clash Tests/260629 FAB Exyte v AMHS Clash test/Exyte AAS_v_08_AMHS.xml'];
+      document.getElementById('bxml').value = xml;
+      bparse();
+      return _bcfC[0];
+    }, makeXml('Clash1'));
+    expect(clash.sourceFile).toBe('Exyte AAS_v_08_AMHS.xml');
+    expect(clash.sourceFilePath).toBe('Clash Tests/260629 FAB Exyte v AMHS Clash test/Exyte AAS_v_08_AMHS.xml');
+    expect(clash.sourceFolder).toBe('260629 FAB Exyte v AMHS Clash test');
+  });
+
+  test('parser 1 (batchParse) — mixed batch: AMHS 4-seg + Exyte 3-seg from same picked root, both attribute correctly', async ({ page }) => {
+    await bootstrap(page);
+    const result = await page.evaluate(async ({ xmlA, xmlB }) => {
+      _batchResults = {
+        '03_GAS_v_08_AMHS.xml': xmlA,
+        'Exyte AAS_v_08_AMHS.xml': xmlB,
+      };
+      _batchFilePaths = {
+        '03_GAS_v_08_AMHS.xml': 'Clash Tests/260601 FAB AMHS v 7 Clash test/03_GAS_v_08_AMHS/03_GAS_v_08_AMHS.xml',
+        'Exyte AAS_v_08_AMHS.xml': 'Clash Tests/260629 FAB Exyte v AMHS Clash test/Exyte AAS_v_08_AMHS.xml',
+      };
+      const filesFake = [
+        { name: '03_GAS_v_08_AMHS.xml', lastModified: 0 },
+        { name: 'Exyte AAS_v_08_AMHS.xml', lastModified: 0 },
+      ];
+      batchParse(filesFake, [], 2);
+      return _bcfC.map(c => ({
+        nwName: c.nwName,
+        sourceFile: c.sourceFile,
+        sourceFilePath: c.sourceFilePath,
+        sourceFolder: c.sourceFolder,
+      }));
+    }, { xmlA: makeXml('ClashAMHS'), xmlB: makeXml('ClashExyte') });
+
+    expect(result).toHaveLength(2);
+    const byName = Object.fromEntries(result.map(r => [r.nwName, r]));
+    expect(byName.ClashAMHS.sourceFolder).toBe('260601 FAB AMHS v 7 Clash test');
+    expect(byName.ClashAMHS.sourceFile).toBe('03_GAS_v_08_AMHS.xml');
+    expect(byName.ClashExyte.sourceFolder).toBe('260629 FAB Exyte v AMHS Clash test');
+    expect(byName.ClashExyte.sourceFile).toBe('Exyte AAS_v_08_AMHS.xml');
   });
 
   test('parser 2 (bparse) — single-file / paste path stamps sourceFolder=null explicitly (not undefined)', async ({ page }) => {

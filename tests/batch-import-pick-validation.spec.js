@@ -68,7 +68,7 @@ test.describe('BATCH-IMPORT-PICK-VALIDATION', () => {
     await expect(modal).toBeVisible();
     await expect(modal).toContainText('Wrong folder level picked');
     await expect(modal).toContainText('parent folder');
-    await expect(modal).toContainText('[picked folder]');
+    await expect(modal).toContainText('needs at least 3');
     // Dismiss and let importFolderPick's abort path run.
     await page.locator('#bif-pick-close').click();
     await expect(modal).toHaveCount(0);
@@ -85,24 +85,26 @@ test.describe('BATCH-IMPORT-PICK-VALIDATION', () => {
     expect(state.clashCount).toBe(seed);
   });
 
-  test('picks below the parent — 3 segments — still blocks import', async ({ page }) => {
+  test('3-segment Exyte layout — NOT blocked, import proceeds', async ({ page }) => {
     await bootstrap(page);
-    // Edge case: [picked]/[archive]/[XML] with NO test-subfolder layer.
-    // Third-from-last would silently mis-attribute here, so PICK-VALIDATION
-    // blocks it before the parser runs.
-    await fireImportFolderPick(page, [
-      { name: '03_GAS_v_08_AMHS.xml', webkitRelativePath: 'Clash Tests/260601 FAB AMHS v 7 Clash test/03_GAS_v_08_AMHS.xml' },
-    ]);
-    const modal = page.locator('#bif-pick-validation');
-    await expect(modal).toBeVisible();
-    await expect(modal).toContainText('Wrong folder level picked');
-    await page.locator('#bif-pick-close').click();
-    await expect(modal).toHaveCount(0);
-    const state = await page.evaluate(async () => {
-      await window.__pickPromise;
-      return { bcfLen: (typeof _bcfC !== 'undefined' ? _bcfC.length : 0) };
-    });
-    expect(state.bcfLen).toBe(0);
+    // [picked]/[archive]/[XML] — Exyte-side archives put the XML directly
+    // in the archive folder. Index-[1] extraction still works here, so
+    // PICK-VALIDATION accepts.
+    const xml = makeXml('Clash1');
+    await page.evaluate(async ({ xml }) => {
+      const blobFile = new File([xml], 'Exyte AAS_v_08_AMHS.xml', { type: 'application/xml' });
+      Object.defineProperty(blobFile, 'webkitRelativePath', {
+        value: 'Clash Tests/260629 FAB Exyte v AMHS Clash test/Exyte AAS_v_08_AMHS.xml',
+      });
+      const fake = { files: [blobFile], value: '' };
+      await importFolderPick(fake);
+    }, { xml });
+    // No validation dialog was inserted.
+    expect(await page.$('#bif-pick-validation')).toBeNull();
+    // XML got loaded into bxml via the single-test path.
+    const loaded = await page.evaluate(() => document.getElementById('bxml').value);
+    expect(loaded).toContain('<clashresult');
+    expect(loaded).toContain('Clash1');
   });
 
   test('correct 4-segment pick — no validation dialog, parses proceed to sniffing stage', async ({ page }) => {
@@ -128,8 +130,8 @@ test.describe('BATCH-IMPORT-PICK-VALIDATION', () => {
   });
 });
 
-test.describe('BATCH-IMPORT-FOLDER-CAPTURE — real-world four-segment end-to-end', () => {
-  test('a full path yields the archive folder as sourceFolder on every clash', async ({ page }) => {
+test.describe('BATCH-IMPORT-FOLDER-CAPTURE — real-world end-to-end', () => {
+  test('4-seg AMHS path yields archive folder on every clash', async ({ page }) => {
     await bootstrap(page);
     const clashes = await page.evaluate((xml) => {
       _bcfFileNames = ['03_GAS_v_08_AMHS.xml'];
@@ -143,6 +145,23 @@ test.describe('BATCH-IMPORT-FOLDER-CAPTURE — real-world four-segment end-to-en
       expect(c.sourceFolder).toBe('260601 FAB AMHS v 7 Clash test');
       expect(c.sourceFilePath).toBe('Clash Tests/260601 FAB AMHS v 7 Clash test/03_GAS_v_08_AMHS/03_GAS_v_08_AMHS.xml');
       expect(c.sourceFile).toBe('03_GAS_v_08_AMHS.xml');
+    }
+  });
+
+  test('3-seg Exyte path yields archive folder on every clash', async ({ page }) => {
+    await bootstrap(page);
+    const clashes = await page.evaluate((xml) => {
+      _bcfFileNames = ['Exyte AAS_v_08_AMHS.xml'];
+      _bcfFilePaths = ['Clash Tests/260629 FAB Exyte v AMHS Clash test/Exyte AAS_v_08_AMHS.xml'];
+      document.getElementById('bxml').value = xml;
+      bparse();
+      return _bcfC.slice();
+    }, makeXml('Clash1'));
+    expect(clashes.length).toBeGreaterThan(0);
+    for (const c of clashes) {
+      expect(c.sourceFolder).toBe('260629 FAB Exyte v AMHS Clash test');
+      expect(c.sourceFilePath).toBe('Clash Tests/260629 FAB Exyte v AMHS Clash test/Exyte AAS_v_08_AMHS.xml');
+      expect(c.sourceFile).toBe('Exyte AAS_v_08_AMHS.xml');
     }
   });
 });
