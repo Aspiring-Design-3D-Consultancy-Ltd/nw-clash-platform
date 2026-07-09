@@ -6457,18 +6457,19 @@ function rBCF(){
         <span style="font-size:9px;color:#94A3B8;font-weight:600;letter-spacing:.05em">OR</span>
         <div style="flex:1;height:.5px;background:#E2E8F0"></div>
       </div>
-      <!-- BATCH-IMPORT-GUIDANCE start: amber-warning callout that tells the
-           user to pick the archives ROOT folder, not an individual weekly
-           archive. Chromium's webkitRelativePath strips the picked
-           folder itself and only exposes its CONTENTS, so picking
-           "260601 FAB AMHS v 7 Clash test" leaves BATCH-IMPORT-FOLDER-CAPTURE
-           stamping the inner "03_GAS_v_08_AMHS" subfolder as sourceFolder
-           — verified from a live 36-clash diagnostic. This label is the
-           primary preventive; BATCH-IMPORT-SHAPE-WARN is the fallback if
-           the user picks wrong anyway. -->
+      <!-- BATCH-IMPORT-GUIDANCE start: amber-warning callout that tells
+           the user to pick the parent folder that contains their weekly
+           archive folders. Chromium's webkitRelativePath strips the picked
+           folder itself and only exposes its CONTENTS, so picking any
+           level below the parent leaves the third-from-last-segment
+           extraction (BATCH-IMPORT-FOLDER-CAPTURE) unable to see the
+           archive folder name. This is the primary preventive; a strict
+           pre-import block (BATCH-IMPORT-PICK-VALIDATION) enforces it,
+           and BATCH-IMPORT-SHAPE-WARN is a legacy heuristic fallback. -->
       <div style="background:#FEF3C7;border:.5px solid #F59E0B;border-radius:5px;padding:8px 10px;margin-bottom:8px;font-size:10.5px;color:#92400E;line-height:1.5">
-        <div style="font-weight:700;margin-bottom:2px">Pick your archives root folder</div>
-        The folder containing all your weekly archive folders (e.g. <code style="background:#FEF9E7;padding:1px 4px;border-radius:3px">Clash Tests</code>) — <strong>not</strong> an individual archive. If you pick a single archive, folder identity will be captured incorrectly.
+        <div style="font-weight:700;margin-bottom:2px">Pick the parent folder that contains all your archive folders</div>
+        e.g. <code style="background:#FEF9E7;padding:1px 4px;border-radius:3px">Clash Tests</code>. Do <strong>not</strong> pick an individual archive folder — archive identity will not be captured correctly.
+        <div style="margin-top:4px;font-size:10px;color:#78350F">Expected structure: <code style="background:#FEF9E7;padding:1px 4px;border-radius:3px">[picked] / [archive] / [test-subfolder] / [XML]</code></div>
       </div>
       <!-- BATCH-IMPORT-GUIDANCE end -->
       <button class="btn p" onclick="document.getElementById('bfolder').click()" style="width:100%;font-size:12px;padding:10px;display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:8px">
@@ -6616,22 +6617,27 @@ let _batchFilePaths={};
 /* SOURCEFILE-FULLPATH end */
 /* BATCH-IMPORT-FOLDER-CAPTURE start: shared helper the two parsers use to
    derive `sourceFolder` from the webkitRelativePath (or the bare name
-   fallback). Returns the FIRST path segment when the path carries one —
-   e.g. "260601 FAB AMHS v 7 Clash test/03_GAS_v_08_AMHS/03_GAS_v_08_AMHS.xml"
-   → "260601 FAB AMHS v 7 Clash test" — and null when the path is just a
-   bare filename (single-file picker, paste path, browsers without
-   webkitRelativePath). Explicit null (not undefined) so downstream code
-   can distinguish "captured via folder pick, no parent folder" from
-   "never captured at all" if it ever needs to. Handles both / and \\
-   separators because Windows drag-drop paths mix them. */
+   fallback). Returns the THIRD-FROM-LAST path segment — the archive
+   folder in the canonical structure
+   [picked]/[archive]/[test-subfolder]/[XML file] — so a path like
+   "Clash Tests/260601 FAB AMHS v 7 Clash test/03_GAS_v_08_AMHS/03_GAS_v_08_AMHS.xml"
+   → "260601 FAB AMHS v 7 Clash test". Prior PRs took the FIRST segment
+   (yielded "Clash Tests", the picked root) or the SECOND-from-last
+   (yielded "03_GAS_v_08_AMHS", the test subfolder) — both wrong. The
+   BATCH-IMPORT-PICK-VALIDATION gate below refuses folder picks whose
+   first-file path splits to fewer than 4 segments, so by the time this
+   helper is called during batch parsing the third-from-last is always
+   the archive. Returns null on paths too short to hold that layer
+   (single-file picker, paste path, browsers without webkitRelativePath)
+   — explicit null lets downstream code distinguish "no folder
+   captured" from "never captured at all". Handles both / and \\
+   because Windows drag-drop paths mix them. */
 function _extractSourceFolder(fullPath){
   if(!fullPath)return null;
   const s=String(fullPath);
-  const iFwd=s.indexOf('/');
-  const iBk=s.indexOf('\\');
-  const i=(iFwd<0)?iBk:(iBk<0?iFwd:Math.min(iFwd,iBk));
-  if(i<=0)return null;
-  return s.slice(0,i);
+  const parts=s.split(/[\/\\]/);
+  if(parts.length<3)return null;
+  return parts[parts.length-3]||null;
 }
 /* BATCH-IMPORT-FOLDER-CAPTURE end */
 /* IMG-COUNT-CHECK start: batch-level image count set by loadNwImages when
@@ -6716,6 +6722,44 @@ function bloadf(inp){
    so .html, no extension, or .xml all work. Test name is derived from the
    report's basename, which is what subsequent image lookups use under the
    IMG-FIX composite key `testName::filename`. */
+/* BATCH-IMPORT-PICK-VALIDATION start: strict pre-import gate that blocks
+   the parse entirely when the pick's first file has too few path segments
+   to expose the archive folder. Chromium's webkitRelativePath begins with
+   the picked folder's CONTENTS, so the canonical
+   [picked]/[archive]/[test-subfolder]/[XML] structure lands as a 4-segment
+   path. Anything shorter — user picked an archive folder directly, or a
+   test-subfolder inside one — cannot yield a correct archive name from
+   the third-from-last segment. Runs before BATCH-IMPORT-SHAPE-WARN so the
+   block wins over the weaker Continue-anyway heuristic; also cheaper (no
+   set-build required). Returns the modal's Promise so importFolderPick
+   can `await` and stay readable. */
+function _bifShowPickValidation(sampleName,segmentCount){
+  return new Promise(resolve=>{
+    const prior=document.getElementById('bif-pick-validation');
+    if(prior)prior.remove();
+    const wrap=document.createElement('div');
+    wrap.id='bif-pick-validation';
+    wrap.style.cssText='position:fixed;inset:0;background:rgba(15,24,36,.6);z-index:9999;display:flex;align-items:center;justify-content:center;font-family:Arial,sans-serif';
+    wrap.innerHTML=`<div role="dialog" aria-modal="true" style="background:#fff;border-radius:8px;max-width:560px;width:calc(100% - 40px);box-shadow:0 20px 60px rgba(0,0,0,.35);overflow:hidden">
+      <div style="padding:16px 22px;border-bottom:1px solid #E5E7EB;background:#FEE2E2;color:#991B1B;font-weight:700;font-size:14px">✕ Wrong folder level picked</div>
+      <div style="padding:18px 22px;color:#0F1824;font-size:12px;line-height:1.6">
+        <div style="margin-bottom:10px">The batch import needs to see your archive folders. Please pick the parent folder that contains all your weekly archive folders.</div>
+        <div style="margin-bottom:10px">Example: pick <code style="background:#F1F5F9;padding:1px 4px;border-radius:3px">C:/temp/Clash Tests/</code>, not any individual archive folder or subfolder inside one.</div>
+        <div style="margin-bottom:10px">Expected structure: <code style="background:#F1F5F9;padding:1px 4px;border-radius:3px">[picked folder] / [archive folder] / [test subfolder] / [XML file]</code></div>
+        <div style="color:#475569;font-size:11px">First file seen: <code style="background:#F1F5F9;padding:1px 4px;border-radius:3px">${esc(sampleName||'')}</code> (${segmentCount} segment${segmentCount===1?'':'s'} — needs at least 4)</div>
+      </div>
+      <div style="padding:14px 22px;border-top:1px solid #E5E7EB;display:flex;justify-content:flex-end;gap:8px;background:#F8FAFC">
+        <button id="bif-pick-close" style="background:#EA7600;border:0;color:#fff;padding:8px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">OK — I'll pick the parent folder</button>
+      </div>
+    </div>`;
+    document.body.appendChild(wrap);
+    const close=()=>{const el=document.getElementById('bif-pick-validation');if(el)el.remove();document.removeEventListener('keydown',onKey);resolve();};
+    const onKey=(e)=>{if(e.key==='Escape'||e.key==='Enter')close();};
+    document.addEventListener('keydown',onKey);
+    document.getElementById('bif-pick-close').addEventListener('click',close);
+  });
+}
+/* BATCH-IMPORT-PICK-VALIDATION end */
 /* BATCH-IMPORT-SHAPE-WARN start: fallback for when the BATCH-IMPORT-GUIDANCE
    label above the button didn't stick. Chrome's webkitRelativePath strips
    the picked folder itself and only exposes its CONTENTS, so a pick that
@@ -6775,6 +6819,22 @@ function _bifShowShapeWarn(archiveName){
 async function importFolderPick(inputEl){
   const all=[...inputEl.files];
   if(!all.length)return;
+
+  /* BATCH-IMPORT-PICK-VALIDATION: gate — inspect the first file's
+     webkitRelativePath. If it splits to fewer than 4 segments, the user
+     picked below the parent folder that holds the archive folders, so
+     archive-name capture is impossible from this pick. Block the parse
+     entirely and clear the input so a subsequent identical pick still
+     fires (browsers no-op the change event when files === the previous
+     selection unless value clears). Awaits the OK dismissal so focus
+     restores cleanly before the file dialog reopens. */
+  const _sample=all[0].webkitRelativePath||all[0].name||'';
+  const _segs=_sample.split('/');
+  if(_segs.length<4){
+    await _bifShowPickValidation(_sample,_segs.length);
+    inputEl.value='';
+    return;
+  }
 
   /* BATCH-IMPORT-SHAPE-WARN: gate — if the pick looks like a single
      archive, ask before parsing. Cancel path clears the input so a
@@ -8395,6 +8455,19 @@ function importToRegister(mode){
   </div></div>`;
   showToast(`Merged: ${added} new, ${updated} updated, ${unchanged} unchanged${/* PAIR-ID-RESOLVED-COUNT */_disappeared?` \u00b7 ${_disappeared} likely fixed in model`:''}`);
   bmsg(`\u2713 ${added} new clashes imported — ${updated} updated, ${unchanged} unchanged${/* PAIR-ID-RESOLVED-COUNT */_disappeared?` \u00b7 ${_disappeared} likely fixed in model (not present in this XML)`:''}`,'#007A38');
+  /* BATCH-IMPORT-FOLDER-CAPTURE start: post-import summary. Logs the
+     added count and the unique set of archive folders captured from
+     this batch so the user can open DevTools and verify the third-from-
+     last extraction pulled real archive names — not the picked root
+     (prior PR #23c bug) or the test subfolder (prior PR #23b bug).
+     Reads _bcfC which holds the batch's parsed clashes with
+     sourceFolder already stamped by parser 1 or parser 2. */
+  try{
+    const _archives=[...new Set((_bcfC||[]).map(c=>c.sourceFolder).filter(Boolean))];
+    console.log('[Batch import] '+added+' clashes added');
+    console.log('[Batch import] Unique archive folders captured:',_archives);
+  }catch(e){/* diagnostic-only, never fatal */}
+  /* BATCH-IMPORT-FOLDER-CAPTURE end */
 }
 
 /* REVIEW-QUEUE-VIEW start: tab body for user-driven confirmation of clashes

@@ -46,43 +46,49 @@ async function bootstrap(page, view = 'bcf') {
 }
 
 test.describe('BATCH-IMPORT-FOLDER-CAPTURE', () => {
-  test('_extractSourceFolder — first path segment for a webkitRelativePath, null for a bare filename', async ({ page }) => {
+  test('_extractSourceFolder — third-from-last path segment (archive folder) for the canonical layout', async ({ page }) => {
     await bootstrap(page);
     const cases = await page.evaluate(() => {
       return {
-        deepPath: _extractSourceFolder('260601 FAB AMHS v 7 Clash test/03_GAS_v_08_AMHS/03_GAS_v_08_AMHS.xml'),
-        twoLevel: _extractSourceFolder('Week1/testA.xml'),
-        windows:  _extractSourceFolder('Week1\\testA.xml'),
-        mixed:    _extractSourceFolder('Week1/sub\\file.xml'),
-        bare:     _extractSourceFolder('03_GAS_v_08_AMHS.xml'),
-        empty:    _extractSourceFolder(''),
-        nullIn:   _extractSourceFolder(null),
+        // Canonical: picked / archive / test-subfolder / XML — archive is
+        // the third-from-last segment.
+        canonical: _extractSourceFolder('Clash Tests/260601 FAB AMHS v 7 Clash test/03_GAS_v_08_AMHS/03_GAS_v_08_AMHS.xml'),
+        // Windows separators must resolve the same way.
+        windowsCanonical: _extractSourceFolder('Clash Tests\\260601 FAB AMHS v 7 Clash test\\03_GAS_v_08_AMHS\\03_GAS_v_08_AMHS.xml'),
+        // 3 segments: third-from-last is the picked root — technically
+        // wrong archive, but this state is blocked by
+        // BATCH-IMPORT-PICK-VALIDATION before it reaches the parser.
+        // Helper still returns something sensible.
+        threeSeg: _extractSourceFolder('Clash Tests/260601 FAB AMHS v 7 Clash test/03_GAS_v_08_AMHS.xml'),
+        // 2 segments: shorter than the archive layer — returns first
+        // segment as best-effort (this is also PICK-VALIDATION territory).
+        twoSeg: _extractSourceFolder('Week1/testA.xml'),
+        // Bare filename: no folder captured.
+        bare: _extractSourceFolder('03_GAS_v_08_AMHS.xml'),
+        empty: _extractSourceFolder(''),
+        nullIn: _extractSourceFolder(null),
       };
     });
-    expect(cases.deepPath).toBe('260601 FAB AMHS v 7 Clash test');
-    expect(cases.twoLevel).toBe('Week1');
-    expect(cases.windows).toBe('Week1');
-    expect(cases.mixed).toBe('Week1'); // whichever separator comes first
+    expect(cases.canonical).toBe('260601 FAB AMHS v 7 Clash test');
+    expect(cases.windowsCanonical).toBe('260601 FAB AMHS v 7 Clash test');
+    expect(cases.threeSeg).toBe('Clash Tests');
+    expect(cases.twoSeg).toBeNull(); // fewer than 3 → null (no archive layer)
     expect(cases.bare).toBeNull();
     expect(cases.empty).toBeNull();
     expect(cases.nullIn).toBeNull();
   });
 
-  test('parser 1 (batchParse) — clashes from two folders carry distinct sourceFolder values', async ({ page }) => {
+  test('parser 1 (batchParse) — canonical 4-segment paths yield archive folder as sourceFolder', async ({ page }) => {
     await bootstrap(page);
     const result = await page.evaluate(async ({ xmlA, xmlB }) => {
-      // Simulate a webkitdirectory pick landing at bloadf/batchLoad. The
-      // parser reads _batchResults and _batchFilePaths — both indexed by
-      // the bare filename that the caller decided is unique across the
-      // batch. importFolderPick achieves that by prefixing filenames when
-      // a dir path exists — we mimic that here so the batch can carry
-      // two files that live at the same basename in different folders.
+      // Two weekly archives, same test-subfolder name, same XML basename —
+      // the third-from-last segment must differ so the batch's clashes
+      // attribute correctly to their archive.
       _batchResults = { 'A::03_GAS_v_08_AMHS.xml': xmlA, 'B::03_GAS_v_08_AMHS.xml': xmlB };
       _batchFilePaths = {
-        'A::03_GAS_v_08_AMHS.xml': 'Week1/testA.xml/03_GAS_v_08_AMHS.xml',
-        'B::03_GAS_v_08_AMHS.xml': 'Week2/testA.xml/03_GAS_v_08_AMHS.xml',
+        'A::03_GAS_v_08_AMHS.xml': 'Clash Tests/260601 FAB AMHS v 7 Clash test/03_GAS_v_08_AMHS/03_GAS_v_08_AMHS.xml',
+        'B::03_GAS_v_08_AMHS.xml': 'Clash Tests/260616 FAB AMHS v 7 Clash test/03_GAS_v_08_AMHS/03_GAS_v_08_AMHS.xml',
       };
-      // Fake File objects — batchParse uses them only for lastModified.
       const filesFake = [
         { name: 'A::03_GAS_v_08_AMHS.xml', lastModified: 0 },
         { name: 'B::03_GAS_v_08_AMHS.xml', lastModified: 0 },
@@ -98,27 +104,23 @@ test.describe('BATCH-IMPORT-FOLDER-CAPTURE', () => {
 
     expect(result).toHaveLength(2);
     const byName = Object.fromEntries(result.map(r => [r.nwName, r]));
-    expect(byName.ClashA.sourceFolder).toBe('Week1');
-    expect(byName.ClashA.sourceFilePath).toBe('Week1/testA.xml/03_GAS_v_08_AMHS.xml');
-    expect(byName.ClashB.sourceFolder).toBe('Week2');
-    expect(byName.ClashB.sourceFilePath).toBe('Week2/testA.xml/03_GAS_v_08_AMHS.xml');
-    // sourceFile stays as the caller-provided leaf (which we chose to
-    // include a folder-prefix in above so parser 1's per-file dict keys
-    // stayed unique). Real production usage would leave sourceFile as
-    // the bare basename — asserted in the parser-2 test below.
+    expect(byName.ClashA.sourceFolder).toBe('260601 FAB AMHS v 7 Clash test');
+    expect(byName.ClashA.sourceFilePath).toBe('Clash Tests/260601 FAB AMHS v 7 Clash test/03_GAS_v_08_AMHS/03_GAS_v_08_AMHS.xml');
+    expect(byName.ClashB.sourceFolder).toBe('260616 FAB AMHS v 7 Clash test');
+    expect(byName.ClashB.sourceFilePath).toBe('Clash Tests/260616 FAB AMHS v 7 Clash test/03_GAS_v_08_AMHS/03_GAS_v_08_AMHS.xml');
   });
 
-  test('parser 2 (bparse) — folder pick threads sourceFolder onto every clash', async ({ page }) => {
+  test('parser 2 (bparse) — canonical 4-segment path stamps archive folder as sourceFolder', async ({ page }) => {
     await bootstrap(page);
     const clash = await page.evaluate((xml) => {
       _bcfFileNames = ['03_GAS_v_08_AMHS.xml'];
-      _bcfFilePaths = ['260601 FAB AMHS v 7 Clash test/03_GAS_v_08_AMHS/03_GAS_v_08_AMHS.xml'];
+      _bcfFilePaths = ['Clash Tests/260601 FAB AMHS v 7 Clash test/03_GAS_v_08_AMHS/03_GAS_v_08_AMHS.xml'];
       document.getElementById('bxml').value = xml;
       bparse();
       return _bcfC[0];
     }, makeXml('Clash1'));
     expect(clash.sourceFile).toBe('03_GAS_v_08_AMHS.xml');
-    expect(clash.sourceFilePath).toBe('260601 FAB AMHS v 7 Clash test/03_GAS_v_08_AMHS/03_GAS_v_08_AMHS.xml');
+    expect(clash.sourceFilePath).toBe('Clash Tests/260601 FAB AMHS v 7 Clash test/03_GAS_v_08_AMHS/03_GAS_v_08_AMHS.xml');
     expect(clash.sourceFolder).toBe('260601 FAB AMHS v 7 Clash test');
   });
 
@@ -139,14 +141,13 @@ test.describe('BATCH-IMPORT-FOLDER-CAPTURE', () => {
     expect('sourceFolder' in clash).toBe(true);
   });
 
-  test('importToRegister — sourceFolder is persisted on the register clash (null preserved)', async ({ page }) => {
+  test('importToRegister — canonical path persists archive folder on the register clash', async ({ page }) => {
     await bootstrap(page);
     const state = await page.evaluate((xml) => {
       _bcfFileNames = ['03_GAS_v_08_AMHS.xml'];
-      _bcfFilePaths = ['Week1/03_GAS_v_08_AMHS.xml'];
+      _bcfFilePaths = ['Clash Tests/260601 FAB AMHS v 7 Clash test/03_GAS_v_08_AMHS/03_GAS_v_08_AMHS.xml'];
       document.getElementById('bxml').value = xml;
       bparse();
-      // Give it one weekly snapshot so importToRegister has an anchor.
       const today = new Date();
       S.weekly = [{
         label: 'Wk ' + isoWeekNum(today),
@@ -159,8 +160,8 @@ test.describe('BATCH-IMPORT-FOLDER-CAPTURE', () => {
       return S.clashes.slice();
     }, makeXml('Clash1'));
     expect(state.length).toBe(1);
-    expect(state[0].sourceFolder).toBe('Week1');
-    expect(state[0].sourceFilePath).toBe('Week1/03_GAS_v_08_AMHS.xml');
+    expect(state[0].sourceFolder).toBe('260601 FAB AMHS v 7 Clash test');
+    expect(state[0].sourceFilePath).toBe('Clash Tests/260601 FAB AMHS v 7 Clash test/03_GAS_v_08_AMHS/03_GAS_v_08_AMHS.xml');
     expect(state[0].sourceFile).toBe('03_GAS_v_08_AMHS.xml');
   });
 
@@ -185,6 +186,37 @@ test.describe('BATCH-IMPORT-FOLDER-CAPTURE', () => {
     expect(state.length).toBe(1);
     expect(state[0].sourceFolder).toBeNull();
     expect('sourceFolder' in state[0]).toBe(true);
+  });
+
+  test('importToRegister — post-import console log summary lists unique archive folders', async ({ page }) => {
+    await bootstrap(page);
+    // Capture only [Batch import] lines to avoid noise from other console.log calls.
+    const logs = [];
+    page.on('console', (msg) => {
+      if (msg.type() === 'log' && msg.text().startsWith('[Batch import]')) {
+        logs.push(msg.text());
+      }
+    });
+    await page.evaluate((xml) => {
+      _bcfFileNames = ['03_GAS_v_08_AMHS.xml'];
+      _bcfFilePaths = ['Clash Tests/260601 FAB AMHS v 7 Clash test/03_GAS_v_08_AMHS/03_GAS_v_08_AMHS.xml'];
+      document.getElementById('bxml').value = xml;
+      bparse();
+      const today = new Date();
+      S.weekly = [{
+        label: 'Wk ' + isoWeekNum(today),
+        date: today.toISOString().slice(0, 10),
+        week: isoWeekNum(today), year: isoWeekYear(today),
+        imports: [],
+      }];
+      window._skipCrossTestDupes = true;
+      importToRegister('append');
+    }, makeXml('Clash1'));
+    // The console listener above is async — give it a tick to settle.
+    await page.waitForTimeout(50);
+    expect(logs.length).toBeGreaterThanOrEqual(2);
+    expect(logs[0]).toBe('[Batch import] 1 clashes added');
+    expect(logs[1]).toContain('Unique archive folders captured:');
   });
 
   test('backward-compat — legacy clashes without sourceFolder load without errors and render normally', async ({ page }) => {
