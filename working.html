@@ -2580,7 +2580,26 @@ function openIDB(){
       if(!db.objectStoreNames.contains('plans'))db.createObjectStore('plans');
       /* PLAN-BG end */
     };
-    req.onsuccess=e=>{_idb=e.target.result;res(_idb);};
+    req.onsuccess=e=>{
+      _idb=e.target.result;
+      /* SELECTIVE-RESET-IDB-CLOSE start: onversionchange fires whenever a
+         peer connection (another tab, or a same-tab deleteDatabase /
+         open-with-higher-version request) asks to change the schema.
+         The auto-close here means this singleton doesn't silently
+         block another tab's Selective Reset — the classic cause of
+         "deleteDatabase timeout" reports Shane was hitting three
+         times in one session. Null-out AFTER close so the next
+         openIDB() call re-opens fresh rather than handing back a
+         closed reference. */
+      try{
+        _idb.onversionchange=function(){
+          try{_idb.close();}catch(_e){}
+          _idb=null;
+        };
+      }catch(_e){}
+      /* SELECTIVE-RESET-IDB-CLOSE end */
+      res(_idb);
+    };
     req.onerror=e=>rej(e.target.error);
   });
 }
@@ -12913,16 +12932,35 @@ function _closeSharedIdb(){
 }
 function _deleteIdbDatabase(name,timeoutMs){
   return new Promise((resolve,reject)=>{
+    /* SELECTIVE-RESET-IDB-CLOSE start: default timeout bumped from 3000ms
+       to 15000ms — the 3s ceiling was firing before slow tabs / large
+       plans stores had a chance to release. onblocked no longer settles
+       the promise: per IDB spec the delete stays pending while a peer
+       connection blocks, and may still succeed once the peer closes
+       (or its versionchange handler, installed by openIDB above, fires
+       and self-closes). If the timeout elapses while still blocked, the
+       reject carries the specific "another connection" hint so the
+       user-facing alert can steer them at the right fix. */
     let settled=false;
+    let wasBlocked=false;
     const done=fn=>{if(!settled){settled=true;fn();}};
     _closeSharedIdb();
+    const T=timeoutMs||15000;
     try{
       const req=indexedDB.deleteDatabase(name);
       req.onsuccess=()=>done(()=>resolve());
       req.onerror=()=>done(()=>reject(new Error('deleteDatabase error: '+(req.error&&req.error.message||req.error||'unknown'))));
-      req.onblocked=()=>done(()=>reject(new Error('deleteDatabase blocked (another connection is holding '+name+' open)')));
-      setTimeout(()=>done(()=>reject(new Error('deleteDatabase timeout after '+(timeoutMs||3000)+'ms'))),timeoutMs||3000);
+      req.onblocked=()=>{
+        wasBlocked=true;
+        try{console.warn('[SELECTIVE-RESET-IDB-CLOSE] deleteDatabase blocked — another connection is holding '+name+'. Waiting up to '+T+'ms.');}catch(_e){}
+      };
+      setTimeout(()=>done(()=>reject(new Error(
+        wasBlocked
+          ? 'deleteDatabase blocked by another connection — timed out after '+T+'ms. Close every other browser tab open on this file, then try again.'
+          : 'deleteDatabase timeout after '+T+'ms'
+      ))),T);
     }catch(e){done(()=>reject(new Error('deleteDatabase threw: '+e.message)));}
+    /* SELECTIVE-RESET-IDB-CLOSE end */
   });
 }
 function _clearIdbStores(name,storesWanted,timeoutMs){
@@ -12982,22 +13020,65 @@ function _verifyIdbEmpty(name,storesWanted,timeoutMs){
     }catch(e){done({ok:false,error:'verify threw: '+e.message});}
   });
 }
+/* SELECTIVE-RESET-IDB-VERIFY start: post-wipe verify with retry. Two checks
+   layer on top of each other:
+     _verifyIdbFreshVersion — opens with NO version argument. A truly
+       deleted DB comes back at version 1 with zero object stores; a
+       silent-fail leaves the previous schema at version 2 with the
+       'images' and 'plans' stores still present. This catches the
+       classic "deleteDatabase returned success but nothing changed"
+       case that a plain getAllKeys()===[] check misses when the store
+       was already empty pre-wipe.
+     _verifyIdbEmpty — existing per-store getAllKeys()===[] check.
+       Required for the partial (.clear()) path where the schema
+       legitimately persists — the assertion there is "no keys",
+       not "no schema".
+   Both run through the same retry loop: on failure, close, re-open,
+   re-attempt once; throw with a diagnostic message if the second pass
+   also fails. */
+function _verifyIdbFreshVersion(name,timeoutMs){
+  return new Promise(resolve=>{
+    let settled=false;
+    const done=v=>{if(!settled){settled=true;resolve(v);}};
+    try{
+      const req=indexedDB.open(name);
+      req.onsuccess=()=>{
+        const db=req.result;
+        const ver=db.version;
+        const stores=[...db.objectStoreNames];
+        try{db.close();}catch(_e){}
+        if(ver===1&&stores.length===0){done({ok:true});return;}
+        done({ok:false,error:'DB reopened at version '+ver+' with stores ['+stores.join(',')+'] — deleteDatabase silently failed'});
+      };
+      req.onerror=()=>done({ok:false,error:'verify-version open error: '+(req.error&&req.error.message||'unknown')});
+      setTimeout(()=>done({ok:false,error:'verify-version timeout after '+(timeoutMs||2000)+'ms'}),timeoutMs||2000);
+    }catch(e){done({ok:false,error:'verify-version threw: '+e.message});}
+  });
+}
 async function _wipeIdbWithVerify(mode,storesWanted){
   /* Full wipe (both stores) uses deleteDatabase — atomic. Partial wipe
      (SELECTIVE-RESET picking only images OR only plans) has to use
-     .clear() to preserve the untouched store. Both branches verify with
-     getAllKeys() and retry ONCE before throwing. */
+     .clear() to preserve the untouched store. Full-wipe verify checks
+     both version-freshness AND empty-keys; partial-wipe verify checks
+     empty-keys only. Both retry ONCE before throwing. */
   const stores=storesWanted&&storesWanted.length?storesWanted:['images','plans'];
   for(let attempt=1;attempt<=2;attempt++){
     try{
       if(mode==='full'){
-        await _deleteIdbDatabase('NWClashImages',3000);
+        await _deleteIdbDatabase('NWClashImages',15000);
       } else {
         await _clearIdbStores('NWClashImages',stores,3000);
       }
     }catch(e){
       if(attempt===2)throw new Error('IndexedDB wipe failed after retry: '+e.message);
       continue;
+    }
+    if(mode==='full'){
+      const vcheck=await _verifyIdbFreshVersion('NWClashImages',2000);
+      if(!vcheck.ok){
+        if(attempt===2)throw new Error('IndexedDB wipe verify failed: '+vcheck.error);
+        continue;
+      }
     }
     const check=await _verifyIdbEmpty('NWClashImages',stores,2000);
     if(check.ok)return;
@@ -13006,6 +13087,7 @@ async function _wipeIdbWithVerify(mode,storesWanted){
     }
   }
 }
+/* SELECTIVE-RESET-IDB-VERIFY end */
 /* WIPE-VERIFY end */
 /* RESET-HELPERS start: shared wipe + two top-level actions
    - _wipeAllStorage(clearPin): atomic teardown of localStorage and IDB.
@@ -13653,10 +13735,24 @@ async function _executeSelectiveReset(cats,modalId){
     if(killImages)_stores.push('images');
     if(killPlans)_stores.push('plans');
     const _mode=(killImages&&killPlans)?'full':'partial';
+    /* SELECTIVE-RESET-IDB-CLOSE start: belt-and-braces close of the
+       shared _idb singleton before invoking the wipe helper. The helper
+       already calls _closeSharedIdb() internally, but doing it here at
+       the call site (a) surfaces the intent at the reset step so future
+       edits don't accidentally re-open the singleton before the wipe
+       fires, and (b) means any late-scheduled read that races to open
+       between here and the wipe helper gets the SELECTIVE-RESET-IDB-
+       CLOSE onversionchange handler that openIDB installs. */
+    _closeSharedIdb();
+    /* SELECTIVE-RESET-IDB-CLOSE end */
     try{
       await _wipeIdbWithVerify(_mode,_stores);
     }catch(e){
-      alert('Selective reset FAILED — IndexedDB wipe could not be verified.\n\n'+e.message+'\n\nThe page will NOT reload. Try closing every other tab open on this file:// URL and re-running the reset. If that doesn\'t help, open DevTools > Application > IndexedDB and delete NWClashImages manually before reloading.');
+      /* SELECTIVE-RESET-IDB-CLOSE: fail-loud copy — first line names the
+         most likely fix (close other tabs on the same file), because
+         Shane's field reports show that path is what actually clears
+         the block in practice. */
+      alert('Selective reset FAILED — IndexedDB wipe could not be verified.\n\n'+e.message+'\n\nThis usually means another browser tab has working.html open. Close all other tabs with this file, then try again.\n\nThe page will NOT reload. If closing other tabs doesn\'t help, open DevTools > Application > IndexedDB and delete NWClashImages manually before reloading.');
       return;
     }
   }
