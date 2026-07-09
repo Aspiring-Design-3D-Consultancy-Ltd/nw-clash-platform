@@ -25,8 +25,11 @@ test.describe('BATCH-IMPORT-GUIDANCE', () => {
     const banner = page.locator('text=Pick the parent folder that contains all your archive folders');
     await expect(banner).toBeVisible();
     // Body text mentions the failure mode and the expected structure.
+    // Test-subfolder is called out as optional (both AMHS 4-seg and Exyte
+    // 3-seg layouts are supported).
     await expect(page.locator('body')).toContainText(/archive identity will not be captured correctly/);
-    await expect(page.locator('body')).toContainText(/\[picked\] \/ \[archive\] \/ \[test-subfolder\] \/ \[XML\]/);
+    await expect(page.locator('body')).toContainText(/\[picked folder\] \/ \[archive folder\] \/ \[XML file\]/);
+    await expect(page.locator('body')).toContainText(/test subfolder between archive and XML is also supported/);
   });
 });
 

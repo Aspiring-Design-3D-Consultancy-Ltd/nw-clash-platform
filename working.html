@@ -6480,15 +6480,18 @@ function rBCF(){
            the user to pick the parent folder that contains their weekly
            archive folders. Chromium's webkitRelativePath strips the picked
            folder itself and only exposes its CONTENTS, so picking any
-           level below the parent leaves the third-from-last-segment
-           extraction (BATCH-IMPORT-FOLDER-CAPTURE) unable to see the
-           archive folder name. This is the primary preventive; a strict
-           pre-import block (BATCH-IMPORT-PICK-VALIDATION) enforces it,
-           and BATCH-IMPORT-SHAPE-WARN is a legacy heuristic fallback. -->
+           level below the parent leaves the index-[1] archive extraction
+           (BATCH-IMPORT-FOLDER-CAPTURE) unable to see the archive folder
+           name. Test-subfolder between archive and XML is optional —
+           some Muratec exports use it (AMHS side), some don't (Exyte
+           side); both are captured correctly. This is the primary
+           preventive; a strict pre-import block (BATCH-IMPORT-PICK-
+           VALIDATION) enforces it, and BATCH-IMPORT-SHAPE-WARN is a
+           legacy heuristic fallback. -->
       <div style="background:#FEF3C7;border:.5px solid #F59E0B;border-radius:5px;padding:8px 10px;margin-bottom:8px;font-size:10.5px;color:#92400E;line-height:1.5">
         <div style="font-weight:700;margin-bottom:2px">Pick the parent folder that contains all your archive folders</div>
         e.g. <code style="background:#FEF9E7;padding:1px 4px;border-radius:3px">Clash Tests</code>. Do <strong>not</strong> pick an individual archive folder — archive identity will not be captured correctly.
-        <div style="margin-top:4px;font-size:10px;color:#78350F">Expected structure: <code style="background:#FEF9E7;padding:1px 4px;border-radius:3px">[picked] / [archive] / [test-subfolder] / [XML]</code></div>
+        <div style="margin-top:4px;font-size:10px;color:#78350F">Expected structure: <code style="background:#FEF9E7;padding:1px 4px;border-radius:3px">[picked folder] / [archive folder] / [XML file]</code> (a test subfolder between archive and XML is also supported)</div>
       </div>
       <!-- BATCH-IMPORT-GUIDANCE end -->
       <button class="btn p" onclick="document.getElementById('bfolder').click()" style="width:100%;font-size:12px;padding:10px;display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:8px">
@@ -6636,27 +6639,34 @@ let _batchFilePaths={};
 /* SOURCEFILE-FULLPATH end */
 /* BATCH-IMPORT-FOLDER-CAPTURE start: shared helper the two parsers use to
    derive `sourceFolder` from the webkitRelativePath (or the bare name
-   fallback). Returns the THIRD-FROM-LAST path segment — the archive
-   folder in the canonical structure
-   [picked]/[archive]/[test-subfolder]/[XML file] — so a path like
-   "Clash Tests/260601 FAB AMHS v 7 Clash test/03_GAS_v_08_AMHS/03_GAS_v_08_AMHS.xml"
-   → "260601 FAB AMHS v 7 Clash test". Prior PRs took the FIRST segment
-   (yielded "Clash Tests", the picked root) or the SECOND-from-last
-   (yielded "03_GAS_v_08_AMHS", the test subfolder) — both wrong. The
-   BATCH-IMPORT-PICK-VALIDATION gate below refuses folder picks whose
-   first-file path splits to fewer than 4 segments, so by the time this
-   helper is called during batch parsing the third-from-last is always
-   the archive. Returns null on paths too short to hold that layer
-   (single-file picker, paste path, browsers without webkitRelativePath)
-   — explicit null lets downstream code distinguish "no folder
-   captured" from "never captured at all". Handles both / and \\
-   because Windows drag-drop paths mix them. */
+   fallback). Archive folder is ALWAYS index [1] — the segment
+   immediately after the picked root — regardless of whether a
+   test-subfolder sits between archive and XML. Real user data mixes
+   both depths at the same picked root:
+     4-segment (AMHS side, with test subfolder):
+       "Clash Tests/260601 FAB AMHS v 7 Clash test/03_GAS_v_08_AMHS/03_GAS_v_08_AMHS.xml"
+       → "260601 FAB AMHS v 7 Clash test"
+     3-segment (Exyte side, XML directly in the archive):
+       "Clash Tests/260629 FAB Exyte v AMHS Clash test/Exyte AAS_v_08_AMHS.xml"
+       → "260629 FAB Exyte v AMHS Clash test"
+   PR #23d's third-from-last extraction misfired for the 3-segment
+   Exyte layout (would return "Clash Tests", the picked root). PR #23b's
+   second-from-last also misfired (would return the test subfolder for
+   4-segment paths). Index [1] handles both consistently. The
+   BATCH-IMPORT-PICK-VALIDATION gate below refuses picks whose first
+   file has fewer than 3 segments, so by the time this helper is called
+   during batch parsing there's always an archive at index [1]. Returns
+   null on paths too short to hold that layer (single-file picker,
+   paste path, browsers without webkitRelativePath) — explicit null
+   lets downstream code distinguish "no folder captured" from "never
+   captured at all". Handles both / and \\ because Windows drag-drop
+   paths mix them. */
 function _extractSourceFolder(fullPath){
   if(!fullPath)return null;
   const s=String(fullPath);
   const parts=s.split(/[\/\\]/);
   if(parts.length<3)return null;
-  return parts[parts.length-3]||null;
+  return parts[1]||null;
 }
 /* BATCH-IMPORT-FOLDER-CAPTURE end */
 /* IMG-COUNT-CHECK start: batch-level image count set by loadNwImages when
@@ -6742,14 +6752,15 @@ function bloadf(inp){
    report's basename, which is what subsequent image lookups use under the
    IMG-FIX composite key `testName::filename`. */
 /* BATCH-IMPORT-PICK-VALIDATION start: strict pre-import gate that blocks
-   the parse entirely when the pick's first file has too few path segments
-   to expose the archive folder. Chromium's webkitRelativePath begins with
-   the picked folder's CONTENTS, so the canonical
-   [picked]/[archive]/[test-subfolder]/[XML] structure lands as a 4-segment
-   path. Anything shorter — user picked an archive folder directly, or a
-   test-subfolder inside one — cannot yield a correct archive name from
-   the third-from-last segment. Runs before BATCH-IMPORT-SHAPE-WARN so the
-   block wins over the weaker Continue-anyway heuristic; also cheaper (no
+   the parse when the pick's first file has too few path segments to
+   expose the archive folder. Real user data mixes archive layouts —
+   AMHS side ships a test-subfolder between archive and XML (4 segs);
+   Exyte side puts the XML directly in the archive (3 segs). Both are
+   valid, both keep the archive at index [1]. What we must catch is a
+   pick where index [1] is the XML itself (2 segs) or where there's no
+   folder at all (1 seg): those layouts leave sourceFolder empty or
+   mis-attributed. Runs before BATCH-IMPORT-SHAPE-WARN so the block
+   wins over the weaker Continue-anyway heuristic; also cheaper (no
    set-build required). Returns the modal's Promise so importFolderPick
    can `await` and stay readable. */
 function _bifShowPickValidation(sampleName,segmentCount){
@@ -6763,9 +6774,8 @@ function _bifShowPickValidation(sampleName,segmentCount){
       <div style="padding:16px 22px;border-bottom:1px solid #E5E7EB;background:#FEE2E2;color:#991B1B;font-weight:700;font-size:14px">✕ Wrong folder level picked</div>
       <div style="padding:18px 22px;color:#0F1824;font-size:12px;line-height:1.6">
         <div style="margin-bottom:10px">The batch import needs to see your archive folders. Please pick the parent folder that contains all your weekly archive folders.</div>
-        <div style="margin-bottom:10px">Example: pick <code style="background:#F1F5F9;padding:1px 4px;border-radius:3px">C:/temp/Clash Tests/</code>, not any individual archive folder or subfolder inside one.</div>
-        <div style="margin-bottom:10px">Expected structure: <code style="background:#F1F5F9;padding:1px 4px;border-radius:3px">[picked folder] / [archive folder] / [test subfolder] / [XML file]</code></div>
-        <div style="color:#475569;font-size:11px">First file seen: <code style="background:#F1F5F9;padding:1px 4px;border-radius:3px">${esc(sampleName||'')}</code> (${segmentCount} segment${segmentCount===1?'':'s'} — needs at least 4)</div>
+        <div style="margin-bottom:10px">Example: pick <code style="background:#F1F5F9;padding:1px 4px;border-radius:3px">C:/temp/Clash Tests/</code>, not any individual archive folder.</div>
+        <div style="color:#475569;font-size:11px">First file seen: <code style="background:#F1F5F9;padding:1px 4px;border-radius:3px">${esc(sampleName||'')}</code> (${segmentCount} segment${segmentCount===1?'':'s'} — needs at least 3)</div>
       </div>
       <div style="padding:14px 22px;border-top:1px solid #E5E7EB;display:flex;justify-content:flex-end;gap:8px;background:#F8FAFC">
         <button id="bif-pick-close" style="background:#EA7600;border:0;color:#fff;padding:8px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">OK — I'll pick the parent folder</button>
@@ -6840,16 +6850,19 @@ async function importFolderPick(inputEl){
   if(!all.length)return;
 
   /* BATCH-IMPORT-PICK-VALIDATION: gate — inspect the first file's
-     webkitRelativePath. If it splits to fewer than 4 segments, the user
+     webkitRelativePath. If it splits to fewer than 3 segments, the user
      picked below the parent folder that holds the archive folders, so
-     archive-name capture is impossible from this pick. Block the parse
-     entirely and clear the input so a subsequent identical pick still
-     fires (browsers no-op the change event when files === the previous
-     selection unless value clears). Awaits the OK dismissal so focus
-     restores cleanly before the file dialog reopens. */
+     archive-name capture is impossible from this pick. 3 segments
+     ([picked]/[archive]/[XML]) is the minimum valid layout: covers the
+     Exyte-side archives that put the XML directly in the archive; 4+
+     covers the AMHS-side archives with a test-subfolder layer.
+     Block the parse and clear the input so a subsequent identical pick
+     still fires (browsers no-op the change event when files === the
+     previous selection unless value clears). Awaits the OK dismissal
+     so focus restores cleanly before the file dialog reopens. */
   const _sample=all[0].webkitRelativePath||all[0].name||'';
   const _segs=_sample.split('/');
-  if(_segs.length<4){
+  if(_segs.length<3){
     await _bifShowPickValidation(_sample,_segs.length);
     inputEl.value='';
     return;
