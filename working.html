@@ -12996,7 +12996,14 @@ function _clearIdbStores(name,storesWanted,timeoutMs){
         }catch(e){try{db.close();}catch(_e){}done(()=>reject(new Error('clear inner: '+e.message)));}
       };
       req.onerror=()=>done(()=>reject(new Error('open for clear error: '+(req.error&&req.error.message||'unknown'))));
-      setTimeout(()=>done(()=>reject(new Error('clear timeout after '+(timeoutMs||3000)+'ms'))),timeoutMs||3000);
+      /* SELECTIVE-RESET-IDB-CLOSE start: partial-clear default bumped from
+         3000ms to 15000ms for parity with _deleteIdbDatabase. The 3s ceiling
+         fired on Selective Reset partial paths (images-only or plans-only)
+         when the images store held large blobs and the tx took its time to
+         commit — same "clear timeout after 3000ms" the atomic path used to
+         hit before its own bump. */
+      setTimeout(()=>done(()=>reject(new Error('clear timeout after '+(timeoutMs||15000)+'ms'))),timeoutMs||15000);
+      /* SELECTIVE-RESET-IDB-CLOSE end */
     }catch(e){done(()=>reject(new Error('clear threw: '+e.message)));}
   });
 }
@@ -13080,7 +13087,7 @@ async function _wipeIdbWithVerify(mode,storesWanted){
       if(mode==='full'){
         await _deleteIdbDatabase('NWClashImages',15000);
       } else {
-        await _clearIdbStores('NWClashImages',stores,3000);
+        await _clearIdbStores('NWClashImages',stores,15000);
       }
     }catch(e){
       if(attempt===2)throw new Error('IndexedDB wipe failed after retry: '+e.message);
@@ -13093,7 +13100,7 @@ async function _wipeIdbWithVerify(mode,storesWanted){
         continue;
       }
     }
-    const check=await _verifyIdbEmpty('NWClashImages',stores,2000);
+    const check=await _verifyIdbEmpty('NWClashImages',stores,5000);
     if(check.ok)return;
     if(attempt===2){
       throw new Error('IndexedDB wipe verify failed: '+(check.error||('leftovers '+JSON.stringify(check.leftovers))));

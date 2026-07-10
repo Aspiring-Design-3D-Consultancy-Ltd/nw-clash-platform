@@ -151,3 +151,7 @@ scripts/package-lock.json
 tests/test-results/
 tests/playwright-report/
 tests/package-lock.json
+
+# Screenshots emitted by capture specs at the repo root — regenerated on demand
+selective-reset-partial-modal.png
+selective-reset-partial-success.png
