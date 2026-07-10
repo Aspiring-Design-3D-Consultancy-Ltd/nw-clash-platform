@@ -218,6 +218,212 @@ test.describe('SELECTIVE-RESET-IDB-VERIFY', () => {
   });
 });
 
+test.describe('SELECTIVE-RESET-IDB-CLOSE — partial-clear timeout parity', () => {
+  test('_clearIdbStores default timeout is 15000ms (not 3000ms)', async ({ page }) => {
+    await bootstrap(page);
+    const info = await page.evaluate(() => {
+      // Stub indexedDB.open — the request opens "successfully" but the tx
+      // never completes. If the default ceiling is still 3s, the promise
+      // rejects within 4s; if bumped to 15s, it stays pending past 4s.
+      const orig = indexedDB.open.bind(indexedDB);
+      indexedDB.open = () => {
+        const req = { onerror: null, onsuccess: null, onupgradeneeded: null, result: null };
+        setTimeout(() => {
+          req.result = {
+            objectStoreNames: { contains: () => true },
+            transaction: () => ({
+              objectStore: () => ({ clear: () => ({}) }),
+              oncomplete: null, onerror: null, onabort: null,
+            }),
+            close: () => {},
+          };
+          try { req.onsuccess && req.onsuccess(); } catch (_) {}
+        }, 5);
+        return req;
+      };
+      let resolved = 0, rejectedMsg = null;
+      _clearIdbStores('NWClashImages', ['images'])
+        .then(() => { resolved = 1; })
+        .catch(e => { rejectedMsg = e.message; });
+      return new Promise(r => setTimeout(() => {
+        r({ resolved, rejectedMsg });
+        indexedDB.open = orig;
+      }, 4000));
+    });
+    expect(info.resolved).toBe(0);
+    // Would-fire message: "clear timeout after 3000ms" — must NOT appear.
+    expect(info.rejectedMsg).toBeNull();
+  });
+
+  test('_clearIdbStores timeout message names the ceiling that fired', async ({ page }) => {
+    await bootstrap(page);
+    const result = await page.evaluate(async () => {
+      const orig = indexedDB.open.bind(indexedDB);
+      indexedDB.open = () => ({ onerror: null, onsuccess: null, onupgradeneeded: null });
+      try {
+        await _clearIdbStores('NWClashImages', ['images'], 100);
+        return { rejected: false };
+      } catch (e) {
+        return { rejected: true, message: e.message };
+      } finally {
+        indexedDB.open = orig;
+      }
+    });
+    expect(result.rejected).toBe(true);
+    expect(result.message).toMatch(/clear timeout after 100ms/);
+  });
+
+  test('_wipeIdbWithVerify("partial") completes when the clear tx takes ~5s (would fail with old 3s ceiling)', async ({ page }) => {
+    test.setTimeout(20_000);
+    await bootstrap(page);
+    const result = await page.evaluate(async () => {
+      await idbPut(1, 'BLOB-A');
+      await idbPut(2, 'BLOB-B');
+      // Wrap indexedDB.open so the returned tx delays oncomplete by ~5s.
+      const orig = indexedDB.open.bind(indexedDB);
+      indexedDB.open = (name, ver) => {
+        const req = orig(name, ver);
+        req.addEventListener('success', () => {
+          const db = req.result;
+          const origTx = db.transaction.bind(db);
+          db.transaction = (stores, mode) => {
+            const tx = origTx(stores, mode);
+            // Delay whichever completion fires — swap oncomplete setter.
+            const origOnComplete = Object.getOwnPropertyDescriptor(
+              IDBTransaction.prototype, 'oncomplete'
+            );
+            let userComplete = null;
+            Object.defineProperty(tx, 'oncomplete', {
+              get() { return userComplete; },
+              set(fn) {
+                userComplete = fn;
+                // Intercept native complete event and delay 5s.
+                tx.addEventListener('complete', () => {
+                  setTimeout(() => { try { fn && fn(); } catch (_) {} }, 5000);
+                }, { once: true });
+              },
+            });
+            return tx;
+          };
+        }, { once: true });
+        return req;
+      };
+      const t0 = performance.now();
+      let threw = null;
+      try {
+        await _wipeIdbWithVerify('partial', ['images']);
+      } catch (e) { threw = e.message; }
+      const elapsed = performance.now() - t0;
+      indexedDB.open = orig;
+      return { threw, elapsed };
+    });
+    expect(result.threw).toBeNull();
+    // ~5s delay + verify — well over 3s (old ceiling would have thrown), well under 15s.
+    expect(result.elapsed).toBeGreaterThan(4500);
+    expect(result.elapsed).toBeLessThan(15_000);
+  });
+
+  test('_verifyIdbEmpty succeeds within the 5000ms default used by _wipeIdbWithVerify', async ({ page }) => {
+    await bootstrap(page);
+    const result = await page.evaluate(async () => {
+      // DB freshly opened, empty images store. verify should return ok.
+      await _deleteIdbDatabase('NWClashImages', 15000);
+      const t0 = performance.now();
+      const check = await _verifyIdbEmpty('NWClashImages', ['images', 'plans'], 5000);
+      return { ok: check.ok, elapsed: performance.now() - t0 };
+    });
+    expect(result.ok).toBe(true);
+    expect(result.elapsed).toBeLessThan(5000);
+  });
+
+  test('selective reset with ONLY images ticked routes through the partial path and reloads without error', async ({ page }) => {
+    await bootstrap(page);
+    const result = await page.evaluate(async () => {
+      const alerts = [];
+      window.alert = m => alerts.push(String(m));
+      window.confirm = () => true;
+      try { Location.prototype.reload = function () {}; } catch (_) {}
+      // Track which wipe branch is taken by wrapping _clearIdbStores.
+      const origClear = _clearIdbStores;
+      let partialCalled = 0, partialTimeoutArg = null;
+      window._clearIdbStores = (name, stores, tmo) => {
+        partialCalled++; partialTimeoutArg = tmo;
+        return origClear(name, stores, tmo);
+      };
+      // Also track _deleteIdbDatabase to prove the atomic path was NOT used.
+      const origDel = _deleteIdbDatabase;
+      let atomicCalled = 0;
+      window._deleteIdbDatabase = (name, tmo) => {
+        atomicCalled++;
+        return origDel(name, tmo);
+      };
+      await idbPut(0, { count: 2, loadedAt: Date.now() });
+      await idbPut(1, 'BLOB-A');
+      await idbPut(2, 'BLOB-B');
+      selectiveReset();
+      const cats = _selectiveResetCategories();
+      const cbi = document.querySelector('#selective-reset-modal input[data-cat="images"]');
+      const cbp = document.querySelector('#selective-reset-modal input[data-cat="plans"]');
+      if (cbi) cbi.checked = true;
+      if (cbp) cbp.checked = false;
+      let threw = null;
+      try {
+        await _executeSelectiveReset(cats, 'selective-reset-modal');
+      } catch (e) { threw = e.message; }
+      window._clearIdbStores = origClear;
+      window._deleteIdbDatabase = origDel;
+      return { alerts, threw, partialCalled, atomicCalled, partialTimeoutArg };
+    });
+    expect(result.threw).toBeNull();
+    expect(result.partialCalled).toBeGreaterThan(0);
+    expect(result.atomicCalled).toBe(0);
+    expect(result.partialTimeoutArg).toBe(15000);
+    expect(result.alerts.some(m => /Selective reset complete/i.test(m))).toBe(true);
+    expect(result.alerts.some(m => /Selective reset FAILED/i.test(m))).toBe(false);
+  });
+
+  test('regression: selective reset with BOTH images AND plans ticked still routes through atomic delete', async ({ page }) => {
+    await bootstrap(page);
+    const result = await page.evaluate(async () => {
+      const alerts = [];
+      window.alert = m => alerts.push(String(m));
+      window.confirm = () => true;
+      try { Location.prototype.reload = function () {}; } catch (_) {}
+      const origDel = _deleteIdbDatabase;
+      let atomicCalled = 0, atomicTimeoutArg = null;
+      window._deleteIdbDatabase = (name, tmo) => {
+        atomicCalled++; atomicTimeoutArg = tmo;
+        return origDel(name, tmo);
+      };
+      const origClear = _clearIdbStores;
+      let partialCalled = 0;
+      window._clearIdbStores = (name, stores, tmo) => {
+        partialCalled++;
+        return origClear(name, stores, tmo);
+      };
+      await idbPut(1, 'seed');
+      selectiveReset();
+      const cats = _selectiveResetCategories();
+      const cbi = document.querySelector('#selective-reset-modal input[data-cat="images"]');
+      const cbp = document.querySelector('#selective-reset-modal input[data-cat="plans"]');
+      if (cbi) cbi.checked = true;
+      if (cbp) cbp.checked = true;
+      let threw = null;
+      try {
+        await _executeSelectiveReset(cats, 'selective-reset-modal');
+      } catch (e) { threw = e.message; }
+      window._deleteIdbDatabase = origDel;
+      window._clearIdbStores = origClear;
+      return { alerts, threw, atomicCalled, partialCalled, atomicTimeoutArg };
+    });
+    expect(result.threw).toBeNull();
+    expect(result.atomicCalled).toBeGreaterThan(0);
+    expect(result.partialCalled).toBe(0);
+    expect(result.atomicTimeoutArg).toBe(15000);
+    expect(result.alerts.some(m => /Selective reset complete/i.test(m))).toBe(true);
+  });
+});
+
 test.describe('SELECTIVE-RESET wiring — end-to-end with images ticked', () => {
   test('selective reset with NW images ticked runs to completion, seeded IDB is verified empty', async ({ page }) => {
     await bootstrap(page);
