@@ -152,6 +152,11 @@ tests/test-results/
 tests/playwright-report/
 tests/package-lock.json
 
+# Root-level Playwright artifacts (running from repo root also emits these)
+/test-results/
+/playwright-report/
+
 # Screenshots emitted by capture specs at the repo root — regenerated on demand
 selective-reset-partial-modal.png
 selective-reset-partial-success.png
+weekly-import-summary.png
