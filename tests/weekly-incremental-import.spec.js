@@ -623,6 +623,238 @@ test.describe('WEEKLY-IMPORT-SUMMARY — post-import modal', () => {
   });
 });
 
+test.describe('WEEKLY-DELTA-DETECT — baseline rule (Case A: register has NO prior clashes with this testName)', () => {
+  test('first-time testName: no Review Queue flagging on any incoming clash', async ({ page }) => {
+    // Case A trigger = register has NO prior clashes with the incoming
+    // testName. A truly first-time test never gets its clashes flagged
+    // as disappeared, regardless of what other testNames the register
+    // already holds. Seed with a different testName's clash to prove
+    // the gate is per-testName, not global.
+    await bootstrap(page);
+    await page.evaluate(() => {
+      S.clashes = [{
+        uid: 'CLX-001',
+        name: 'CLX-001 unrelated-test',
+        nwOrig: 'X1',
+        testName: 'UNRELATED_TEST',
+        status: 'Active', priority: 'High',
+        disciplineA: 'GAS', disciplineB: 'Structural',
+        elementA: 'Item-A', elementB: 'Item-B',
+        elementIdA: 'EID-A-U1', elementIdB: 'EID-B-U1',
+        sourceA: 'GAS.nwc', sourceB: 'Structure.nwc',
+        penetration: '0mm',
+        date: '01/05/26',
+        x: 100, y: 100, z: 100,
+        statusHistory: [{ week: 18, year: 2026, status: 'Active' }],
+      }];
+      S.weekly = [];
+      sv('clashes', S.clashes);
+    });
+    const state = await importWeek(page, {
+      weekTag: 'week-260601',
+      archives: [{
+        archiveFolder: '260601 FAB', fileName: '03_GAS.xml',
+        xml: makeXml({
+          testName: '03_GAS',
+          clashes: [
+            { name: 'C1', date: { y: 2026, m: 6, d: 1 } },
+            { name: 'C2', date: { y: 2026, m: 6, d: 1 } },
+          ],
+        }),
+      }],
+    });
+    // No 03_GAS clash may be flagged — first-time testName.
+    const gasFlagged = state.clashes.filter(c =>
+      c.testName === '03_GAS' && c.pendingReview === true
+    );
+    expect(gasFlagged).toHaveLength(0);
+    // The UNRELATED_TEST clash was untouched (not in this batch's tests).
+    const unrelated = state.clashes.find(c => c.uid === 'CLX-001');
+    expect(unrelated.pendingReview).not.toBe(true);
+  });
+
+  test('legacy migration compat: same-testName register clashes WITHOUT a prior snapshot still get delta-detected (Case B fallback)', async ({ page }) => {
+    // A user upgrading from pre-WEEKLY-SNAPSHOT-RECORD has register
+    // clashes for testName '03_GAS' but no nw:weekly imports[] entry
+    // yet. Their first weekly import for 03_GAS drops a clash: that
+    // legacy clash must still surface in the Review Queue. This is
+    // Case B with the "register-minus-matched" fallback — snapshot
+    // was never laid.
+    await bootstrap(page);
+    await page.evaluate(() => {
+      S.clashes = [
+        {
+          uid: 'CLX-001', name: 'CLX-001 legacy-C1', nwOrig: 'C1',
+          testName: '03_GAS',
+          status: 'Active', priority: 'High',
+          disciplineA: 'GAS', disciplineB: 'Structural',
+          elementA: 'Item-A-C1', elementB: 'Item-B-C1',
+          elementIdA: 'EID-A-legacy-C1', elementIdB: 'EID-B-legacy-C1',
+          sourceA: 'GAS.nwc', sourceB: 'Structure.nwc',
+          penetration: '0mm', date: '01/05/26',
+          x: 1050, y: 1050, z: 1050,
+          statusHistory: [{ week: 18, year: 2026, status: 'Active' }],
+        },
+        {
+          uid: 'CLX-002', name: 'CLX-002 legacy-C2', nwOrig: 'C2',
+          testName: '03_GAS',
+          status: 'Active', priority: 'High',
+          disciplineA: 'GAS', disciplineB: 'Structural',
+          elementA: 'Item-A-C2', elementB: 'Item-B-C2',
+          elementIdA: 'EID-A-legacy-C2', elementIdB: 'EID-B-legacy-C2',
+          sourceA: 'GAS.nwc', sourceB: 'Structure.nwc',
+          penetration: '0mm', date: '01/05/26',
+          x: 1100, y: 1100, z: 1100,
+          statusHistory: [{ week: 18, year: 2026, status: 'Active' }],
+        },
+      ];
+      S.weekly = [];
+      sv('clashes', S.clashes);
+    });
+    // Import a batch with only C1 (matches CLX-001 by ID). CLX-002
+    // should be flagged as disappeared via the legacy fallback path.
+    const state = await importWeek(page, {
+      weekTag: 'week-260601',
+      archives: [{
+        archiveFolder: '260601 FAB', fileName: '03_GAS.xml',
+        xml: makeXml({
+          testName: '03_GAS',
+          clashes: [{
+            name: 'C1',
+            eidA: 'EID-A-legacy-C1',
+            eidB: 'EID-B-legacy-C1',
+            date: { y: 2026, m: 6, d: 1 },
+          }],
+        }),
+      }],
+    });
+    // CLX-002 must be flagged: Case B fallback preserves pre-weekly behaviour.
+    const c2 = state.clashes.find(c => c.uid === 'CLX-002');
+    expect(c2).toBeDefined();
+    expect(c2.pendingReview).toBe(true);
+  });
+
+  test('first-time testName: no dedup candidates surface even when incoming clashes are coordinate-adjacent', async ({ page }) => {
+    // Two incoming clashes in the same first-time testName sit ~20mm
+    // apart — well inside the dedup range. Under Case A, no dedup pair
+    // should be generated. A second, non-baseline test lands two other
+    // clashes at the same offset to prove the scan itself is running.
+    await bootstrap(page);
+    // Seed a prior weekly snapshot for the "PERSISTING_TEST" so it is
+    // NOT baseline. Zero prior snapshot for "NEW_TEST" so it IS baseline.
+    await importWeek(page, {
+      weekTag: 'week-260525',
+      archives: [{
+        archiveFolder: '260525 FAB', fileName: 'PERSISTING_TEST.xml',
+        xml: makeXml({
+          testName: 'PERSISTING_TEST',
+          clashes: [{ name: 'X1', date: { y: 2026, m: 5, d: 25 } }],
+        }),
+      }],
+    });
+    // Now import week-260601 with two clashes in each test sitting
+    // 20mm apart (dedup would fire on both under the pre-baseline logic).
+    const state = await importWeek(page, {
+      weekTag: 'week-260601',
+      archives: [
+        {
+          archiveFolder: '260601 FAB', fileName: 'PERSISTING_TEST.xml',
+          xml: makeXml({
+            testName: 'PERSISTING_TEST',
+            clashes: [
+              { name: 'X1', date: { y: 2026, m: 6, d: 1 } },
+              { name: 'X2', x: 1050, y: 1050, z: 1050, date: { y: 2026, m: 6, d: 1 } },
+            ],
+          }),
+        },
+        {
+          archiveFolder: '260601 FAB', fileName: 'NEW_TEST.xml',
+          xml: makeXml({
+            testName: 'NEW_TEST',
+            clashes: [
+              { name: 'Y1', date: { y: 2026, m: 6, d: 1 } },
+              { name: 'Y2', x: 1050, y: 1050, z: 1050, date: { y: 2026, m: 6, d: 1 } },
+            ],
+          }),
+        },
+      ],
+    });
+    const dedupQueue = await page.evaluate(() => S.dedupQueue || []);
+    // Any pair in the queue must reference clashes from PERSISTING_TEST
+    // — the NEW_TEST clashes are baseline and must NOT participate.
+    dedupQueue.forEach(pair => {
+      const a = state.clashes.find(c => c.uid === pair.a);
+      const b = state.clashes.find(c => c.uid === pair.b);
+      expect(a && b).toBeTruthy();
+      expect(a.testName).toBe('PERSISTING_TEST');
+      expect(b.testName).toBe('PERSISTING_TEST');
+    });
+    // Sanity: NEW_TEST clashes exist in the register but no dedup entries mention them.
+    const newTestUids = new Set(state.clashes.filter(c => c.testName === 'NEW_TEST').map(c => c.uid));
+    expect(newTestUids.size).toBe(2);
+    dedupQueue.forEach(pair => {
+      expect(newTestUids.has(pair.a)).toBe(false);
+      expect(newTestUids.has(pair.b)).toBe(false);
+    });
+  });
+
+  test('mixed batch: baseline test skipped, non-baseline test still delta-detected', async ({ page }) => {
+    await bootstrap(page);
+    // Prime the non-baseline test.
+    await importWeek(page, {
+      weekTag: 'week-260525',
+      archives: [{
+        archiveFolder: '260525 FAB', fileName: 'PERSISTING.xml',
+        xml: makeXml({
+          testName: 'PERSISTING',
+          clashes: [
+            { name: 'C1', date: { y: 2026, m: 5, d: 25 } },
+            { name: 'C2', date: { y: 2026, m: 5, d: 25 } },
+          ],
+        }),
+      }],
+    });
+    // Week 2 imports: PERSISTING loses C2 (should flag); brand-new
+    // FIRST_TIME test lands two clashes (must not flag, must not dedup).
+    const state = await importWeek(page, {
+      weekTag: 'week-260601',
+      archives: [
+        {
+          archiveFolder: '260601 FAB', fileName: 'PERSISTING.xml',
+          xml: makeXml({
+            testName: 'PERSISTING',
+            clashes: [
+              { name: 'C1', date: { y: 2026, m: 6, d: 1 } },
+              { name: 'C3', date: { y: 2026, m: 6, d: 1 } },
+            ],
+          }),
+        },
+        {
+          archiveFolder: '260601 FAB', fileName: 'FIRST_TIME.xml',
+          xml: makeXml({
+            testName: 'FIRST_TIME',
+            clashes: [
+              { name: 'F1', date: { y: 2026, m: 6, d: 1 } },
+              { name: 'F2', date: { y: 2026, m: 6, d: 1 } },
+            ],
+          }),
+        },
+      ],
+    });
+    // PERSISTING: C2 disappeared, must be flagged.
+    const persistingDisappeared = state.clashes.filter(c =>
+      c.testName === 'PERSISTING' && c.pendingReview === true
+    );
+    expect(persistingDisappeared).toHaveLength(1);
+    expect(persistingDisappeared[0].nwOrig).toBe('C2');
+    // FIRST_TIME: no clash flagged.
+    const firstTimeFlagged = state.clashes.filter(c =>
+      c.testName === 'FIRST_TIME' && c.pendingReview === true
+    );
+    expect(firstTimeFlagged).toHaveLength(0);
+  });
+});
+
 test.describe('WEEKLY-DELTA-DETECT — regression: disappeared clashes go to Review Queue, NOT to Resolved', () => {
   test('flagged clash surfaces in Review Queue view; status stays intact', async ({ page }) => {
     await bootstrap(page);
