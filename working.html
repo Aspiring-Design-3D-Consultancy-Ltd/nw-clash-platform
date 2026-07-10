@@ -6259,23 +6259,26 @@ function pairKey(c){
    Set-based existing check skips pairs already in the queue.
    Returns count of NEW candidates added.
 
-   WEEKLY-DEDUP-SCOPE (optional batchUids arg): when provided, only
-   emit pair candidates where AT LEAST ONE side's uid is in batchUids
-   — the set of clashes actually observed in the current weekly
-   import. Post-import invocations pass this so previously-reviewed
-   pairs from prior weeks aren't re-scanned or re-surfaced. The
-   initial-scan and hydrate paths call with no argument, preserving
-   the whole-register scan for one-shot migrations. */
+   WEEKLY-DEDUP-SCOPE (optional batchUids + baselineTestNames args):
+   when batchUids is provided, only emit pair candidates where at
+   least one side's uid is in it — the set of clashes actually
+   observed in the current weekly import. When baselineTestNames is
+   provided, skip every clash whose testName appears in it — first-
+   time-imported tests generate no dedup pairs (per the baseline-
+   import rule). Post-import invocations pass both. The initial-scan
+   and hydrate paths call with no arguments, preserving the whole-
+   register scan for one-shot migrations. */
 function _dedupCoordNorm(s){return String(s||'').toLowerCase().replace(/\\/g,'/').replace(/^.*\//,'').trim();}
 function _dedupCellKey(x){return (x.testName||'')+'::'+_dedupCoordNorm(x.sourceA)+'::'+_dedupCoordNorm(x.sourceB);}
-function scanForDedupCandidates(batchUids){
+function scanForDedupCandidates(batchUids,baselineTestNames){
   if(!Array.isArray(S.clashes))return 0;
   if(!Array.isArray(S.dedupQueue))S.dedupQueue=[];
-  /* WEEKLY-DEDUP-SCOPE start: normalise the optional filter. `null` and
-     omitted argument both mean "no scope filter" (whole-register scan);
-     an empty Set means "nothing was imported this week" and correctly
-     scans nothing new. */
+  /* WEEKLY-DEDUP-SCOPE start: normalise the two optional filters. `null`
+     and omitted args both mean "no scope filter" (whole-register scan);
+     an empty Set means "nothing was imported this week" / "no baseline
+     tests" and correctly filters accordingly. */
   const _dqBatchFilter=(batchUids instanceof Set)?batchUids:null;
+  const _dqBaselineTests=(baselineTestNames instanceof Set)?baselineTestNames:null;
   /* WEEKLY-DEDUP-SCOPE end */
   /* DEDUP-QUEUE-DETECT-IDEMPOTENT start: preserve resolution state
      (skipped / resolved / resolvedAction / resolvedAt) on any pair
@@ -6291,6 +6294,12 @@ function scanForDedupCandidates(batchUids){
   const buckets=new Map();
   S.clashes.forEach(x=>{
     if(x.dedupResolved===true||x.status==='Resolved')return;
+    /* WEEKLY-DEDUP-SCOPE baseline: skip clashes whose testName is a
+       first-time import (no prior weekly snapshot). Same-testName is
+       required for a pair to bucket together, so filtering here is
+       enough — a baseline testName's clashes never enter any bucket
+       and therefore never generate candidate pairs. */
+    if(_dqBaselineTests && _dqBaselineTests.has(x.testName||''))return;
     const xn=typeof x.x==='number'?x.x:parseFloat(x.x);
     const yn=typeof x.y==='number'?x.y:parseFloat(x.y);
     const zn=typeof x.z==='number'?x.z:parseFloat(x.z);
@@ -8420,41 +8429,35 @@ function importToRegister(mode){
   });
 
   sv('clashes',S.clashes);
-  /* DEDUP-QUEUE-DETECT start: scan the post-merge register for candidate
-     duplicate pairs and stash per-batch counts for the imports[] event
-     log. Auto-merges from PAIR-KEY-COORD-TIER were already applied above;
-     these are the >1mm-to-500mm pairs that need human confirmation via
-     the Dedup Queue tab. */
-  let _dqCandidatesAdded=0;
-  if(mode==='append'){
-    /* WEEKLY-DEDUP-SCOPE: pass this week's UIDs so the scan only
-       surfaces pairs where at least one side landed in the current
-       import. Previously the post-import scan re-inspected the whole
-       register, meaning candidates that a user already skipped on an
-       earlier week would come back if a new week added a
-       coordinate-adjacent clash unrelated to the pair. Full-register
-       scans still exist on load (DEDUP-QUEUE-DETECT hydrate and
-       one-shot migration) — those pass no argument. */
-    try{_dqCandidatesAdded=scanForDedupCandidates(_batchUids);}
-    catch(e){console.warn('DEDUP-QUEUE-DETECT scan error:',e);}
-  }
-  window._dqBatchMeta={autoMerged:(typeof _coordAutoMergedCount==='number'?_coordAutoMergedCount:0),candidatesAdded:_dqCandidatesAdded};
-  /* DEDUP-QUEUE-DETECT end */
-  /* WEEKLY-DELTA-DETECT start: per-testName scoping of the disappeared
-     computation. For each test in this batch, find the most recent
-     PRIOR imports[] entry (across the whole S.weekly log) whose
-     testsIncluded contains the test AND that carries the new
-     clashUidsPresent field. That entry's UID set is the "expected"
-     baseline — anything in it but NOT in this batch's _batchUids is
-     an actual disappearance for that test.
+  /* WEEKLY-DELTA-DETECT start: per-testName scoping split into two
+     cases per the baseline-import rule. Computed BEFORE the dedup
+     scan so DEDUP-QUEUE-DETECT can also read _baselineTestNames to
+     suppress dedup pair generation on first-time-imported tests.
 
-     Falls back to the pre-weekly PAIR-ID-RESOLVED-COUNT scope
-     (register minus matched) when NO prior snapshot has
-     clashUidsPresent for the test — covers the migration window
-     before enough weekly imports have accumulated and covers
-     brand-new tests that appear for the first time in this batch. */
+     Case A — Baseline: the REGISTER has no prior clashes with this
+       testName. Every incoming clash is "New" (status logic is
+       already handled by DUP-FILES-FIX's isFirstImport/knownTests
+       check), no delta comparison runs, no Review Queue flagging,
+       no dedup pair detection.
+
+     Case B — Subsequent: the register has prior clashes for this
+       testName. When a prior weekly snapshot also exists in
+       S.weekly[].imports[] for this testName, that snapshot's
+       clashUidsPresent is the "expected" set (anything in it but
+       NOT in _batchUids is a disappearance). Migration case:
+       register has prior clashes but no snapshot yet — falls back
+       to the pre-weekly PAIR-ID-RESOLVED-COUNT scope
+       (register-minus-matched). This preserves REVIEW-QUEUE-*
+       and PAIR-ID-* behaviour for users importing their first
+       week after upgrading. */
   const _prevSnapUidsByTest=new Map();
+  const _baselineTestNames=new Set();
+  const _preExistingTestNames=new Set();
   if(mode==='append'){
+    (S.clashes||[]).forEach(x=>{
+      if(!x)return;
+      if(_batchTests.has(x.testName))_preExistingTestNames.add(x.testName);
+    });
     const _priorImports=[];
     (S.weekly||[]).forEach(w=>{
       if(!w||!Array.isArray(w.imports))return;
@@ -8466,6 +8469,10 @@ function importToRegister(mode){
     });
     _priorImports.sort((a,b)=>String(b.at).localeCompare(String(a.at)));
     _batchTests.forEach(tn=>{
+      if(!_preExistingTestNames.has(tn)){
+        _baselineTestNames.add(tn);
+        return;
+      }
       for(const imp of _priorImports){
         if(imp.testsIncluded.indexOf(tn)>=0){
           _prevSnapUidsByTest.set(tn,new Set(imp.clashUidsPresent));
@@ -8475,23 +8482,45 @@ function importToRegister(mode){
     });
   }
   /* WEEKLY-DELTA-DETECT end */
+  /* DEDUP-QUEUE-DETECT start: scan the post-merge register for candidate
+     duplicate pairs and stash per-batch counts for the imports[] event
+     log. Auto-merges from PAIR-KEY-COORD-TIER were already applied above;
+     these are the >1mm-to-500mm pairs that need human confirmation via
+     the Dedup Queue tab. */
+  let _dqCandidatesAdded=0;
+  if(mode==='append'){
+    /* WEEKLY-DEDUP-SCOPE: pass this week's UIDs (so pairs entirely
+       inside prior weeks stay untouched) AND the set of baseline
+       testNames (so first-time-imported tests generate no dedup pairs
+       per the baseline rule). Full-register scans still exist on load
+       (DEDUP-QUEUE-DETECT hydrate + one-shot migration) — those call
+       with no arguments. */
+    try{_dqCandidatesAdded=scanForDedupCandidates(_batchUids,_baselineTestNames);}
+    catch(e){console.warn('DEDUP-QUEUE-DETECT scan error:',e);}
+  }
+  window._dqBatchMeta={autoMerged:(typeof _coordAutoMergedCount==='number'?_coordAutoMergedCount:0),candidatesAdded:_dqCandidatesAdded};
+  /* DEDUP-QUEUE-DETECT end */
   /* PAIR-ID-RESOLVED-COUNT start: compute disappeared count = pre-existing
      UIDs in batch's tests that weren't matched by any incoming clash. Stored
      for downstream toast + success card + per-import log entry. Append mode
      only — replace mode wipes register so the concept doesn't apply.
 
-     WEEKLY-DELTA-DETECT layering: when a prior snapshot exists for a
-     test, the scope shrinks from "register minus matched" to "prior
-     snapshot's clashUidsPresent minus this batch's _batchUids". Same
-     disappearance concept, tighter reference — clashes that were
-     already gone by the previous snapshot no longer get re-flagged
-     each week. Tests without a prior snapshot use the legacy scope. */
+     WEEKLY-DELTA-DETECT baseline rule: testNames with NO prior
+     register clashes are Case A — no delta runs, no false-positive
+     disappeared flags on truly first-time imports. Non-baseline
+     testNames use the prior snapshot's clashUidsPresent as the
+     reference when it exists; when no snapshot exists yet
+     (migration window between existing-register upgrade and the
+     first weekly import that lays a snapshot), the pre-weekly
+     register-minus-matched scope stands in so REVIEW-QUEUE and
+     PAIR-ID behaviour survive. */
   let _disappeared=0;
   if(mode==='append'){
     _preExistingByTest.forEach((tn,uid)=>{
+      if(_baselineTestNames.has(tn))return;
       const prevUids=_prevSnapUidsByTest.get(tn);
       if(prevUids){
-        if(prevUids.has(uid)&&!_batchUids.has(uid))_disappeared++;
+        if(prevUids.has(uid) && !_batchUids.has(uid))_disappeared++;
       } else if(!_matchedUids.has(uid)){
         _disappeared++;
       }
@@ -8536,15 +8565,15 @@ function importToRegister(mode){
          future edits to the resolved-count plumbing. */
       if(!_rqBatchTests.has(c.testName))return;
       /* REVIEW-QUEUE-DETECT-SCOPE-USE end */
-      /* WEEKLY-DELTA-DETECT-USE start: tighten the flag scope to clashes
-         that were actually PRESENT in the prior snapshot for this test.
-         When _prevSnapUidsByTest has the test, only flag if the clash's
-         uid appeared in the prior snapshot's clashUidsPresent — clashes
-         that were already gone by the previous snapshot don't get
-         re-flagged each week. When no prior snapshot exists for the
-         test (first-ever snapshot-aware import, migration window),
-         fall through to the pre-weekly scope (already gated above by
-         _preExistingByTest and _matchedUids). */
+      /* WEEKLY-DELTA-DETECT-USE start: baseline rule — Case A tests
+         skip flagging entirely. For Case B tests: when a prior
+         snapshot exists, only flag clashes whose uid was actually
+         PRESENT in that snapshot (clashes already gone by the
+         previous snapshot don't get re-flagged each week). When no
+         snapshot exists yet (migration window), fall through to the
+         pre-weekly scope already gated above by _preExistingByTest
+         and _matchedUids. */
+      if(_baselineTestNames.has(c.testName))return;
       const _prevUids=_prevSnapUidsByTest.get(c.testName);
       if(_prevUids && !_prevUids.has(c.uid))return;
       /* WEEKLY-DELTA-DETECT-USE end */
