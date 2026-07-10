@@ -124,7 +124,16 @@ test.describe('PAIR-KEY-COORD-TIER', () => {
 
   test('distance > 1mm but ≤ 500mm → NO auto-merge, register grows, dedup queue picks up 1 candidate', async ({ page }) => {
     await bootstrap(page);
-    await seed(page, [seedClash('CLX-001', 100, 100, 100)]);
+    // Seed elements must match what the parser actually stamps on the
+    // imported clash so DEDUP-SIGNATURE-FILTER lets the pair surface —
+    // same physical intersection, coord fall-through above 1mm. The XML
+    // in makeXml() carries no <smarttag>Item Name</smarttag> and no
+    // <layer>, so parser falls through to elementA/B = 'Unknown'. Seed
+    // to match.
+    const seedC = seedClash('CLX-001', 100, 100, 100);
+    seedC.elementA = 'Unknown';
+    seedC.elementB = 'Unknown';
+    await seed(page, [seedC]);
 
     // (105, 100, 100) is exactly 5mm from the seed. Above the strict
     // coord tier threshold, below the dedup ceiling.

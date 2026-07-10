@@ -5,8 +5,13 @@ import url from 'node:url';
 const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
 const HTML = 'file://' + path.resolve(__dirname, '..', 'working.html');
 
-// Two clashes at 3mm distance, same test + sources — a canonical dedup
-// candidate pair. Element IDs blanked so PAIR-ID doesn't collapse them.
+// Two clashes at 3mm distance, same test + sources + element strings — a
+// canonical dedup candidate pair (post DEDUP-SIGNATURE-FILTER: elementA
+// and elementB must both match exactly for the pair to surface, since
+// different suffixes distinguish equipment / access zone / maintenance
+// zone clashes on the same equipment). Element IDs blanked so PAIR-ID
+// doesn't collapse them via pairKey. weekTag left undefined (no wrapper
+// on legacy seed data) so DEDUP-SCOPE-GUARD's same-import check is a no-op.
 function makePair() {
   const base = {
     testName: '[H] Dedup Test',
@@ -27,8 +32,8 @@ function makePair() {
       elementA: 'Duct-1', elementB: 'Beam-1',
       x: 100, y: 100, z: 100, notes: 'Coordinator note: check flange' },
     { ...base, uid: 'CLX-002', name: 'CLX-002 — B', nwOrig: 'ClashB',
-      elementA: 'Duct-2', elementB: 'Beam-2',
-      x: 103, y: 100, z: 100 }, // 3mm away
+      elementA: 'Duct-1', elementB: 'Beam-1',
+      x: 103, y: 100, z: 100 }, // 3mm away, same element strings — same physical intersection
   ];
 }
 
@@ -499,11 +504,14 @@ test.describe('DEDUP-QUEUE', () => {
     // pair — scanForDedupCandidates would otherwise link every clash in
     // range across all three groups.
     await page.evaluate(() => {
-      const mk = (a, x, srcA, srcB) => ({
+      // DEDUP-SIGNATURE-FILTER requires elementA/elementB to match on
+      // both sides of the pair. The `elem` suffix keys the pair — both
+      // members of pair-1 share 'p1', pair-2 shares 'p2', etc.
+      const mk = (a, x, srcA, srcB, elem) => ({
         uid: a, name: a + ' — c', nwOrig: 'C' + a,
         testName: '[H] Badge Test',
         disciplineA: 'MEP', disciplineB: 'Structural',
-        elementA: 'D-' + a, elementB: 'B-' + a,
+        elementA: 'D-' + elem, elementB: 'B-' + elem,
         elementIdA: '', elementIdB: '',
         elementIdSrcA: '', elementIdSrcB: '',
         sourceA: srcA, sourceB: srcB,
@@ -513,12 +521,12 @@ test.describe('DEDUP-QUEUE', () => {
         statusHistory: [{ week: 27, year: 2026, status: 'Active' }],
       });
       S.clashes = [
-        mk('CLX-010', 100, 'A1.nwc', 'B1.nwc'),
-        mk('CLX-011', 103, 'A1.nwc', 'B1.nwc'),
-        mk('CLX-020', 500, 'A2.nwc', 'B2.nwc'),
-        mk('CLX-021', 503, 'A2.nwc', 'B2.nwc'),
-        mk('CLX-030', 900, 'A3.nwc', 'B3.nwc'),
-        mk('CLX-031', 903, 'A3.nwc', 'B3.nwc'),
+        mk('CLX-010', 100, 'A1.nwc', 'B1.nwc', 'p1'),
+        mk('CLX-011', 103, 'A1.nwc', 'B1.nwc', 'p1'),
+        mk('CLX-020', 500, 'A2.nwc', 'B2.nwc', 'p2'),
+        mk('CLX-021', 503, 'A2.nwc', 'B2.nwc', 'p2'),
+        mk('CLX-030', 900, 'A3.nwc', 'B3.nwc', 'p3'),
+        mk('CLX-031', 903, 'A3.nwc', 'B3.nwc', 'p3'),
       ];
       S.dedupQueue = [];
       sv('clashes', S.clashes); sv('dedupQueue', []);

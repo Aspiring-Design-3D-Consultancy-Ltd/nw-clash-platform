@@ -1131,6 +1131,12 @@ async function initAuth(){
       localStorage.setItem('nw:dedupInitialScan','1');
     }
   }catch(e){console.warn('DEDUP-QUEUE-DETECT initial scan error:',e);}
+  /* DEDUP-QUEUE-RETRO-CLEANUP-v1 invocation: runs after the initial
+     scan gate above so any freshly-scanned pairs from a first-time
+     upgrade are also cleaned. Idempotent via nw:dedupRetroCleanup:v1
+     — subsequent loads no-op. See _migrateDedupQueueV1() for the
+     rules (mirrors DEDUP-SCOPE-GUARD + DEDUP-SIGNATURE-FILTER). */
+  try{_migrateDedupQueueV1();}catch(e){console.warn('DEDUP-QUEUE-RETRO-CLEANUP-v1 error:',e);}
   if(!S.pin){
     document.getElementById('ath').textContent='Set Up Your PIN';
     document.getElementById('asub').textContent='Choose a 4-digit PIN to protect your data';
@@ -6318,6 +6324,30 @@ function scanForDedupCandidates(batchUids){
            user already skipped/resolved them). */
         if(_dqBatchFilter && !(_dqBatchFilter.has(uidA)||_dqBatchFilter.has(uidB)))continue;
         /* WEEKLY-DEDUP-SCOPE end */
+        /* DEDUP-SCOPE-GUARD start: same-import pairs are already deduplicated
+           by Navisworks itself. If both sides share weekTag, the pair is
+           two distinct real clashes on the same equipment (e.g. equipment
+           vs access zone vs maintenance zone) — never queue. This runs
+           alongside WEEKLY-DEDUP-SCOPE as belt-and-braces: WEEKLY-DEDUP-SCOPE
+           handles future incremental imports; this handles baseline and
+           any baseline-style re-import where every uid is in batchUids. */
+        if(a.ref.weekTag && b.ref.weekTag && a.ref.weekTag === b.ref.weekTag) continue;
+        /* DEDUP-SCOPE-GUARD end */
+        /* DEDUP-SIGNATURE-FILTER start: strict element identity check. Two
+           clashes are the same physical intersection only if elementA and
+           elementB display strings both match exactly. testName is already
+           enforced by the bucket key (_dedupCellKey). sourceA/sourceB are
+           also in the bucket key so they always match here — but elementA
+           and elementB carry the sub-component suffix after the em-dash
+           (e.g. "AMHS-RS-F_A-30-MUR-CM.nwc — StraightDYN" vs
+           "AMHS-RS-F_A-30-MUR-CM.nwc — MML_Maintenance") which distinguishes
+           equipment / access zone / maintenance zone clashes on the same
+           wall. Strictness accepted tradeoff: republish-renames cause false
+           negatives (missed dedup surfaces as New clash, user merges
+           manually). False positives clog the queue — worse. */
+        if(a.ref.elementA !== b.ref.elementA) continue;
+        if(a.ref.elementB !== b.ref.elementB) continue;
+        /* DEDUP-SIGNATURE-FILTER end */
         const [older,newer]=uidNum(uidA)<=uidNum(uidB)?[uidA,uidB]:[uidB,uidA];
         const pairKey2=older+'::'+newer;
         if(_existing.has(pairKey2))continue;
@@ -6342,6 +6372,47 @@ function scanForDedupCandidates(batchUids){
   return added;
 }
 /* DEDUP-QUEUE-DETECT end */
+/* DEDUP-QUEUE-RETRO-CLEANUP-v1 start: one-shot cleanup of pairs
+   queued under the pre-fix logic. Applies the same two rules used
+   in the live detector (SCOPE-GUARD + SIGNATURE-FILTER) retroactively
+   to S.dedupQueue. Idempotent: once nw:dedupRetroCleanup:v1 is
+   truthy, this is a no-op. Do NOT bump the version suffix without
+   a matching rules change — silently re-running would clobber
+   user-reviewed pairs.
+
+   Rules (must mirror DEDUP-SCOPE-GUARD and DEDUP-SIGNATURE-FILTER
+   exactly — if you change one, change the other):
+     drop if a.weekTag === b.weekTag
+     drop if a.elementA !== b.elementA
+     drop if a.elementB !== b.elementB
+   sourceA/sourceB already matched via bucket key at detect time;
+   testName same. No need to re-check here. */
+function _migrateDedupQueueV1(){
+  try{
+    if(localStorage.getItem('nw:dedupRetroCleanup:v1')==='true')return;
+    if(!Array.isArray(S.dedupQueue)||S.dedupQueue.length===0){
+      localStorage.setItem('nw:dedupRetroCleanup:v1','true');
+      return;
+    }
+    const byId=new Map((S.clashes||[]).map(c=>[c.uid,c]));
+    const before=S.dedupQueue.length;
+    S.dedupQueue=S.dedupQueue.filter(p=>{
+      const a=byId.get(p.a), b=byId.get(p.b);
+      if(!a||!b)return false;
+      if(a.weekTag && b.weekTag && a.weekTag===b.weekTag)return false;
+      if(a.elementA!==b.elementA)return false;
+      if(a.elementB!==b.elementB)return false;
+      return true;
+    });
+    const after=S.dedupQueue.length;
+    sv('dedupQueue',S.dedupQueue);
+    localStorage.setItem('nw:dedupRetroCleanup:v1','true');
+    console.log('[DEDUP-RETRO-v1] cleaned',before-after,'stale pairs; kept',after);
+  }catch(e){
+    console.warn('[DEDUP-RETRO-v1] failed:',e);
+  }
+}
+/* DEDUP-QUEUE-RETRO-CLEANUP-v1 end */
 function bmsg(t,c){const el=document.getElementById('bmsg');if(el){el.textContent=t;el.style.color=c||'#374151';}}
 
 function inferDisc(src,layer){
