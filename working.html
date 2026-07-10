@@ -6257,12 +6257,26 @@ function pairKey(c){
    surface without needing a new import. dedupPairId keys the pair by
    (older uid, newer uid) so re-running the scan is idempotent — the
    Set-based existing check skips pairs already in the queue.
-   Returns count of NEW candidates added. */
+   Returns count of NEW candidates added.
+
+   WEEKLY-DEDUP-SCOPE (optional batchUids arg): when provided, only
+   emit pair candidates where AT LEAST ONE side's uid is in batchUids
+   — the set of clashes actually observed in the current weekly
+   import. Post-import invocations pass this so previously-reviewed
+   pairs from prior weeks aren't re-scanned or re-surfaced. The
+   initial-scan and hydrate paths call with no argument, preserving
+   the whole-register scan for one-shot migrations. */
 function _dedupCoordNorm(s){return String(s||'').toLowerCase().replace(/\\/g,'/').replace(/^.*\//,'').trim();}
 function _dedupCellKey(x){return (x.testName||'')+'::'+_dedupCoordNorm(x.sourceA)+'::'+_dedupCoordNorm(x.sourceB);}
-function scanForDedupCandidates(){
+function scanForDedupCandidates(batchUids){
   if(!Array.isArray(S.clashes))return 0;
   if(!Array.isArray(S.dedupQueue))S.dedupQueue=[];
+  /* WEEKLY-DEDUP-SCOPE start: normalise the optional filter. `null` and
+     omitted argument both mean "no scope filter" (whole-register scan);
+     an empty Set means "nothing was imported this week" and correctly
+     scans nothing new. */
+  const _dqBatchFilter=(batchUids instanceof Set)?batchUids:null;
+  /* WEEKLY-DEDUP-SCOPE end */
   /* DEDUP-QUEUE-DETECT-IDEMPOTENT start: preserve resolution state
      (skipped / resolved / resolvedAction / resolvedAt) on any pair
      already in the store. Orphan cleanup on load handles register-side
@@ -6297,6 +6311,13 @@ function scanForDedupCandidates(){
         const d=Math.sqrt(dx*dx+dy*dy+dz*dz);
         if(d<=1.0||d>500)continue;
         const uidA=a.ref.uid,uidB=b.ref.uid;
+        /* WEEKLY-DEDUP-SCOPE start: gate on batchUids when provided.
+           A pair only surfaces if at least one side was imported this
+           week — pairs entirely inside prior-week records stay
+           untouched (they were either already in the queue or the
+           user already skipped/resolved them). */
+        if(_dqBatchFilter && !(_dqBatchFilter.has(uidA)||_dqBatchFilter.has(uidB)))continue;
+        /* WEEKLY-DEDUP-SCOPE end */
         const [older,newer]=uidNum(uidA)<=uidNum(uidB)?[uidA,uidB]:[uidB,uidA];
         const pairKey2=older+'::'+newer;
         if(_existing.has(pairKey2))continue;
@@ -6669,6 +6690,50 @@ function _extractSourceFolder(fullPath){
   return parts[1]||null;
 }
 /* BATCH-IMPORT-FOLDER-CAPTURE end */
+/* WEEKLY-IMPORT-CAPTURE start: shared helpers for the weekly incremental
+   import model. The picker's outermost folder now names the reporting
+   week — `week-YYMMDD` (e.g. `week-260629`) — and every clash carries the
+   raw wrapper name (weekTag) plus an ISO date (weekDate) parsed from it.
+   Both parsers and the register-write path use these two helpers so the
+   week identity semantic is defined in exactly one place.
+
+   _extractWeekTag: parts[0] verbatim. Returns null when the path is
+     empty or has no separator — degrades gracefully for paste imports
+     and single-file picks that never had a wrapper.
+
+   _parseWeekDate: parses YYMMDD out of `week-YYMMDD` into ISO
+     YYYY-MM-DD (20YY assumed — the Muratec project ships past 2100).
+     Returns null when the tag doesn't match the pattern OR when the
+     numeric parts don't produce a real calendar date (e.g. `week-260231`
+     rejects Feb 31st via Date.UTC round-trip). Case-insensitive on the
+     `week-` prefix so `Week-260629` and `WEEK-260629` both work.
+
+   Non-matching wrappers (a user picking a plain `Clash Tests/` root
+   from the pre-weekly workflow) return null for weekDate but preserve
+   weekTag verbatim so the DEVTOOLS summary can surface exactly what the
+   picker saw. WEEKLY-IMPORT-VALIDATION handles the user-facing warn. */
+function _extractWeekTag(fullPath){
+  if(!fullPath)return null;
+  const parts=String(fullPath).split(/[\/\\]/);
+  return parts[0]||null;
+}
+function _isWeekTag(tag){
+  return typeof tag==='string' && /^week-\d{6}$/i.test(tag);
+}
+function _parseWeekDate(weekTag){
+  if(!weekTag)return null;
+  const m=String(weekTag).match(/^week-(\d{2})(\d{2})(\d{2})$/i);
+  if(!m)return null;
+  const yy=parseInt(m[1],10),mm=parseInt(m[2],10),dd=parseInt(m[3],10);
+  if(mm<1||mm>12||dd<1||dd>31)return null;
+  const year=2000+yy;
+  const t=Date.UTC(year,mm-1,dd);
+  const d=new Date(t);
+  if(isNaN(d.getTime()))return null;
+  if(d.getUTCFullYear()!==year||d.getUTCMonth()!==mm-1||d.getUTCDate()!==dd)return null;
+  return `${year}-${String(mm).padStart(2,'0')}-${String(dd).padStart(2,'0')}`;
+}
+/* WEEKLY-IMPORT-CAPTURE end */
 /* IMG-COUNT-CHECK start: batch-level image count set by loadNwImages when
    images are queued for the current XML batch. Read by the pre-merge
    sanity check (_importToRegisterChecked) that compares parsed clash
@@ -6753,16 +6818,28 @@ function bloadf(inp){
    IMG-FIX composite key `testName::filename`. */
 /* BATCH-IMPORT-PICK-VALIDATION start: strict pre-import gate that blocks
    the parse when the pick's first file has too few path segments to
-   expose the archive folder. Real user data mixes archive layouts —
-   AMHS side ships a test-subfolder between archive and XML (4 segs);
-   Exyte side puts the XML directly in the archive (3 segs). Both are
-   valid, both keep the archive at index [1]. What we must catch is a
-   pick where index [1] is the XML itself (2 segs) or where there's no
-   folder at all (1 seg): those layouts leave sourceFolder empty or
-   mis-attributed. Runs before BATCH-IMPORT-SHAPE-WARN so the block
-   wins over the weaker Continue-anyway heuristic; also cheaper (no
-   set-build required). Returns the modal's Promise so importFolderPick
-   can `await` and stay readable. */
+   expose the archive folder AND the week wrapper.
+
+   WEEKLY-IMPORT-VALIDATION superseded the original 3-segment floor:
+   the reporting model now expects a week-YYMMDD wrapper at index [0]
+   and the archive folder at index [1]. Minimum valid layouts are:
+
+     4-segment (Exyte-style, XML directly under the archive):
+       "week-260629/260629 FAB Exyte v AMHS/Exyte AAS_v_08_AMHS.xml"
+     5-segment (AMHS-style, extra test-subfolder between archive and XML):
+       "week-260629/260629 FAB AMHS v 7/03_GAS_v_08_AMHS/03_GAS_v_08_AMHS.xml"
+
+   Anything with fewer than 4 segments — picked-archive-directly, single
+   file, or the pre-weekly `Clash Tests/archive/XML` layout without a
+   wrapper — leaves weekTag empty or points at the archive, so the batch
+   would silently skip the delta detection this feature exists to
+   enable. Block, ask the user to re-pick.
+
+   The softer WEEKLY-IMPORT-VALIDATION-WARN (see below) fires AFTER this
+   gate for picks that pass the depth check but whose wrapper doesn't
+   match `week-YYMMDD` — those are legitimate imports from teams that
+   haven't adopted the naming yet, so it's a Continue-anyway warning
+   rather than a block. */
 function _bifShowPickValidation(sampleName,segmentCount){
   return new Promise(resolve=>{
     const prior=document.getElementById('bif-pick-validation');
@@ -6773,12 +6850,12 @@ function _bifShowPickValidation(sampleName,segmentCount){
     wrap.innerHTML=`<div role="dialog" aria-modal="true" style="background:#fff;border-radius:8px;max-width:560px;width:calc(100% - 40px);box-shadow:0 20px 60px rgba(0,0,0,.35);overflow:hidden">
       <div style="padding:16px 22px;border-bottom:1px solid #E5E7EB;background:#FEE2E2;color:#991B1B;font-weight:700;font-size:14px">✕ Wrong folder level picked</div>
       <div style="padding:18px 22px;color:#0F1824;font-size:12px;line-height:1.6">
-        <div style="margin-bottom:10px">The batch import needs to see your archive folders. Please pick the parent folder that contains all your weekly archive folders.</div>
-        <div style="margin-bottom:10px">Example: pick <code style="background:#F1F5F9;padding:1px 4px;border-radius:3px">C:/temp/Clash Tests/</code>, not any individual archive folder.</div>
-        <div style="color:#475569;font-size:11px">First file seen: <code style="background:#F1F5F9;padding:1px 4px;border-radius:3px">${esc(sampleName||'')}</code> (${segmentCount} segment${segmentCount===1?'':'s'} — needs at least 3)</div>
+        <div style="margin-bottom:10px">The batch import needs to see your <strong>week wrapper folder</strong>, which contains all the archive folders for that week.</div>
+        <div style="margin-bottom:10px">Example: pick <code style="background:#F1F5F9;padding:1px 4px;border-radius:3px">week-260629/</code> — the folder whose contents are the archive folders (<code style="background:#F1F5F9;padding:1px 4px;border-radius:3px">260629 FAB AMHS v 7 Clash test</code>, etc.).</div>
+        <div style="color:#475569;font-size:11px">First file seen: <code style="background:#F1F5F9;padding:1px 4px;border-radius:3px">${esc(sampleName||'')}</code> (${segmentCount} segment${segmentCount===1?'':'s'} — needs at least 3: <code>week-YYMMDD / archive / [test subfolder] / XML</code>)</div>
       </div>
       <div style="padding:14px 22px;border-top:1px solid #E5E7EB;display:flex;justify-content:flex-end;gap:8px;background:#F8FAFC">
-        <button id="bif-pick-close" style="background:#EA7600;border:0;color:#fff;padding:8px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">OK — I'll pick the parent folder</button>
+        <button id="bif-pick-close" style="background:#EA7600;border:0;color:#fff;padding:8px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">OK — I'll pick the week wrapper</button>
       </div>
     </div>`;
     document.body.appendChild(wrap);
@@ -6789,6 +6866,41 @@ function _bifShowPickValidation(sampleName,segmentCount){
   });
 }
 /* BATCH-IMPORT-PICK-VALIDATION end */
+/* WEEKLY-IMPORT-VALIDATION start: soft "wrapper is not week-YYMMDD" warn.
+   Fires when the pick has enough depth (BATCH-IMPORT-PICK-VALIDATION
+   passed) but the outermost segment doesn't match `week-YYMMDD`.
+   Continue-anyway modal — the import will still work; downstream code
+   just won't be able to parse a weekDate from the wrapper, and delta
+   detection falls back to the pre-weekly per-test scoping. Cancel
+   clears the input so a subsequent identical re-pick still fires. */
+function _bifShowWeekWrapperWarn(wrapperName){
+  return new Promise(resolve=>{
+    const prior=document.getElementById('bif-week-warn');
+    if(prior)prior.remove();
+    const wrap=document.createElement('div');
+    wrap.id='bif-week-warn';
+    wrap.style.cssText='position:fixed;inset:0;background:rgba(15,24,36,.6);z-index:9998;display:flex;align-items:center;justify-content:center;font-family:Arial,sans-serif';
+    wrap.innerHTML=`<div role="dialog" aria-modal="true" style="background:#fff;border-radius:8px;max-width:520px;width:calc(100% - 40px);box-shadow:0 20px 60px rgba(0,0,0,.35);overflow:hidden">
+      <div style="padding:16px 22px;border-bottom:1px solid #E5E7EB;background:#FEF3C7;color:#92400E;font-weight:700;font-size:14px">⚠ Wrapper folder is not named <code>week-YYMMDD</code></div>
+      <div style="padding:18px 22px;color:#0F1824;font-size:12px;line-height:1.6">
+        <div style="margin-bottom:10px">Expected wrapper folder named <code style="background:#F1F5F9;padding:1px 4px;border-radius:3px">week-YYMMDD</code> (e.g. <code style="background:#F1F5F9;padding:1px 4px;border-radius:3px">week-260629</code>).</div>
+        <div style="margin-bottom:10px">You picked <code style="background:#F1F5F9;padding:1px 4px;border-radius:3px">${esc(wrapperName||'')}</code>.</div>
+        <div style="color:#475569">Continue anyway will import; delta detection falls back to the pre-weekly per-test scope (no weekDate on this batch).</div>
+      </div>
+      <div style="padding:14px 22px;border-top:1px solid #E5E7EB;display:flex;justify-content:flex-end;gap:8px;background:#F8FAFC">
+        <button id="bif-week-back" style="background:#EA7600;border:0;color:#fff;padding:8px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Go back and rename</button>
+        <button id="bif-week-continue" style="background:#fff;border:1px solid #CBD5E1;color:#1E293B;padding:8px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Continue anyway</button>
+      </div>
+    </div>`;
+    document.body.appendChild(wrap);
+    const close=(result)=>{const el=document.getElementById('bif-week-warn');if(el)el.remove();document.removeEventListener('keydown',onKey);resolve(result);};
+    const onKey=(e)=>{if(e.key==='Escape')close(false);};
+    document.addEventListener('keydown',onKey);
+    document.getElementById('bif-week-back').addEventListener('click',()=>close(false));
+    document.getElementById('bif-week-continue').addEventListener('click',()=>close(true));
+  });
+}
+/* WEEKLY-IMPORT-VALIDATION end */
 /* BATCH-IMPORT-SHAPE-WARN start: fallback for when the BATCH-IMPORT-GUIDANCE
    label above the button didn't stick. Chrome's webkitRelativePath strips
    the picked folder itself and only exposes its CONTENTS, so a pick that
@@ -6850,22 +6962,32 @@ async function importFolderPick(inputEl){
   if(!all.length)return;
 
   /* BATCH-IMPORT-PICK-VALIDATION: gate — inspect the first file's
-     webkitRelativePath. If it splits to fewer than 3 segments, the user
-     picked below the parent folder that holds the archive folders, so
-     archive-name capture is impossible from this pick. 3 segments
-     ([picked]/[archive]/[XML]) is the minimum valid layout: covers the
-     Exyte-side archives that put the XML directly in the archive; 4+
-     covers the AMHS-side archives with a test-subfolder layer.
-     Block the parse and clear the input so a subsequent identical pick
-     still fires (browsers no-op the change event when files === the
-     previous selection unless value clears). Awaits the OK dismissal
-     so focus restores cleanly before the file dialog reopens. */
+     webkitRelativePath. Minimum viable layouts:
+       3-seg Exyte (with week wrapper): week-YYMMDD/archive/XML
+       4-seg AMHS (with week wrapper): week-YYMMDD/archive/test-sub/XML
+       3-seg pre-weekly: Clash Tests/archive/XML (WEEKLY-IMPORT-VALIDATION
+         warn will fire because the wrapper isn't `week-YYMMDD`)
+     Anything with fewer than 3 segments points [1] at the XML itself
+     (no archive layer) and leaves sourceFolder unresolvable. Block,
+     clear the input so a subsequent identical pick still fires. */
   const _sample=all[0].webkitRelativePath||all[0].name||'';
   const _segs=_sample.split('/');
   if(_segs.length<3){
     await _bifShowPickValidation(_sample,_segs.length);
     inputEl.value='';
     return;
+  }
+
+  /* WEEKLY-IMPORT-VALIDATION: soft gate — depth passed, but if the
+     wrapper at [0] doesn't match `week-YYMMDD` warn the user. Continue
+     anyway is legit (the import still lands; delta detection just
+     falls back to the pre-weekly per-test scope with no weekDate on
+     this batch). Cancel clears the input so a subsequent identical
+     re-pick still fires. */
+  const _wrapper=_segs[0]||'';
+  if(!_isWeekTag(_wrapper)){
+    const _weekProceed=await _bifShowWeekWrapperWarn(_wrapper);
+    if(!_weekProceed){inputEl.value='';return;}
   }
 
   /* BATCH-IMPORT-SHAPE-WARN: gate — if the pick looks like a single
@@ -7239,6 +7361,15 @@ function batchParse(files,errors,readCount){
           sourceFilePath:(_batchFilePaths&&_batchFilePaths[fname])||fname,
           sourceFolder:_extractSourceFolder((_batchFilePaths&&_batchFilePaths[fname])||''),
           /* BATCH-IMPORT-FOLDER-CAPTURE end */
+          /* WEEKLY-IMPORT-CAPTURE start: parser 1 stamps weekTag (raw
+             wrapper folder at index [0]) and weekDate (ISO YYYY-MM-DD
+             parsed from `week-YYMMDD`, else null). Both are null for
+             paste imports and single-file picks that don't ship a
+             webkitRelativePath. Dual-parser discipline: parser 2 has an
+             identical stamp — keep the two in sync. */
+          weekTag:_extractWeekTag((_batchFilePaths&&_batchFilePaths[fname])||''),
+          weekDate:_parseWeekDate(_extractWeekTag((_batchFilePaths&&_batchFilePaths[fname])||'')),
+          /* WEEKLY-IMPORT-CAPTURE end */
           nwCreated,
           /* REVIEW-QUEUE-DATE-GUARD-CREATEDDATE */ nwCreatedFullISO,
           nwImageRef,
@@ -7537,6 +7668,13 @@ function bparse(){
       _bcfC.push({idx:_bcfC.length+1,nwName:r.getAttribute('name')||('Clash '+(i+1)),nwSt,depMm,tn,/* SOURCEFILE-PROPAGATE */ sourceFile:_srcFile,/* SOURCEFILE-FULLPATH */ sourceFilePath:_srcPath,
         sourceFolder:_extractSourceFolder(_srcPath),
         /* BATCH-IMPORT-FOLDER-CAPTURE end */
+        /* WEEKLY-IMPORT-CAPTURE start: parser 2 mirror of parser 1's
+           stamp. _srcPath is the webkitRelativePath (or the bare
+           filename when the batch was pasted / single-file). Dual-parser
+           discipline: keep in lockstep with parser 1. */
+        weekTag:_extractWeekTag(_srcPath),
+        weekDate:_parseWeekDate(_extractWeekTag(_srcPath)),
+        /* WEEKLY-IMPORT-CAPTURE end */
         nwCreated,
         /* REVIEW-QUEUE-DATE-GUARD-CREATEDDATE */ nwCreatedFullISO,
         nwImageRef,
@@ -7956,6 +8094,17 @@ function importToRegister(mode){
   const _batchTests=new Set();
   _bcfC.forEach(c=>{if(c.tn)_batchTests.add(c.tn);});
   const _matchedUids=new Set();
+  /* WEEKLY-SNAPSHOT-RECORD start: superset of _matchedUids — the union of
+     every register UID observed in this batch (matched-existing plus
+     newly-created). Snapshotted at the end of the merge loop into the
+     imports[] entry as clashUidsPresent, which WEEKLY-DELTA-DETECT reads
+     on the NEXT import to distinguish "was in the last snapshot for
+     this test but not in this one" (disappeared) from "not in the last
+     snapshot either" (no signal). Kept separate from _matchedUids so
+     the PAIR-ID-RESOLVED-COUNT semantic (pre-existing minus matched)
+     stays intact. */
+  const _batchUids=new Set();
+  /* WEEKLY-SNAPSHOT-RECORD end */
   // Snapshot UIDs of pre-existing clashes for tests in this batch, excluding
   // already-Resolved (don't re-count fixes from previous imports). Anything
   // here that doesn't end up in _matchedUids is a likely-fixed clash.
@@ -8123,6 +8272,8 @@ function importToRegister(mode){
          (this matched set). */
       _matchedUids.add(exist.uid);
       /* PAIR-ID-RESOLVED-COUNT end */
+      /* WEEKLY-SNAPSHOT-RECORD: matched existing UID goes into batchUids. */
+      _batchUids.add(exist.uid);
       // Update NW-sourced fields (status comes from NW authoritative export)
       // Preserve user-set fields: notes, priority, assignedTo, date
       const newPen=c.depMm+'mm';
@@ -8177,6 +8328,16 @@ function importToRegister(mode){
       if(c.sourceFilePath)exist.sourceFilePath=c.sourceFilePath;
       else if(c.sourceFile&&!exist.sourceFilePath)exist.sourceFilePath=c.sourceFile;
       if(c.sourceFolder)exist.sourceFolder=c.sourceFolder;
+      /* WEEKLY-IMPORT-CAPTURE refresh: same rule as sourceFolder — only
+         overwrite when the incoming batch actually captured a weekTag.
+         A legacy clash first ingested via paste (weekTag=null) learns
+         the wrapper on its first folder-picker re-import. A clash
+         already tagged to `week-260601` that gets re-imported inside
+         `week-260629` correctly relearns the newer tag — this IS the
+         semantic the weekly model needs: the register clash reflects
+         the most recent week it was observed in. */
+      if(c.weekTag)exist.weekTag=c.weekTag;
+      if(c.weekDate)exist.weekDate=c.weekDate;
       if(stChanged||geomChanged){updated++;/* DUP-FILES-FIX */_bumpPF(c,'updated');}else{unchanged++;/* DUP-FILES-FIX */_bumpPF(c,'unchanged');}
       return;
     }
@@ -8238,6 +8399,15 @@ function importToRegister(mode){
          label instead of falling back to a bare filename. */
       sourceFolder:(c.sourceFolder!==undefined?c.sourceFolder:null),
       /* SOURCEFILE-FULLPATH-PERSIST end */
+      /* WEEKLY-IMPORT-CAPTURE start: weekTag + weekDate persist onto
+         the register clash so downstream views (Data Manager, Review
+         Queue, delta detection) can look up "which week did this clash
+         first land?" without re-reading the XML. Both fields default
+         to null when the parser couldn't resolve them (paste imports,
+         single-file picks, non-week wrappers). */
+      weekTag:(c.weekTag!==undefined?c.weekTag:null),
+      weekDate:(c.weekDate!==undefined?c.weekDate:null),
+      /* WEEKLY-IMPORT-CAPTURE end */
       /* IMG-POS: persist positional index for later positional fallback lookup */
       testIdx:typeof c.testIdx==='number'?c.testIdx:undefined,
       /* STATUS-HIST: initial history entry */
@@ -8245,6 +8415,8 @@ function importToRegister(mode){
     });
     added++;
     /* DUP-FILES-FIX */ _bumpPF(c,'added');
+    /* WEEKLY-SNAPSHOT-RECORD: newly-created UID goes into batchUids. */
+    _batchUids.add(uid);
   });
 
   sv('clashes',S.clashes);
@@ -8255,19 +8427,74 @@ function importToRegister(mode){
      the Dedup Queue tab. */
   let _dqCandidatesAdded=0;
   if(mode==='append'){
-    try{_dqCandidatesAdded=scanForDedupCandidates();}
+    /* WEEKLY-DEDUP-SCOPE: pass this week's UIDs so the scan only
+       surfaces pairs where at least one side landed in the current
+       import. Previously the post-import scan re-inspected the whole
+       register, meaning candidates that a user already skipped on an
+       earlier week would come back if a new week added a
+       coordinate-adjacent clash unrelated to the pair. Full-register
+       scans still exist on load (DEDUP-QUEUE-DETECT hydrate and
+       one-shot migration) — those pass no argument. */
+    try{_dqCandidatesAdded=scanForDedupCandidates(_batchUids);}
     catch(e){console.warn('DEDUP-QUEUE-DETECT scan error:',e);}
   }
   window._dqBatchMeta={autoMerged:(typeof _coordAutoMergedCount==='number'?_coordAutoMergedCount:0),candidatesAdded:_dqCandidatesAdded};
   /* DEDUP-QUEUE-DETECT end */
+  /* WEEKLY-DELTA-DETECT start: per-testName scoping of the disappeared
+     computation. For each test in this batch, find the most recent
+     PRIOR imports[] entry (across the whole S.weekly log) whose
+     testsIncluded contains the test AND that carries the new
+     clashUidsPresent field. That entry's UID set is the "expected"
+     baseline — anything in it but NOT in this batch's _batchUids is
+     an actual disappearance for that test.
+
+     Falls back to the pre-weekly PAIR-ID-RESOLVED-COUNT scope
+     (register minus matched) when NO prior snapshot has
+     clashUidsPresent for the test — covers the migration window
+     before enough weekly imports have accumulated and covers
+     brand-new tests that appear for the first time in this batch. */
+  const _prevSnapUidsByTest=new Map();
+  if(mode==='append'){
+    const _priorImports=[];
+    (S.weekly||[]).forEach(w=>{
+      if(!w||!Array.isArray(w.imports))return;
+      w.imports.forEach(imp=>{
+        if(imp&&imp.at&&Array.isArray(imp.testsIncluded)&&Array.isArray(imp.clashUidsPresent)){
+          _priorImports.push(imp);
+        }
+      });
+    });
+    _priorImports.sort((a,b)=>String(b.at).localeCompare(String(a.at)));
+    _batchTests.forEach(tn=>{
+      for(const imp of _priorImports){
+        if(imp.testsIncluded.indexOf(tn)>=0){
+          _prevSnapUidsByTest.set(tn,new Set(imp.clashUidsPresent));
+          break;
+        }
+      }
+    });
+  }
+  /* WEEKLY-DELTA-DETECT end */
   /* PAIR-ID-RESOLVED-COUNT start: compute disappeared count = pre-existing
      UIDs in batch's tests that weren't matched by any incoming clash. Stored
      for downstream toast + success card + per-import log entry. Append mode
-     only — replace mode wipes register so the concept doesn't apply. */
+     only — replace mode wipes register so the concept doesn't apply.
+
+     WEEKLY-DELTA-DETECT layering: when a prior snapshot exists for a
+     test, the scope shrinks from "register minus matched" to "prior
+     snapshot's clashUidsPresent minus this batch's _batchUids". Same
+     disappearance concept, tighter reference — clashes that were
+     already gone by the previous snapshot no longer get re-flagged
+     each week. Tests without a prior snapshot use the legacy scope. */
   let _disappeared=0;
   if(mode==='append'){
     _preExistingByTest.forEach((tn,uid)=>{
-      if(!_matchedUids.has(uid))_disappeared++;
+      const prevUids=_prevSnapUidsByTest.get(tn);
+      if(prevUids){
+        if(prevUids.has(uid)&&!_batchUids.has(uid))_disappeared++;
+      } else if(!_matchedUids.has(uid)){
+        _disappeared++;
+      }
     });
   }
   /* PAIR-ID-RESOLVED-COUNT end */
@@ -8293,6 +8520,12 @@ function importToRegister(mode){
   if(mode==='append'){
     const _rqBatch='bat-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,6);
     const _rqIso=new Date().toISOString();
+    /* WEEKLY-DELTA-DETECT: resolve the batch's weekDate ONCE — every
+       clash in a batch shares the same wrapper (validated by
+       WEEKLY-IMPORT-VALIDATION), so first non-null weekDate wins.
+       Null when the batch was pasted or the wrapper wasn't `week-YYMMDD`. */
+    let _batchWeekDate=null;
+    for(const _c of (_bcfC||[])){if(_c&&_c.weekDate){_batchWeekDate=_c.weekDate;break;}}
     (S.clashes||[]).forEach(c=>{
       if(!_preExistingByTest.has(c.uid))return;
       if(_matchedUids.has(c.uid))return;
@@ -8303,6 +8536,18 @@ function importToRegister(mode){
          future edits to the resolved-count plumbing. */
       if(!_rqBatchTests.has(c.testName))return;
       /* REVIEW-QUEUE-DETECT-SCOPE-USE end */
+      /* WEEKLY-DELTA-DETECT-USE start: tighten the flag scope to clashes
+         that were actually PRESENT in the prior snapshot for this test.
+         When _prevSnapUidsByTest has the test, only flag if the clash's
+         uid appeared in the prior snapshot's clashUidsPresent — clashes
+         that were already gone by the previous snapshot don't get
+         re-flagged each week. When no prior snapshot exists for the
+         test (first-ever snapshot-aware import, migration window),
+         fall through to the pre-weekly scope (already gated above by
+         _preExistingByTest and _matchedUids). */
+      const _prevUids=_prevSnapUidsByTest.get(c.testName);
+      if(_prevUids && !_prevUids.has(c.uid))return;
+      /* WEEKLY-DELTA-DETECT-USE end */
       /* REVIEW-QUEUE-DATE-GUARD-USE start: fail-closed date guard. Skip
          flagging when: (a) no resolvable batch date — production incident
          had 471 stale flags because this branch used to fall through;
@@ -8315,7 +8560,13 @@ function importToRegister(mode){
       if(!_cd||_cd>=_rqBatchDate)return;
       /* REVIEW-QUEUE-DATE-GUARD-USE end */
       c.pendingReview=true;
-      c.disappearedAt=_rqIso;
+      /* WEEKLY-DELTA-DETECT-USE: prefer the batch's weekDate (ISO
+         calendar day, e.g. "2026-06-08") when this batch has one —
+         matches the semantic in the task brief ("flag with
+         disappearedAt = weekDate"). Falls back to the per-batch
+         millisecond ISO stamp for paste imports / non-week wrappers so
+         disappearedAt is always populated. */
+      c.disappearedAt=_batchWeekDate||_rqIso;
       c.disappearedInBatch=_rqBatch;
     });
     sv('clashes',S.clashes);
@@ -8360,6 +8611,23 @@ function importToRegister(mode){
   /* REVIEW-QUEUE-DATE-GUARD-BANNER end */
   // Keep data version so auto-reset doesn't wipe real data
   sv('dataVersion',DATA_VERSION);
+  /* WEEKLY-SNAPSHOT-RECORD start: batch-level fields hoisted to the outer
+     function scope so both the imports[] IIFE below and the
+     WEEKLY-IMPORT-SUMMARY modal at the bottom of importToRegister can
+     read them without recomputing. All clashes in one batch share the
+     same wrapper (validated by WEEKLY-IMPORT-VALIDATION); first
+     non-null field wins. testsIncluded = sorted union of _batchTests;
+     clashUidsPresent = sorted union of _batchUids (matched + newly
+     created). */
+  let _snapWeekTag=null,_snapWeekDate=null;
+  for(const _c of (_bcfC||[])){
+    if(_c && (_snapWeekTag===null) && _c.weekTag) _snapWeekTag=_c.weekTag;
+    if(_c && (_snapWeekDate===null) && _c.weekDate) _snapWeekDate=_c.weekDate;
+    if(_snapWeekTag && _snapWeekDate) break;
+  }
+  const _snapTestsIncluded=[..._batchTests].sort();
+  const _snapClashUidsPresent=[..._batchUids].sort();
+  /* WEEKLY-SNAPSHOT-RECORD end */
   // Regenerate weekly snapshots bucketed by clash date
   /* WEEKLY-SNAP-CONDITIONAL-IMPORT: pass _batchMaxD so regen anchors to the
      batch's historical week (if older than today) instead of today. */
@@ -8391,6 +8659,11 @@ function importToRegister(mode){
        newer, unrelated snapshot at the array tail). */
     const cur=wds.find(w=>w.week===_batchAYW.wk && (w.year||0)===_batchAYW.yr);
     /* WEEKLY-SNAP-CONDITIONAL-EVENT end */
+    /* WEEKLY-SNAPSHOT-RECORD: _snapWeekTag / _snapWeekDate /
+       _snapTestsIncluded / _snapClashUidsPresent are hoisted at the
+       importToRegister scope above regenWeeklyFromRegister; read them
+       from that outer scope here so the summary modal below the IIFE
+       sees the same values. */
     if(cur){
       if(!Array.isArray(cur.imports))cur.imports=[];
       /* DUP-FILES-FIX start: push one imports[] entry per file instead of a single
@@ -8428,7 +8701,21 @@ function importToRegister(mode){
                the exact value. */
             disappeared:(_perFileKeys.length===1?_disappeared:Math.round(_disappeared*(st.count||0)/(_bcfC.length||1))),
             at:_atIso,
-            files:[displayName]
+            files:[displayName],
+            /* WEEKLY-SNAPSHOT-RECORD: batch-level fields duplicated onto
+               every per-file entry so any single entry stands on its
+               own as a delta-detection lookup source. All per-file
+               entries in one batch share the same wrapper identity,
+               testsIncluded set, and clashUidsPresent set — the
+               redundancy is intentional and matches how DUP-FILES-FIX
+               duplicates `date` and `at`. Fields are always emitted
+               (weekTag/weekDate may be null) so downstream readers can
+               distinguish "captured, no wrapper" (null) from "pre-
+               weekly import" (field absent). */
+            weekTag:_snapWeekTag,
+            weekDate:_snapWeekDate,
+            testsIncluded:_snapTestsIncluded,
+            clashUidsPresent:_snapClashUidsPresent
           };
           /* IMG-COUNT-CHECK: stamp the mismatch on every per-file entry
              of this batch — a single Continue click covers them all.
@@ -8452,7 +8739,11 @@ function importToRegister(mode){
         });
       } else {
         // Defensive fallback — preserves previous shape if perFile wasn't populated
-        const _entry={date:importDateStr,count:_bcfC.length,added:added,updated:updated,/* PAIR-ID-RESOLVED-COUNT */disappeared:_disappeared,at:new Date().toISOString(),files:importFiles};
+        const _entry={date:importDateStr,count:_bcfC.length,added:added,updated:updated,/* PAIR-ID-RESOLVED-COUNT */disappeared:_disappeared,at:new Date().toISOString(),files:importFiles,
+          /* WEEKLY-SNAPSHOT-RECORD: same batch-level fields on the
+             defensive fallback path so a single-entry log still feeds
+             WEEKLY-DELTA-DETECT on subsequent imports. */
+          weekTag:_snapWeekTag,weekDate:_snapWeekDate,testsIncluded:_snapTestsIncluded,clashUidsPresent:_snapClashUidsPresent};
         if(_imgMm){
           _entry.imageCountMismatch=true;
           _entry.clashCount=_imgMm.clashCount;
@@ -8498,8 +8789,72 @@ function importToRegister(mode){
     const _archives=[...new Set((_bcfC||[]).map(c=>c.sourceFolder).filter(Boolean))];
     console.log('[Batch import] '+added+' clashes added');
     console.log('[Batch import] Unique archive folders captured:',_archives);
+    /* WEEKLY-IMPORT-SUMMARY console line: makes weekTag capture visible
+       in DevTools without opening the modal. */
+    if(_snapWeekTag||_snapWeekDate){
+      console.log('[Batch import] Weekly snapshot recorded:',{
+        weekTag:_snapWeekTag,
+        weekDate:_snapWeekDate,
+        testsIncluded:_snapTestsIncluded,
+        clashUidsPresent:_snapClashUidsPresent.length,
+        newClashes:added,
+        persisting:updated+unchanged,
+        disappeared:_disappeared
+      });
+    }
   }catch(e){/* diagnostic-only, never fatal */}
   /* BATCH-IMPORT-FOLDER-CAPTURE end */
+  /* WEEKLY-IMPORT-SUMMARY start: post-import modal summarising the
+     weekly cycle in plain terms — New / Persisting / Disappeared plus
+     the sorted list of tests included. Only rendered when the batch
+     had a resolvable weekTag (weekly workflow); paste imports and
+     non-week wrappers keep the pre-existing success card as the only
+     surface. Modal dismisses to the register view. Persisting = the
+     count of pre-existing register clashes that were re-observed in
+     this batch (updated + unchanged); Disappeared reads the same
+     _disappeared value the success card and toast already surface,
+     but frames it as "added to Review Queue" per the task brief. */
+  try{
+    if(_snapWeekTag){
+      const _persisting=updated+unchanged;
+      const _testsChips=_snapTestsIncluded.length
+        ?_snapTestsIncluded.map(tn=>`<span style="display:inline-block;font-size:10px;font-family:monospace;padding:2px 8px;margin:2px 4px 2px 0;background:#F0F7FF;border:.5px solid #BFDBFE;border-radius:3px;color:#1D4ED8">${esc(tn)}</span>`).join('')
+        :'<span style="font-size:11px;color:#94A3B8">(none)</span>';
+      const _weekLabel=_snapWeekDate?`${esc(_snapWeekTag)} (${esc(_snapWeekDate)})`:esc(_snapWeekTag);
+      const _prior=document.getElementById('weekly-import-summary');
+      if(_prior)_prior.remove();
+      const _wrap=document.createElement('div');
+      _wrap.id='weekly-import-summary';
+      _wrap.style.cssText='position:fixed;inset:0;background:rgba(15,24,36,.6);z-index:9997;display:flex;align-items:center;justify-content:center;font-family:Arial,sans-serif';
+      _wrap.innerHTML=`<div role="dialog" aria-modal="true" style="background:#fff;border-radius:8px;max-width:620px;width:calc(100% - 40px);box-shadow:0 20px 60px rgba(0,0,0,.35);overflow:hidden">
+        <div style="padding:16px 22px;border-bottom:1px solid #E5E7EB;background:#DCFCE7;color:#166534;font-weight:700;font-size:14px">✓ ${_weekLabel} imported</div>
+        <div style="padding:18px 22px;color:#0F1824;font-size:12px;line-height:1.7">
+          <div style="display:flex;gap:24px;margin-bottom:14px">
+            <div><div style="font-size:22px;font-weight:800;color:#0F1824;line-height:1">${added}</div><div style="font-size:10px;color:#475569;text-transform:uppercase;letter-spacing:.4px">New clashes</div></div>
+            <div><div style="font-size:22px;font-weight:800;color:#0F1824;line-height:1">${_persisting}</div><div style="font-size:10px;color:#475569;text-transform:uppercase;letter-spacing:.4px">Persisting</div></div>
+            <div><div style="font-size:22px;font-weight:800;color:${_disappeared?'#B45309':'#94A3B8'};line-height:1">${_disappeared}</div><div style="font-size:10px;color:#475569;text-transform:uppercase;letter-spacing:.4px">Disappeared</div></div>
+          </div>
+          ${_disappeared?`<div style="margin-bottom:12px;padding:8px 12px;background:#FEF3C7;border:.5px solid #FDE68A;border-radius:6px;color:#92400E;font-size:11px">${_disappeared} clash${_disappeared===1?'':'es'} disappeared this week — added to the Review Queue for manual verification.</div>`:''}
+          <div style="margin-top:12px">
+            <div style="font-size:10px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px">Tests included (${_snapTestsIncluded.length})</div>
+            <div style="max-height:140px;overflow-y:auto;line-height:1.9">${_testsChips}</div>
+          </div>
+        </div>
+        <div style="padding:14px 22px;border-top:1px solid #E5E7EB;display:flex;justify-content:flex-end;gap:8px;background:#F8FAFC">
+          ${_disappeared?`<button id="weekly-import-summary-rq" style="background:#fff;border:1px solid #CBD5E1;color:#1E293B;padding:8px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Open Review Queue</button>`:''}
+          <button id="weekly-import-summary-close" style="background:#EA7600;border:0;color:#fff;padding:8px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Continue to Register</button>
+        </div>
+      </div>`;
+      document.body.appendChild(_wrap);
+      const _close=(dest)=>{const el=document.getElementById('weekly-import-summary');if(el)el.remove();document.removeEventListener('keydown',_onKey);if(dest)nav(dest);};
+      const _onKey=(e)=>{if(e.key==='Escape'||e.key==='Enter')_close(null);};
+      document.addEventListener('keydown',_onKey);
+      const _btnRQ=document.getElementById('weekly-import-summary-rq');
+      if(_btnRQ)_btnRQ.addEventListener('click',()=>_close('review'));
+      document.getElementById('weekly-import-summary-close').addEventListener('click',()=>_close('register'));
+    }
+  }catch(e){console.warn('WEEKLY-IMPORT-SUMMARY render error:',e);}
+  /* WEEKLY-IMPORT-SUMMARY end */
 }
 
 /* REVIEW-QUEUE-VIEW start: tab body for user-driven confirmation of clashes

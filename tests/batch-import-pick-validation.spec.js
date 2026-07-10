@@ -59,15 +59,16 @@ test.describe('BATCH-IMPORT-PICK-VALIDATION', () => {
   test('picks below the parent — 2 segments — blocks import with the guidance dialog', async ({ page }) => {
     await bootstrap(page);
     const seed = await page.evaluate(() => (S.clashes || []).length);
-    // XML only — one file, path is [picked-archive]/[XML]. This is the
-    // scenario prior PRs mis-attributed the archive folder for.
+    // XML only — one file, path is [picked-archive]/[XML]. WEEKLY-IMPORT-
+    // VALIDATION bumped the floor to 4 segments (week / archive /
+    // [test-subfolder]/ XML), so this still blocks.
     await fireImportFolderPick(page, [
       { name: '03_GAS_v_08_AMHS.xml', webkitRelativePath: '03_GAS_v_08_AMHS/03_GAS_v_08_AMHS.xml' },
     ]);
     const modal = page.locator('#bif-pick-validation');
     await expect(modal).toBeVisible();
     await expect(modal).toContainText('Wrong folder level picked');
-    await expect(modal).toContainText('parent folder');
+    await expect(modal).toContainText('week wrapper');
     await expect(modal).toContainText('needs at least 3');
     // Dismiss and let importFolderPick's abort path run.
     await page.locator('#bif-pick-close').click();
@@ -85,48 +86,111 @@ test.describe('BATCH-IMPORT-PICK-VALIDATION', () => {
     expect(state.clashCount).toBe(seed);
   });
 
-  test('3-segment Exyte layout — NOT blocked, import proceeds', async ({ page }) => {
+  test('3-segment layout — depth check passes; WEEKLY-IMPORT-VALIDATION warn appears for non-week wrapper', async ({ page }) => {
     await bootstrap(page);
-    // [picked]/[archive]/[XML] — Exyte-side archives put the XML directly
-    // in the archive folder. Index-[1] extraction still works here, so
-    // PICK-VALIDATION accepts.
+    // Pre-weekly [Clash Tests]/[archive]/[XML] — 3 segments, above the
+    // depth floor. Wrapper "Clash Tests" doesn't match `week-YYMMDD` so
+    // WEEKLY-IMPORT-VALIDATION shows its warn (not the harder block).
     const xml = makeXml('Clash1');
     await page.evaluate(async ({ xml }) => {
       const blobFile = new File([xml], 'Exyte AAS_v_08_AMHS.xml', { type: 'application/xml' });
       Object.defineProperty(blobFile, 'webkitRelativePath', {
         value: 'Clash Tests/260629 FAB Exyte v AMHS Clash test/Exyte AAS_v_08_AMHS.xml',
       });
+      window.__fakeInput = { files: [blobFile], value: '' };
+      window.__pickPromise = importFolderPick(window.__fakeInput);
+    }, { xml });
+    const warn = page.locator('#bif-week-warn');
+    await expect(warn).toBeVisible();
+    await expect(warn).toContainText('Clash Tests');
+    // Pick-validation modal must NOT be visible for a 3+ segment path.
+    expect(await page.$('#bif-pick-validation')).toBeNull();
+    await page.locator('#bif-week-back').click();
+  });
+
+  test('correct 4-segment weekly pick (Exyte layout) — no validation dialog, parses proceed to sniffing stage', async ({ page }) => {
+    await bootstrap(page);
+    // week-YYMMDD / archive / XML = 4 segments. Wrapper matches the
+    // `week-\\d{6}` pattern so the WEEKLY-IMPORT-VALIDATION warn stays silent.
+    const xml = makeXml('Clash1');
+    await page.evaluate(async ({ xml }) => {
+      const blobFile = new File([xml], 'Exyte AAS_v_08_AMHS.xml', { type: 'application/xml' });
+      Object.defineProperty(blobFile, 'webkitRelativePath', {
+        value: 'week-260629/260629 FAB Exyte v AMHS Clash test/Exyte AAS_v_08_AMHS.xml',
+      });
       const fake = { files: [blobFile], value: '' };
       await importFolderPick(fake);
     }, { xml });
-    // No validation dialog was inserted.
     expect(await page.$('#bif-pick-validation')).toBeNull();
-    // XML got loaded into bxml via the single-test path.
+    expect(await page.$('#bif-week-warn')).toBeNull();
     const loaded = await page.evaluate(() => document.getElementById('bxml').value);
     expect(loaded).toContain('<clashresult');
     expect(loaded).toContain('Clash1');
   });
 
-  test('correct 4-segment pick — no validation dialog, parses proceed to sniffing stage', async ({ page }) => {
+  test('5-segment weekly pick (AMHS layout with test subfolder) — no validation dialog', async ({ page }) => {
     await bootstrap(page);
-    // A File-like object whose .slice returns a Blob-compatible object so
-    // importFolderPick's `await c.slice(0,4096).text()` still resolves.
     const xml = makeXml('Clash1');
     await page.evaluate(async ({ xml }) => {
       const blobFile = new File([xml], '03_GAS_v_08_AMHS.xml', { type: 'application/xml' });
       Object.defineProperty(blobFile, 'webkitRelativePath', {
-        value: 'Clash Tests/260601 FAB AMHS v 7 Clash test/03_GAS_v_08_AMHS/03_GAS_v_08_AMHS.xml',
+        value: 'week-260601/260601 FAB AMHS v 7 Clash test/03_GAS_v_08_AMHS/03_GAS_v_08_AMHS.xml',
       });
       const fake = { files: [blobFile], value: '' };
       await importFolderPick(fake);
     }, { xml });
-    // No validation dialog was inserted.
     expect(await page.$('#bif-pick-validation')).toBeNull();
-    // XML got loaded into the bxml textarea by the single-test path
-    // (bloadf({files:[xmlFile]}) branch inside importFolderPick).
+    expect(await page.$('#bif-week-warn')).toBeNull();
     const loaded = await page.evaluate(() => document.getElementById('bxml').value);
     expect(loaded).toContain('<clashresult');
     expect(loaded).toContain('Clash1');
+  });
+
+  test('non-week wrapper (4+ segments) — WEEKLY-IMPORT-VALIDATION warn appears; user can Continue anyway', async ({ page }) => {
+    await bootstrap(page);
+    const xml = makeXml('Clash1');
+    // Fire in the background — the pick pauses on the warn dialog.
+    await page.evaluate(async ({ xml }) => {
+      const blobFile = new File([xml], '03_GAS_v_08_AMHS.xml', { type: 'application/xml' });
+      Object.defineProperty(blobFile, 'webkitRelativePath', {
+        value: 'not-a-week-folder/260601 FAB AMHS/03_GAS_v_08_AMHS/03_GAS_v_08_AMHS.xml',
+      });
+      window.__fakeInput = { files: [blobFile], value: '' };
+      window.__pickPromise = importFolderPick(window.__fakeInput);
+    }, { xml });
+    const warn = page.locator('#bif-week-warn');
+    await expect(warn).toBeVisible();
+    await expect(warn).toContainText('week-YYMMDD');
+    await expect(warn).toContainText('not-a-week-folder');
+    // Continue anyway → the pick resumes.
+    await page.locator('#bif-week-continue').click();
+    await expect(warn).toHaveCount(0);
+    await page.evaluate(() => window.__pickPromise);
+    const loaded = await page.evaluate(() => document.getElementById('bxml').value);
+    expect(loaded).toContain('<clashresult');
+  });
+
+  test('non-week wrapper — Go back and rename aborts the import', async ({ page }) => {
+    await bootstrap(page);
+    const xml = makeXml('Clash1');
+    await page.evaluate(async ({ xml }) => {
+      const blobFile = new File([xml], '03_GAS.xml', { type: 'application/xml' });
+      Object.defineProperty(blobFile, 'webkitRelativePath', {
+        value: 'not-a-week-folder/archive/sub/03_GAS.xml',
+      });
+      window.__fakeInput = { files: [blobFile], value: 'C:\\fakepath\\anything' };
+      window.__pickPromise = importFolderPick(window.__fakeInput);
+    }, { xml });
+    await page.locator('#bif-week-warn').waitFor();
+    await page.locator('#bif-week-back').click();
+    await expect(page.locator('#bif-week-warn')).toHaveCount(0);
+    const state = await page.evaluate(async () => {
+      await window.__pickPromise;
+      return { inputCleared: window.__fakeInput.value === '', bxml: document.getElementById('bxml').value };
+    });
+    expect(state.inputCleared).toBe(true);
+    // No XML was loaded — user aborted before the sniff stage.
+    expect(state.bxml).toBe('');
   });
 });
 
