@@ -155,3 +155,4 @@ tests/package-lock.json
 # Screenshots emitted by capture specs at the repo root — regenerated on demand
 selective-reset-partial-modal.png
 selective-reset-partial-success.png
+weekly-import-summary.png
