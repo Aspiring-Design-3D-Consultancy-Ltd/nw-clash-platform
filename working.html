@@ -1137,13 +1137,6 @@ async function initAuth(){
      — subsequent loads no-op. See _migrateDedupQueueV1() for the
      rules (mirrors DEDUP-SCOPE-GUARD + DEDUP-SIGNATURE-FILTER). */
   try{_migrateDedupQueueV1();}catch(e){console.warn('DEDUP-QUEUE-RETRO-CLEANUP-v1 error:',e);}
-  /* DEDUP-SKIPPED-MIGRATION-v1 invocation: runs immediately after the
-     retro cleanup so any pair that survived that filter but was still
-     stored under the wrong resolved:true + resolvedAction:'keep-separate'
-     shape gets flipped to skipped:true. Idempotent via
-     nw:dedupSkippedMigration:v1. See _migrateDedupSkippedV1() for the
-     one rule (mirrors DEDUP-KEEP-SEPARATE-FLAG-FIX). */
-  try{_migrateDedupSkippedV1();}catch(e){console.warn('DEDUP-SKIPPED-MIGRATION-v1 error:',e);}
   if(!S.pin){
     document.getElementById('ath').textContent='Set Up Your PIN';
     document.getElementById('asub').textContent='Choose a 4-digit PIN to protect your data';
@@ -1252,12 +1245,7 @@ function updSB(){
        resolved orphans at render time — the two drifted (44 vs 5) until
        ORPHAN-CLEANUP + RESOLVE-PERSIST + this filter converged them. */
     const _dqAll=Array.isArray(S.dedupQueue)?S.dedupQueue:[];
-    /* DEDUP-BADGE-COUNT-FIX start: badge counts unresolved pairs only.
-       Post-DEDUP-KEEP-SEPARATE-FLAG-FIX, keep-separate pairs live under
-       p.skipped so both flags must be excluded. Matches view logic in
-       DEDUP-QUEUE-VIEW-SCOPE-BYPASS. */
     const _dqN=_dqAll.filter(p=>p&&!p.resolved&&!p.skipped).length;
-    /* DEDUP-BADGE-COUNT-FIX end */
     /* DEDUP-QUEUE-BADGE-FILTER end */
     _dqBadge.textContent=String(_dqN);
     if(_dqN>0)_dqBadge.removeAttribute('hidden');else _dqBadge.setAttribute('hidden','');
@@ -6434,38 +6422,6 @@ function _migrateDedupQueueV1(){
   }
 }
 /* DEDUP-QUEUE-RETRO-CLEANUP-v1 end */
-/* DEDUP-SKIPPED-MIGRATION-v1 start: one-shot migration of pairs
-   incorrectly stored with resolved:true + resolvedAction:'keep-separate'
-   over to skipped:true. Idempotent via nw:dedupSkippedMigration:v1.
-   Do NOT bump the version suffix — silently re-running would flip
-   real merges to skipped. Rules (mirror DEDUP-KEEP-SEPARATE-FLAG-FIX):
-     if resolved && resolvedAction === 'keep-separate':
-       resolved = false
-       skipped = true
-   All other fields (resolvedAction, resolvedAt) retained as-is. */
-function _migrateDedupSkippedV1(){
-  try{
-    if(localStorage.getItem('nw:dedupSkippedMigration:v1')==='true')return;
-    if(!Array.isArray(S.dedupQueue)||S.dedupQueue.length===0){
-      localStorage.setItem('nw:dedupSkippedMigration:v1','true');
-      return;
-    }
-    let migrated=0;
-    S.dedupQueue.forEach(p=>{
-      if(p.resolved===true && p.resolvedAction==='keep-separate'){
-        p.resolved=false;
-        p.skipped=true;
-        migrated++;
-      }
-    });
-    sv('dedupQueue',S.dedupQueue);
-    localStorage.setItem('nw:dedupSkippedMigration:v1','true');
-    console.log('[DEDUP-SKIPPED-MIG-v1] migrated',migrated,'keep-separate pairs to skipped flag');
-  }catch(e){
-    console.warn('[DEDUP-SKIPPED-MIG-v1] failed:',e);
-  }
-}
-/* DEDUP-SKIPPED-MIGRATION-v1 end */
 function bmsg(t,c){const el=document.getElementById('bmsg');if(el){el.textContent=t;el.style.color=c||'#374151';}}
 
 function inferDisc(src,layer){
@@ -9742,28 +9698,16 @@ function rDedup(){
   const queue=Array.isArray(S.dedupQueue)?S.dedupQueue:[];
   const cs=S.clashes||[];
   const byUid=new Map(cs.map(c=>[c.uid,c]));
-  /* DEDUP-QUEUE-VIEW-SCOPE-BYPASS start: Dedup Queue is a workflow
-     inbox — must show every unresolved pair regardless of active
-     week/project scope. Historical pairs from prior weeks are the
-     most important ones to surface (longest-unresolved). Filter is
-     unresolved-only: p.resolved !== true AND p.skipped !== true.
-     The existing scope filter previously hid pairs whose primary
-     clash sat in a non-active week. */
-  const visiblePairs = (S.dedupQueue || []).filter(p => !p.resolved && !p.skipped);
-  /* DEDUP-QUEUE-VIEW-SCOPE-BYPASS end */
-  /* DEDUP-QUEUE-SKIP-FILTER start: partition into active (awaiting
-     review) and skipped. Active = visiblePairs (already excludes
-     resolved + skipped by construction). Skipped bucket reads raw
-     queue since visiblePairs excluded them. Resolved pairs (Merge)
-     never render in either bucket — audit trail only. Empty-state
-     card shows only when BOTH buckets are empty; when there's
-     skipped-only content the toggle button still needs to appear.
-     Note: byUid is no longer used for orphan-filtering here — the
-     defensive orphan-drop is now retroactive-only (DEDUP-QUEUE-
-     RETRO-CLEANUP-v1 handles it at load). renderRow's cell(a)/cell(b)
-     handles a missing lookup via a "(missing)" placeholder. */
-  const activeQueue=visiblePairs;
-  const skippedQueue=queue.filter(p=>p.skipped&&!p.resolved);
+  // Filter out pairs whose clashes vanished from the register (defensive
+  // — the scan already prunes but a stale in-memory queue could linger).
+  const live=queue.filter(p=>byUid.has(p.a)&&byUid.has(p.b));
+  /* DEDUP-QUEUE-SKIP-FILTER start: partition live pairs into active
+     (awaiting review) and skipped. Resolved pairs (Merge / Keep separate)
+     never render in either bucket — they're the audit trail only. The
+     empty-state card shows only when BOTH buckets are empty; when there's
+     skipped-only content the toggle button still needs to appear. */
+  const activeQueue=live.filter(p=>!p.resolved&&!p.skipped);
+  const skippedQueue=live.filter(p=>p.skipped&&!p.resolved);
   /* DEDUP-QUEUE-SKIP-FILTER end */
   if(!activeQueue.length&&!skippedQueue.length){
     return `<div class="card" style="border-top:3px solid #00B050"><div class="cb" style="padding:24px;text-align:center">
@@ -9966,16 +9910,13 @@ function dedupKeepSeparate(pid){
   if(a)a.dedupResolved=true;
   if(b)b.dedupResolved=true;
   sv('clashes',S.clashes);
-  /* DEDUP-KEEP-SEPARATE-FLAG-FIX start: Keep Separate uses the
-     skipped flag, not resolved. Merge uses resolved. Both retain
-     resolvedAction + resolvedAt for audit. Badge and view count
-     !p.resolved && !p.skipped, so migrating keep-separate off the
-     resolved flag has no user-visible effect on unresolved count. */
-  p.pair.skipped = true;
-  p.pair.resolvedAction = 'keep-separate';
-  p.pair.resolvedAt = new Date().toISOString();
-  /* DEDUP-KEEP-SEPARATE-FLAG-FIX end */
+  /* DEDUP-QUEUE-RESOLVE-PERSIST start: same shape as Merge — both records
+     survive the register but the candidate is filed away. */
+  p.pair.resolved=true;
+  p.pair.resolvedAction='keep-separate';
+  p.pair.resolvedAt=new Date().toISOString();
   sv('dedupQueue',S.dedupQueue);
+  /* DEDUP-QUEUE-RESOLVE-PERSIST end */
   showToast('✗ Kept '+p.pair.a+' and '+p.pair.b+' as separate clashes');
   updSB();nav('dedup');
 }
