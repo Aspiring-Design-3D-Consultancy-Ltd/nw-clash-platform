@@ -114,7 +114,7 @@ test.describe('DEDUP-QUEUE', () => {
     await expect(page.locator('#na-dedup-badge')).toBeHidden();
   });
 
-  test('Keep separate marks both records dedupResolved=true and files the pair under skipped:true', async ({ page }) => {
+  test('Keep separate marks both records dedupResolved=true and drops the pair from the queue', async ({ page }) => {
     await bootstrap(page);
     await seed(page, makePair());
 
@@ -130,30 +130,26 @@ test.describe('DEDUP-QUEUE', () => {
     expect(state.count).toBe(2); // both records still present
     expect(state.a.dedupResolved).toBe(true);
     expect(state.b.dedupResolved).toBe(true);
-    // DEDUP-KEEP-SEPARATE-FLAG-FIX: candidate stays in the queue as an
-    // audit record under skipped:true (not resolved:true) — Merge is the
-    // only action that writes resolved:true. resolvedAction + resolvedAt
-    // still stamped for audit compatibility.
+    // DEDUP-QUEUE-RESOLVE-PERSIST: candidate stays in the queue as an
+    // audit record, but flagged resolved so it's excluded from view/badge.
     expect(state.queueLen).toBe(1);
-    const stamped = await page.evaluate(() => ({
+    const resolvedShape = await page.evaluate(() => ({
       resolved: S.dedupQueue[0].resolved,
-      skipped: S.dedupQueue[0].skipped,
       action: S.dedupQueue[0].resolvedAction,
     }));
-    expect(stamped.resolved).toBe(false);
-    expect(stamped.skipped).toBe(true);
-    expect(stamped.action).toBe('keep-separate');
+    expect(resolvedShape.resolved).toBe(true);
+    expect(resolvedShape.action).toBe('keep-separate');
 
     // Re-running the scan must NOT re-add this pair — dedupResolved
-    // clashes are excluded AND the skipped flag on the candidate
+    // clashes are excluded AND the resolved flag on the candidate
     // survives (DEDUP-QUEUE-DETECT-IDEMPOTENT).
     await page.evaluate(() => scanForDedupCandidates());
     const reScanned = await page.evaluate(() => ({
       len: (S.dedupQueue || []).length,
-      skipped: S.dedupQueue[0]?.skipped,
+      resolved: S.dedupQueue[0]?.resolved,
     }));
     expect(reScanned.len).toBe(1);
-    expect(reScanned.skipped).toBe(true);
+    expect(reScanned.resolved).toBe(true);
   });
 
   test('Skip leaves the pair in the queue for later review', async ({ page }) => {
@@ -376,7 +372,7 @@ test.describe('DEDUP-QUEUE', () => {
     await expect(page.locator('#na-dedup-badge')).toBeHidden();
   });
 
-  test('DEDUP-KEEP-SEPARATE-FLAG-FIX — Keep separate stamps skipped=true + resolvedAction=keep-separate (not resolved)', async ({ page }) => {
+  test('DEDUP-QUEUE-RESOLVE-PERSIST — Keep separate stamps resolved=true + resolvedAction=keep-separate', async ({ page }) => {
     await bootstrap(page);
     await seed(page, makePair());
     const pairId = await page.evaluate(() => S.dedupQueue[0].dedupPairId);
@@ -390,13 +386,10 @@ test.describe('DEDUP-QUEUE', () => {
     // Both records survive the register (Keep separate does not delete).
     expect(state.clashCount).toBe(2);
     expect(state.queueLen).toBe(1);
-    expect(state.pair.resolved).toBe(false);
-    expect(state.pair.skipped).toBe(true);
+    expect(state.pair.resolved).toBe(true);
     expect(state.pair.resolvedAction).toBe('keep-separate');
 
-    // Active view + badge both hide the skipped pair (view: skippedQueue
-    // bucket only surfaces via the Show skipped toggle; badge filter
-    // excludes both resolved and skipped).
+    // Active view + badge both hide the resolved pair.
     await page.evaluate(() => nav('dedup'));
     await expect(page.locator('[data-dedup-pair]')).toHaveCount(0);
     await expect(page.locator('#na-dedup-badge')).toBeHidden();
@@ -497,10 +490,7 @@ test.describe('DEDUP-QUEUE', () => {
     await page.evaluate((pid) => dedupKeepSeparate(pid), pid2);
     await page.evaluate(() => scanForDedupCandidates());
     const finalPair = await page.evaluate(() => S.dedupQueue[0]);
-    // Post DEDUP-KEEP-SEPARATE-FLAG-FIX: keep-separate lives on skipped:true.
-    // resolvedAction is retained for audit compatibility.
-    expect(finalPair.skipped).toBe(true);
-    expect(finalPair.resolved).toBe(false);
+    expect(finalPair.resolved).toBe(true);
     expect(finalPair.resolvedAction).toBe('keep-separate');
   });
 
