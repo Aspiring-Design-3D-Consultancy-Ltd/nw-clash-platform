@@ -1137,6 +1137,11 @@ async function initAuth(){
      — subsequent loads no-op. See _migrateDedupQueueV1() for the
      rules (mirrors DEDUP-SCOPE-GUARD + DEDUP-SIGNATURE-FILTER). */
   try{_migrateDedupQueueV1();}catch(e){console.warn('DEDUP-QUEUE-RETRO-CLEANUP-v1 error:',e);}
+  /* DEDUP-INCIDENT-LOG-2026-07-13-v1 invocation: runs immediately after
+     the retro cleanup so the incident event lands in the audit log on
+     first post-fix load. Idempotent — subsequent loads no-op via
+     nw:dedupIncidentLog:20260713:v1. */
+  try{_logDedupIncident20260713V1();}catch(e){console.warn('DEDUP-INCIDENT-LOG-2026-07-13-v1 error:',e);}
   if(!S.pin){
     document.getElementById('ath').textContent='Set Up Your PIN';
     document.getElementById('asub').textContent='Choose a 4-digit PIN to protect your data';
@@ -6279,6 +6284,23 @@ function _dedupCellKey(x){return (x.testName||'')+'::'+_dedupCoordNorm(x.sourceA
 function scanForDedupCandidates(batchUids,baselineTestNames){
   if(!Array.isArray(S.clashes))return 0;
   if(!Array.isArray(S.dedupQueue))S.dedupQueue=[];
+  /* DEDUP-GRADUATION-DETECT-PRE start: snapshot actioned pair IDs
+     before rebuild. Used at the end of the function to detect
+     graduations — pairs that were previously actioned but no
+     longer appear in the rebuilt queue because SCOPE-GUARD,
+     SIGNATURE-FILTER, or clash deletion now excludes them. */
+  const _preScanActioned = new Map();
+  (S.dedupQueue||[]).forEach(p => {
+    if (p.resolved || p.skipped) {
+      _preScanActioned.set(p.dedupPairId, {
+        action: p.resolvedAction,
+        resolvedAt: p.resolvedAt,
+        aClashId: p.a,
+        bClashId: p.b
+      });
+    }
+  });
+  /* DEDUP-GRADUATION-DETECT-PRE end */
   /* WEEKLY-DEDUP-SCOPE start: normalise the two optional filters. `null`
      and omitted args both mean "no scope filter" (whole-register scan);
      an empty Set means "nothing was imported this week" / "no baseline
@@ -6378,6 +6400,35 @@ function scanForDedupCandidates(batchUids,baselineTestNames){
     }
   });
   sv('dedupQueue',S.dedupQueue);
+  /* DEDUP-GRADUATION-DETECT-POST start: diff pre-scan actioned
+     IDs against rebuilt queue. Any pre-scan pair not in the rebuilt
+     queue = graduated. Log to audit trail with a reason derived
+     from why it would now be excluded. Reason detection is
+     best-effort — the point is that a graduation happened, not
+     the exact rule chapter and verse. */
+  const _postScanIds = new Set((S.dedupQueue||[]).map(p => p.dedupPairId));
+  const _byId = new Map((S.clashes||[]).map(c => [c.uid, c]));
+  _preScanActioned.forEach((prior, pairId) => {
+    if (_postScanIds.has(pairId)) return; // still in queue, no graduation
+    const a = _byId.get(prior.aClashId);
+    const b = _byId.get(prior.bClashId);
+    let reason;
+    if (!a || !b) reason = 'clash-deleted';
+    else if (a.weekTag && b.weekTag && a.weekTag === b.weekTag) reason = 'scope-guard-same-week';
+    else if (a.elementA !== b.elementA || a.elementB !== b.elementB) reason = 'signature-filter-mismatch';
+    else reason = 'other';
+    _appendDedupAuditEvent({
+      type: 'graduation',
+      action: prior.action,
+      pairId: pairId,
+      aClashId: prior.aClashId,
+      bClashId: prior.bClashId,
+      priorResolvedAt: prior.resolvedAt,
+      graduatedAt: new Date().toISOString(),
+      reason: reason
+    });
+  });
+  /* DEDUP-GRADUATION-DETECT-POST end */
   return added;
 }
 /* DEDUP-QUEUE-DETECT end */
@@ -6422,6 +6473,52 @@ function _migrateDedupQueueV1(){
   }
 }
 /* DEDUP-QUEUE-RETRO-CLEANUP-v1 end */
+/* DEDUP-ACTION-LOG start: append-only audit log for dedup actions.
+   Every Merge and Keep Separate click adds an immutable event.
+   Never mutated after write. Never deleted. Storage key
+   nw:dedupActionHistory must never be cleared by Selective Reset
+   (it's a project-wide audit record, not derived state).
+   Event schema is fixed — do not add or remove fields without
+   a v2 migration path. */
+function _appendDedupAuditEvent(evt){
+  try{
+    const key='nw:dedupActionHistory';
+    const log=JSON.parse(localStorage.getItem(key)||'[]');
+    log.push(evt);
+    localStorage.setItem(key,JSON.stringify(log));
+  }catch(e){
+    console.warn('[DEDUP-AUDIT] append failed:',e);
+  }
+}
+/* DEDUP-ACTION-LOG end */
+/* DEDUP-INCIDENT-LOG-2026-07-13-v1 start: one-shot record of the
+   14 documented-but-lost actioned pairs from the 2026-07-13
+   review session. Between that session (118 pairs actioned)
+   and the week-260616 import, the rescan removed 14 pairs from
+   the queue without logging. No action data is reconstructable —
+   this event records the incident, not the individual actions.
+   Idempotent via nw:dedupIncidentLog:20260713:v1 — never bump
+   the version suffix. */
+function _logDedupIncident20260713V1(){
+  try{
+    if(localStorage.getItem('nw:dedupIncidentLog:20260713:v1')==='true')return;
+    _appendDedupAuditEvent({
+      type: 'incident',
+      incidentId: '20260713-actioned-loss',
+      incidentDate: '2026-07-13',
+      description: '14 dedup pairs were actioned during the 2026-07-13 review session (118 total). The subsequent week-260616 import triggered a dedup rescan that removed 14 of those pairs from the queue before the DEDUP-GRADUATION-DETECT audit hook existed. Individual action semantics (Merge vs Keep Separate) are unrecoverable. This event marks the loss; no reconstruction is attempted.',
+      knownActionedCountBefore: 118,
+      knownActionedCountAfter: 104,
+      lostCount: 14,
+      loggedAt: new Date().toISOString()
+    });
+    localStorage.setItem('nw:dedupIncidentLog:20260713:v1','true');
+    console.log('[DEDUP-INCIDENT-20260713] logged data-loss incident');
+  }catch(e){
+    console.warn('[DEDUP-INCIDENT-20260713] failed:',e);
+  }
+}
+/* DEDUP-INCIDENT-LOG-2026-07-13-v1 end */
 function bmsg(t,c){const el=document.getElementById('bmsg');if(el){el.textContent=t;el.style.color=c||'#374151';}}
 
 function inferDisc(src,layer){
@@ -9709,10 +9806,22 @@ function rDedup(){
   const activeQueue=live.filter(p=>!p.resolved&&!p.skipped);
   const skippedQueue=live.filter(p=>p.skipped&&!p.resolved);
   /* DEDUP-QUEUE-SKIP-FILTER end */
+  /* DEDUP-AUDIT-LOG-VIEWER header button — hoisted above the empty-state
+     branch so the "View action history" affordance is available even when
+     the queue itself is empty (audit-log surface is orthogonal to
+     workflow state). */
+  const _auditLen=(function(){
+    try{return JSON.parse(localStorage.getItem('nw:dedupActionHistory')||'[]').length;}
+    catch(_e){return 0;}
+  })();
+  const auditBtn=`<div style="margin-top:8px;display:flex;justify-content:flex-end">
+    <button class="btn" onclick="dedupOpenAuditViewer()" style="font-size:11px">📜 View action history (${_auditLen})</button>
+  </div>`;
   if(!activeQueue.length&&!skippedQueue.length){
     return `<div class="card" style="border-top:3px solid #00B050"><div class="cb" style="padding:24px;text-align:center">
       <div style="font-size:14px;font-weight:700;color:#00B050;margin-bottom:6px">✓ Dedup Queue is empty</div>
       <div style="font-size:11px;color:#64748B;line-height:1.6">Candidate duplicate pairs surface here after each import when two clashes with the same testName + source .nwc files sit between 1mm and 500mm apart. Nothing to review right now.</div>
+      ${auditBtn}
     </div></div>`;
   }
   const cell=(c)=>{
@@ -9809,6 +9918,7 @@ function rDedup(){
     <div class="card" style="border-top:3px solid #EA7600;margin-bottom:9px"><div class="cb" style="padding:10px 14px">
       <div style="font-size:12px;font-weight:700;color:#0F1824;margin-bottom:3px">${headerLine}</div>
       <div style="font-size:10.5px;color:#64748B;line-height:1.5">These pairs share the same test and source .nwc files and sit between 1mm and 500mm apart — likely the same physical clash after model coordination shifted elements. Merge keeps the older record's uid / status / notes; Keep separate marks both records reviewed so they never re-surface.</div>
+      ${auditBtn}
     </div></div>
     ${toggleBtn}
     ${activeRows}
@@ -9821,6 +9931,94 @@ function dedupToggleSkipped(){
   try{ localStorage.setItem('nw:dqShowSkipped',_dqShowSkipped?'1':'0'); }catch(e){}
   nav('dedup');
 }
+/* DEDUP-AUDIT-LOG-VIEWER start: read-only modal listing every event in
+   nw:dedupActionHistory. Sortable by date (newest first default), no
+   edit or delete controls. Renders full event JSON on demand via an
+   inline details toggle. Empty state renders when the log is empty.
+   Escape closes; click outside the panel closes. */
+let _dedupAuditSortDesc = true;
+function dedupOpenAuditViewer(){
+  try{
+    const prior=document.getElementById('dedup-audit-viewer');
+    if(prior)prior.remove();
+    const wrap=document.createElement('div');
+    wrap.id='dedup-audit-viewer';
+    wrap.style.cssText='position:fixed;inset:0;background:rgba(15,24,36,.6);z-index:9990;display:flex;align-items:center;justify-content:center;font-family:Arial,sans-serif;padding:20px';
+    wrap.innerHTML=`<div role="dialog" aria-modal="true" style="background:#fff;border-radius:8px;max-width:1100px;width:100%;max-height:calc(100vh - 40px);box-shadow:0 20px 60px rgba(0,0,0,.35);overflow:hidden;display:flex;flex-direction:column">
+      <div style="padding:14px 22px;border-bottom:1px solid #E5E7EB;background:#F8FAFC;display:flex;align-items:center;justify-content:space-between;gap:12px">
+        <div>
+          <div style="font-size:14px;font-weight:700;color:#0F1824">Dedup Queue action history</div>
+          <div id="dedup-audit-header-sub" style="font-size:11px;color:#64748B;margin-top:2px">Read-only audit log. Every Merge, Keep Separate, graduation event, and one-shot incident is recorded.</div>
+        </div>
+        <button id="dedup-audit-close" style="background:#EA7600;border:0;color:#fff;padding:8px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">Close</button>
+      </div>
+      <div id="dedup-audit-body" style="padding:12px 22px;overflow-y:auto;flex:1;background:#fff"></div>
+    </div>`;
+    document.body.appendChild(wrap);
+    _dedupRenderAuditBody();
+    const close=()=>{const el=document.getElementById('dedup-audit-viewer');if(el)el.remove();document.removeEventListener('keydown',onKey);};
+    const onKey=(e)=>{if(e.key==='Escape')close();};
+    document.addEventListener('keydown',onKey);
+    document.getElementById('dedup-audit-close').addEventListener('click',close);
+    wrap.addEventListener('click',(e)=>{if(e.target===wrap)close();});
+  }catch(e){console.warn('[DEDUP-AUDIT-VIEWER] open failed:',e);}
+}
+function _dedupRenderAuditBody(){
+  const body=document.getElementById('dedup-audit-body');
+  const sub=document.getElementById('dedup-audit-header-sub');
+  if(!body)return;
+  let log=[];
+  try{log=JSON.parse(localStorage.getItem('nw:dedupActionHistory')||'[]');}catch(_e){log=[];}
+  const _tsOf=(e)=>e && (e.resolvedAt || e.graduatedAt || e.loggedAt || e.priorResolvedAt) || '';
+  const sorted=[...log].sort((x,y)=>{
+    const a=String(_tsOf(x)),b=String(_tsOf(y));
+    return _dedupAuditSortDesc?b.localeCompare(a):a.localeCompare(b);
+  });
+  if(sub)sub.textContent=`${log.length} event${log.length===1?'':'s'} logged · Read-only audit log`;
+  if(!sorted.length){
+    body.innerHTML=`<div style="padding:32px;text-align:center;color:#64748B;font-size:12px">No dedup activity logged yet. Merge or Keep Separate actions, dedup rescans, and one-shot incidents appear here as they occur.</div>`;
+    return;
+  }
+  const arrow=_dedupAuditSortDesc?'▼':'▲';
+  const rows=sorted.map((e,i)=>{
+    const ts=String(_tsOf(e)||'');
+    const dateCell=ts?`<span title="${esc(ts)}">${esc(ts.slice(0,10))}<br><span style="font-size:9px;color:#94A3B8;font-family:monospace">${esc(ts.slice(11,19))}</span></span>`:'<span style="color:#94A3B8">—</span>';
+    const typeBadge=(t)=>{
+      const map={action:{bg:'#DBEAFE',c:'#1E40AF'},graduation:{bg:'#FEF3C7',c:'#92400E'},incident:{bg:'#FEE2E2',c:'#991B1B'}};
+      const s=map[t]||{bg:'#F1F5F9',c:'#475569'};
+      return `<span style="background:${s.bg};color:${s.c};font-size:9px;font-weight:700;padding:2px 8px;border-radius:3px;text-transform:uppercase;letter-spacing:.3px">${esc(t||'—')}</span>`;
+    };
+    const actionCell=e.action?esc(e.action):(e.type==='incident'?'<span style="color:#94A3B8">—</span>':'<span style="color:#94A3B8">—</span>');
+    const pairCell=e.pairId?`<code style="font-size:10px;color:#334155;background:#F1F5F9;padding:1px 4px;border-radius:3px">${esc(e.pairId)}</code>`:(e.incidentId?`<code style="font-size:10px;color:#991B1B;background:#FEE2E2;padding:1px 4px;border-radius:3px">${esc(e.incidentId)}</code>`:'<span style="color:#94A3B8">—</span>');
+    const reasonCell=e.reason?`<span style="font-size:10.5px;color:#334155">${esc(e.reason)}</span>`:'<span style="color:#94A3B8">—</span>';
+    const detailsId=`dedup-audit-details-${i}`;
+    const detailsBtn=`<button onclick="(function(){const el=document.getElementById('${detailsId}');if(!el)return;el.style.display=el.style.display==='none'?'block':'none';})()" style="background:transparent;border:.5px solid #CBD5E1;color:#475569;font-size:10px;padding:2px 6px;border-radius:3px;cursor:pointer">…</button>`;
+    const jsonPretty=esc(JSON.stringify(e,null,2));
+    const detailsRow=`<tr data-audit-details-row><td colspan="6" style="padding:0"><pre id="${detailsId}" style="display:none;margin:0;padding:10px 14px;background:#0F172A;color:#E2E8F0;font-size:10.5px;font-family:ui-monospace,monospace;overflow-x:auto;border-top:1px solid #E2E8F0">${jsonPretty}</pre></td></tr>`;
+    return `<tr data-audit-event-row style="border-bottom:.5px solid #E5E7EB">
+      <td style="padding:8px 10px;vertical-align:top;font-size:11px;color:#334155;white-space:nowrap">${dateCell}</td>
+      <td style="padding:8px 10px;vertical-align:top">${typeBadge(e.type)}</td>
+      <td style="padding:8px 10px;vertical-align:top;font-size:11px;color:#334155">${actionCell}</td>
+      <td style="padding:8px 10px;vertical-align:top">${pairCell}</td>
+      <td style="padding:8px 10px;vertical-align:top">${reasonCell}</td>
+      <td style="padding:8px 10px;vertical-align:top;text-align:center">${detailsBtn}</td>
+    </tr>${detailsRow}`;
+  }).join('');
+  body.innerHTML=`<table style="width:100%;border-collapse:collapse;font-size:11px">
+    <thead>
+      <tr style="background:#F8FAFC;border-bottom:.5px solid #E5E7EB">
+        <th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:.4px;cursor:pointer" onclick="_dedupAuditSortDesc=!_dedupAuditSortDesc;_dedupRenderAuditBody()">Date ${arrow}</th>
+        <th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:.4px">Type</th>
+        <th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:.4px">Action</th>
+        <th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:.4px">Pair ID</th>
+        <th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:.4px">Reason</th>
+        <th style="padding:8px 10px;text-align:center;font-size:10px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:.4px">Details</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+/* DEDUP-AUDIT-LOG-VIEWER end */
 /* DEDUP-QUEUE-IMAGES start: async slot hydration for the side-by-side
    candidate cells. Uses the same testName::nwImageRef composite key +
    IDB round-trip as the Clash Register modal (getNwImageB64), and falls
@@ -9898,6 +10096,30 @@ function dedupMerge(pid){
   p.pair.resolvedAt=new Date().toISOString();
   sv('dedupQueue',S.dedupQueue);
   /* DEDUP-QUEUE-RESOLVE-PERSIST end */
+  /* DEDUP-ACTION-LOG-MERGE start: append-only audit event. Uses S.clashes
+     lookup for the aWeekTag/bWeekTag/aElementA/aElementB fields — the
+     newer clash was just deleted from the register above (line ~9891),
+     so its side reads undefined. That's the correct semantic: the audit
+     event records the state AT the moment of the Merge action, and the
+     newer side is gone by design. mergedIntoClashId names the survivor
+     (pair.a = older uid — Merge keeps the older-uid side by convention;
+     the UI button reads "Merge (keep CLX-198)"). */
+  _appendDedupAuditEvent({
+    type: 'action',
+    action: 'merge',
+    pairId: p.pair.dedupPairId,
+    aClashId: p.pair.a,
+    bClashId: p.pair.b,
+    aWeekTag: (S.clashes.find(c=>c.uid===p.pair.a)||{}).weekTag,
+    bWeekTag: (S.clashes.find(c=>c.uid===p.pair.b)||{}).weekTag,
+    aElementA: (S.clashes.find(c=>c.uid===p.pair.a)||{}).elementA,
+    aElementB: (S.clashes.find(c=>c.uid===p.pair.a)||{}).elementB,
+    distMm: p.pair.distMm,
+    resolvedAt: p.pair.resolvedAt,
+    mergedIntoClashId: p.pair.a,
+    actor: S.actor || 'Administrator'
+  });
+  /* DEDUP-ACTION-LOG-MERGE end */
   regenWeeklyFromRegister();
   showToast('✓ Merged '+newer.uid+' into '+older.uid);
   updSB();updSS();nav('dedup');
@@ -9917,6 +10139,24 @@ function dedupKeepSeparate(pid){
   p.pair.resolvedAt=new Date().toISOString();
   sv('dedupQueue',S.dedupQueue);
   /* DEDUP-QUEUE-RESOLVE-PERSIST end */
+  /* DEDUP-ACTION-LOG-KEEP-SEPARATE start: append-only audit event.
+     Both records survive here so the aWeekTag/bWeekTag/aElementA/
+     aElementB lookups return real values. */
+  _appendDedupAuditEvent({
+    type: 'action',
+    action: 'keep-separate',
+    pairId: p.pair.dedupPairId,
+    aClashId: p.pair.a,
+    bClashId: p.pair.b,
+    aWeekTag: (S.clashes.find(c=>c.uid===p.pair.a)||{}).weekTag,
+    bWeekTag: (S.clashes.find(c=>c.uid===p.pair.b)||{}).weekTag,
+    aElementA: (S.clashes.find(c=>c.uid===p.pair.a)||{}).elementA,
+    aElementB: (S.clashes.find(c=>c.uid===p.pair.a)||{}).elementB,
+    distMm: p.pair.distMm,
+    resolvedAt: p.pair.resolvedAt,
+    actor: S.actor || 'Administrator'
+  });
+  /* DEDUP-ACTION-LOG-KEEP-SEPARATE end */
   showToast('✗ Kept '+p.pair.a+' and '+p.pair.b+' as separate clashes');
   updSB();nav('dedup');
 }
@@ -14193,6 +14433,16 @@ async function _executeSelectiveReset(cats,modalId){
     if(c.idbStore==='images')killImages=true;
     if(c.idbStore==='plans')killPlans=true;
   });
+  /* SELECTIVE-RESET-PROTECT-AUDIT-LOG start: audit log is a
+     project-wide historical record and must survive any Selective
+     Reset — including the Dedup Queue tick. Explicitly subtract the
+     two protected keys from lsKill so a future edit that accidentally
+     wires them into a category's lsKeys still can't destroy them.
+     Also protects the 2026-07-13 incident log idempotency flag so
+     the incident event isn't re-logged on next load after a reset. */
+  const _protectedAuditKeys=['dedupActionHistory','dedupIncidentLog:20260713:v1'];
+  _protectedAuditKeys.forEach(k=>lsKill.delete(k));
+  /* SELECTIVE-RESET-PROTECT-AUDIT-LOG end */
   // 3) localStorage wipes. Use removeItem on the prefixed key directly so
   //    we don't depend on any sv()/rv() wrapper that might re-create.
   lsKill.forEach(k=>{try{localStorage.removeItem('nw:'+k);}catch(e){}});
