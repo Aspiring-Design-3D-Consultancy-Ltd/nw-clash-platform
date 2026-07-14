@@ -366,11 +366,9 @@ tbody td:last-child{border-right:none;}
      cost so an accidental click must not commit — the confirm button
      stays disabled until the input value strictly equals 'APPROVE'
      (case-sensitive per brief). Backdrop click / Cancel restore state
-     without calling the shipped _markClashesAsApproved handler. On
-     confirm the handler is called as-is (per scope-out) and the newly
-     appended statusHistory entries are post-tagged with
-     source: 'ClashRegister' — see _crApproveConfirm for the rationale
-     and the length-snapshot / retag mechanic. -->
+     without calling _markClashesAsApproved. On confirm the handler is
+     called with an explicit source: 'ClashRegister' argument so the
+     audit trail identifies this surface. -->
 <div id="cr-approve-modal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(15,24,36,.55);align-items:center;justify-content:center" onclick="if(event.target===this)_crApproveCancel()">
   <div style="background:#fff;border-radius:6px;max-width:440px;width:90%;padding:20px;font-family:Arial,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.25)">
     <div id="cr-approve-title" style="font-size:15px;font-weight:700;color:#0F1824;margin-bottom:8px">Approve clashes</div>
@@ -426,31 +424,12 @@ function _crApproveConfirm(){
   _crApproveCancelCb=null;
   _crApproveUids=[];
   if(!uids.length)return;
-  // Scope-out forbids modifying the shipped _markClashesAsApproved handler.
-  // It hardcodes source: 'ReviewQueue'. To honour the brief's requirement
-  // of source: 'ClashRegister' without touching the handler, snapshot each
-  // clash's statusHistory length before the call and retag only the audit
-  // entries added by this call. Weekly pushStatusHistory entries do not
-  // carry `source` so the guard on (h.source==='ReviewQueue' && h.approvedAt)
-  // pins the change to the audit entry alone.
-  const before=new Map();
-  const cs=S.clashes||[];
-  uids.forEach(uid=>{
-    const c=cs.find(x=>x.uid===uid);
-    if(c)before.set(uid,Array.isArray(c.statusHistory)?c.statusHistory.length:0);
-  });
-  const n=_markClashesAsApproved(uids);
-  uids.forEach(uid=>{
-    const c=cs.find(x=>x.uid===uid);
-    if(!c||!Array.isArray(c.statusHistory))return;
-    const startIdx=before.get(uid)||0;
-    for(let i=startIdx;i<c.statusHistory.length;i++){
-      const h=c.statusHistory[i];
-      if(h&&h.source==='ReviewQueue'&&h.approvedAt)h.source='ClashRegister';
-    }
-  });
+  // Handler now accepts the source parameter directly (default
+  // 'ReviewQueue' preserves the Review Queue call-site's historical
+  // behaviour); pass 'ClashRegister' so the audit trail identifies
+  // this surface without any post-call rewriting.
+  const n=_markClashesAsApproved(uids,'ClashRegister');
   if(n){
-    sv('clashes',S.clashes);
     if(typeof showToast==='function')showToast(`✓ ${n} clash${n===1?'':'es'} approved`);
     if(typeof _selClashes!=='undefined'&&_selClashes.clear){_selClashes.clear();}
     if(typeof _updateSelBadge==='function')_updateSelBadge();
@@ -9395,13 +9374,18 @@ function reviewQueueResolveGroup(tn){
    accepted as-is, no fix pending. Handler mirrors the existing
    _rqActionOnUids('resolved') branch: writes a weekly statusHistory
    entry via the shared pushStatusHistory helper (STATUS-HIST), appends
-   the ReviewQueue-source audit entry, clears pendingReview /
-   disappearedAt / disappearedInBatch so the clash falls out of the
-   queue, persists via sv() and invalidates the weekly aggregates via
+   the source-tagged audit entry, clears pendingReview / disappearedAt
+   / disappearedInBatch so the clash falls out of the queue, persists
+   via sv() and invalidates the weekly aggregates via
    regenWeeklyFromRegister() on status change. Only differences from
    the Resolved branch: status string 'Approved' and additional
    approvedAt + actor fields on the audit entry for a clean audit
-   trail. Does NOT modify any existing handler. */
+   trail. Signature: _markClashesAsApproved(uids, source='ReviewQueue')
+   — the optional source parameter identifies the surface that
+   triggered the Approve so the audit trail differentiates
+   ReviewQueue vs ClashRegister vs any future surface. Existing
+   callers that omit the argument keep the historical 'ReviewQueue'
+   default so behaviour is unchanged. */
 /* APPROVE-ACTION-REVIEW-QUEUE-UI start: click-wrapper handlers for the
    two Review Queue Approve buttons. Mirror the reviewQueueMarkResolved
    / reviewQueueResolveGroup callsite shape so screen refresh, badge
@@ -9423,7 +9407,7 @@ function reviewQueueApproveGroup(tn){
   updSB();updSS();nav('review');
 }
 /* APPROVE-ACTION-REVIEW-QUEUE-UI end */
-function _markClashesAsApproved(clashIds){
+function _markClashesAsApproved(clashIds,source='ReviewQueue'){
   if(!Array.isArray(clashIds)||clashIds.length===0)return 0;
   const now=new Date().toISOString();
   const wy=_weekYearNow();
@@ -9441,7 +9425,7 @@ function _markClashesAsApproved(clashIds){
       c.status='Approved';
       anyStatusChanged=true;
     }
-    c.statusHistory.push({reviewedAt:now,approvedAt:now,actor:actor,source:'ReviewQueue',status:'Approved',week:wy.week,year:wy.year});
+    c.statusHistory.push({reviewedAt:now,approvedAt:now,actor:actor,source:source,status:'Approved',week:wy.week,year:wy.year});
     delete c.pendingReview;
     delete c.disappearedAt;
     delete c.disappearedInBatch;
