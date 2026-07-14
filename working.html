@@ -9134,6 +9134,12 @@ function rReview(){
           <span style="background:#EA7600;color:#fff;font-size:9px;font-weight:700;padding:1px 6px;border-radius:8px">${rows.length}</span>
         </span>
         <button class="btn sm ac" onclick="event.stopPropagation();reviewQueueResolveGroup(${tnJson})" style="font-size:10px">✓ Confirm all in this test as Resolved</button>
+        <!-- APPROVE-ACTION-REVIEW-QUEUE-UI start: per-test bulk Approve
+             button in the Review Queue group header. Green #00B050 fill
+             matches the existing Approved color from the NW map (line
+             519), sidebar footer legend, and Dashboard "Approved" tile. -->
+        <button class="btn sm" onclick="event.stopPropagation();reviewQueueApproveGroup(${tnJson})" style="font-size:10px;background:#00B050;color:#fff;border-color:#00B050;margin-left:4px">✓ Approve all in this test</button>
+        <!-- APPROVE-ACTION-REVIEW-QUEUE-UI end -->
       </div>
       <div class="cb" style="padding:0;display:${open?'block':'none'}">
         <table style="width:100%;border-collapse:collapse;font-family:Arial,sans-serif">
@@ -9163,6 +9169,11 @@ function rReview(){
       <div style="flex:1"></div>
       <button class="btn" onclick="reviewQueueMarkStillOpen()" style="font-size:11px">✗ Mark selected as Still Open</button>
       <button class="btn p" onclick="reviewQueueMarkResolved()" style="font-size:11px">✓ Mark selected as Resolved</button>
+      <!-- APPROVE-ACTION-REVIEW-QUEUE-UI start: bottom-bar Approve
+           action for the "clash is a designed condition, accepted as-
+           is" case that Resolved / Still Open cannot record. -->
+      <button class="btn" onclick="reviewQueueMarkApproved()" style="font-size:11px;background:#00B050;color:#fff;border-color:#00B050">✓ Mark selected as Approved</button>
+      <!-- APPROVE-ACTION-REVIEW-QUEUE-UI end -->
     </div>
   `;
 }
@@ -9245,6 +9256,70 @@ function reviewQueueResolveGroup(tn){
   updSB();updSS();nav('review');
 }
 /* REVIEW-QUEUE-ACTIONS end */
+/* APPROVE-ACTION-HANDLER start: Approve is a third real-world outcome
+   for disappeared clashes — the clash is a designed condition,
+   accepted as-is, no fix pending. Handler mirrors the existing
+   _rqActionOnUids('resolved') branch: writes a weekly statusHistory
+   entry via the shared pushStatusHistory helper (STATUS-HIST), appends
+   the ReviewQueue-source audit entry, clears pendingReview /
+   disappearedAt / disappearedInBatch so the clash falls out of the
+   queue, persists via sv() and invalidates the weekly aggregates via
+   regenWeeklyFromRegister() on status change. Only differences from
+   the Resolved branch: status string 'Approved' and additional
+   approvedAt + actor fields on the audit entry for a clean audit
+   trail. Does NOT modify any existing handler. */
+/* APPROVE-ACTION-REVIEW-QUEUE-UI start: click-wrapper handlers for the
+   two Review Queue Approve buttons. Mirror the reviewQueueMarkResolved
+   / reviewQueueResolveGroup callsite shape so screen refresh, badge
+   update, and toast behave identically to the existing actions. */
+function reviewQueueMarkApproved(){
+  const uids=reviewQueueGetSelectedUids();
+  if(!uids||!uids.length){showToast('No clashes selected');return;}
+  const n=_markClashesAsApproved(uids);
+  if(!n)return;
+  showToast(`✓ ${n} clash${n===1?'':'es'} approved`);
+  updSB();updSS();nav('review');
+}
+function reviewQueueApproveGroup(tn){
+  const uids=(S.clashes||[]).filter(c=>c.pendingReview===true&&(c.testName||'(unknown test)')===tn).map(c=>c.uid);
+  if(!uids.length){showToast('Nothing to approve');return;}
+  const n=_markClashesAsApproved(uids);
+  if(!n)return;
+  showToast(`✓ ${n} clash${n===1?'':'es'} in "${tn}" approved`);
+  updSB();updSS();nav('review');
+}
+/* APPROVE-ACTION-REVIEW-QUEUE-UI end */
+function _markClashesAsApproved(clashIds){
+  if(!Array.isArray(clashIds)||clashIds.length===0)return 0;
+  const now=new Date().toISOString();
+  const wy=_weekYearNow();
+  const actor=(S.session&&S.session.actor)||S.actor||'Administrator';
+  const cs=S.clashes||[];
+  const idx=new Map();
+  cs.forEach((c,i)=>idx.set(c.uid,i));
+  let updated=0,anyStatusChanged=false;
+  clashIds.forEach(uid=>{
+    const i=idx.get(uid);if(i==null)return;
+    const c=cs[i];
+    if(!Array.isArray(c.statusHistory))c.statusHistory=[];
+    if(c.status!=='Approved'){
+      pushStatusHistory(c,'Approved',wy);
+      c.status='Approved';
+      anyStatusChanged=true;
+    }
+    c.statusHistory.push({reviewedAt:now,approvedAt:now,actor:actor,source:'ReviewQueue',status:'Approved',week:wy.week,year:wy.year});
+    delete c.pendingReview;
+    delete c.disappearedAt;
+    delete c.disappearedInBatch;
+    updated++;
+  });
+  if(updated){
+    sv('clashes',S.clashes);
+    if(anyStatusChanged)regenWeeklyFromRegister();
+  }
+  return updated;
+}
+/* APPROVE-ACTION-HANDLER end */
 
 /* RQ-NW-EXPORT-FILTER start: build a Navisworks-consumable Clash Detective
    XML containing only the Review Queue's clashes. Semantic guarantee: each
