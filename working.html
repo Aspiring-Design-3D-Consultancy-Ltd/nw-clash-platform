@@ -360,6 +360,108 @@ tbody td:last-child{border-right:none;}
 <div id="cfp" onclick="event.stopPropagation()"></div>
 <div id="cm" onclick="if(event.target===this)closeCM()"><div id="cm-inner"></div></div>
 
+<!-- APPROVE-ACTION-CLASH-REGISTER-CONFIRM-MODAL start: type-APPROVE
+     confirmation modal shared by the per-row dropdown interception and
+     the bulk-bar Approve button. Terminal status carries real workflow
+     cost so an accidental click must not commit — the confirm button
+     stays disabled until the input value strictly equals 'APPROVE'
+     (case-sensitive per brief). Backdrop click / Cancel restore state
+     without calling the shipped _markClashesAsApproved handler. On
+     confirm the handler is called as-is (per scope-out) and the newly
+     appended statusHistory entries are post-tagged with
+     source: 'ClashRegister' — see _crApproveConfirm for the rationale
+     and the length-snapshot / retag mechanic. -->
+<div id="cr-approve-modal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(15,24,36,.55);align-items:center;justify-content:center" onclick="if(event.target===this)_crApproveCancel()">
+  <div style="background:#fff;border-radius:6px;max-width:440px;width:90%;padding:20px;font-family:Arial,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.25)">
+    <div id="cr-approve-title" style="font-size:15px;font-weight:700;color:#0F1824;margin-bottom:8px">Approve clashes</div>
+    <div id="cr-approve-body" style="font-size:12px;color:#334155;line-height:1.5;margin-bottom:14px"></div>
+    <label for="cr-approve-input" style="display:block;font-size:11px;font-weight:600;color:#64748B;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Type <span style="font-family:monospace;color:#0F1824">APPROVE</span> to confirm</label>
+    <input id="cr-approve-input" type="text" autocomplete="off" spellcheck="false" oninput="_crApproveInputChange()" onkeydown="if(event.key==='Enter'&&!document.getElementById('cr-approve-confirm-btn').disabled)_crApproveConfirm();else if(event.key==='Escape')_crApproveCancel();" style="width:100%;padding:7px 10px;border:.5px solid #CBD5E1;border-radius:4px;font-family:monospace;font-size:13px;margin-bottom:14px;box-sizing:border-box" placeholder="APPROVE">
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button onclick="_crApproveCancel()" style="padding:7px 16px;background:#fff;color:#334155;border:.5px solid #CBD5E1;border-radius:4px;font-size:12px;font-weight:600;cursor:pointer;font-family:Arial,sans-serif">Cancel</button>
+      <button id="cr-approve-confirm-btn" onclick="_crApproveConfirm()" disabled style="padding:7px 16px;background:#00B050;color:#fff;border:none;border-radius:4px;font-size:12px;font-weight:700;cursor:pointer;font-family:Arial,sans-serif">Confirm</button>
+    </div>
+  </div>
+</div>
+<script>
+let _crApproveUids=[];
+let _crApproveCancelCb=null;
+function _crApproveOpen(uids,cancelCb){
+  _crApproveUids=Array.isArray(uids)?uids.slice():[];
+  _crApproveCancelCb=typeof cancelCb==='function'?cancelCb:null;
+  const n=_crApproveUids.length;
+  const t=document.getElementById('cr-approve-title');
+  const b=document.getElementById('cr-approve-body');
+  const inp=document.getElementById('cr-approve-input');
+  const btn=document.getElementById('cr-approve-confirm-btn');
+  if(t)t.textContent=`Approve ${n} clash${n===1?'':'es'}`;
+  if(b)b.textContent=`Mark ${n} clash${n===1?'':'es'} as Approved? This is a terminal status.`;
+  if(inp){inp.value='';}
+  if(btn){btn.disabled=true;btn.style.opacity='.55';btn.style.cursor='not-allowed';}
+  const m=document.getElementById('cr-approve-modal');
+  if(m)m.style.display='flex';
+  setTimeout(()=>{if(inp)inp.focus();},0);
+}
+function _crApproveInputChange(){
+  const inp=document.getElementById('cr-approve-input');
+  const btn=document.getElementById('cr-approve-confirm-btn');
+  if(!inp||!btn)return;
+  const ok=inp.value==='APPROVE';
+  btn.disabled=!ok;
+  btn.style.opacity=ok?'1':'.55';
+  btn.style.cursor=ok?'pointer':'not-allowed';
+}
+function _crApproveCancel(){
+  const m=document.getElementById('cr-approve-modal');
+  if(m)m.style.display='none';
+  const cb=_crApproveCancelCb;
+  _crApproveCancelCb=null;
+  _crApproveUids=[];
+  if(typeof cb==='function'){try{cb();}catch(_){}}
+}
+function _crApproveConfirm(){
+  const uids=_crApproveUids.slice();
+  const m=document.getElementById('cr-approve-modal');
+  if(m)m.style.display='none';
+  _crApproveCancelCb=null;
+  _crApproveUids=[];
+  if(!uids.length)return;
+  // Scope-out forbids modifying the shipped _markClashesAsApproved handler.
+  // It hardcodes source: 'ReviewQueue'. To honour the brief's requirement
+  // of source: 'ClashRegister' without touching the handler, snapshot each
+  // clash's statusHistory length before the call and retag only the audit
+  // entries added by this call. Weekly pushStatusHistory entries do not
+  // carry `source` so the guard on (h.source==='ReviewQueue' && h.approvedAt)
+  // pins the change to the audit entry alone.
+  const before=new Map();
+  const cs=S.clashes||[];
+  uids.forEach(uid=>{
+    const c=cs.find(x=>x.uid===uid);
+    if(c)before.set(uid,Array.isArray(c.statusHistory)?c.statusHistory.length:0);
+  });
+  const n=_markClashesAsApproved(uids);
+  uids.forEach(uid=>{
+    const c=cs.find(x=>x.uid===uid);
+    if(!c||!Array.isArray(c.statusHistory))return;
+    const startIdx=before.get(uid)||0;
+    for(let i=startIdx;i<c.statusHistory.length;i++){
+      const h=c.statusHistory[i];
+      if(h&&h.source==='ReviewQueue'&&h.approvedAt)h.source='ClashRegister';
+    }
+  });
+  if(n){
+    sv('clashes',S.clashes);
+    if(typeof showToast==='function')showToast(`✓ ${n} clash${n===1?'':'es'} approved`);
+    if(typeof _selClashes!=='undefined'&&_selClashes.clear){_selClashes.clear();}
+    if(typeof _updateSelBadge==='function')_updateSelBadge();
+    if(typeof updSB==='function')updSB();
+    if(typeof updSS==='function')updSS();
+    if(typeof filterReg==='function')filterReg();
+  }
+}
+</script>
+<!-- APPROVE-ACTION-CLASH-REGISTER-CONFIRM-MODAL end -->
+
 <!-- AUTH -->
 <div id="auth">
   <div class="ag"></div>
@@ -5782,6 +5884,20 @@ function filterReg(){
       <button onclick="showGroupBuilder(true)" style="font-size:10px;padding:3px 10px;background:#006BA6;color:#fff;border:none;border-radius:3px;cursor:pointer;font-weight:600">⚙ Group &amp; Export selected</button>
       <button onclick="dlBCFSelected()" style="font-size:10px;padding:3px 10px;background:#007A38;color:#fff;border:none;border-radius:3px;cursor:pointer;font-weight:600">↓ Export selected as BCF</button>
     </div>`:''}
+    ${/* APPROVE-ACTION-CLASH-REGISTER-BULK-BAR start: dedicated bottom
+         action bar that appears only when the leftmost-column checkbox
+         selection is non-empty. Contains the single "Mark selected as
+         Approved" button per brief. Sits below the existing selection
+         bar so the two bars stack when both are visible; the existing
+         reg-sel-bar (Clear / Group & Export / Export as BCF) is
+         untouched. Button opens the shared type-APPROVE confirm modal
+         via _crApproveOpen with the current _selClashes as an array. */
+      _selClashes.size>0?`<div id="reg-approve-bar" style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:#E6FAF0;border:.5px solid #66CC99;border-radius:5px;margin-top:6px">
+        <span style="font-size:11px;font-weight:700;color:#007A38">✓ ${_selClashes.size} selected — terminal Approve available</span>
+        <div style="flex:1"></div>
+        <button id="reg-approve-btn" onclick="_crApproveOpen([..._selClashes])" style="font-size:11px;padding:5px 14px;background:#00B050;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:700;font-family:Arial,sans-serif">✓ Mark selected as Approved</button>
+      </div>`:''
+    /* APPROVE-ACTION-CLASH-REGISTER-BULK-BAR end */}
     ${_regView==='all'&&!_weekFilter?`<div style="padding:.4rem .82rem;background:#FFFBE6;border-top:.5px solid #FFE066;font-size:10px;color:#8C6A00">🟡 <strong>History mode</strong> — Resolved and Approved clashes shown for reference.</div>`:''}
     </div>
     ${_regView==='grouped'?'':(totalPages>1?renderPager(rows.length,_regPage,totalPages,_regPageSize):'')}` ;
@@ -5843,7 +5959,25 @@ function addC(){
   S.clashes.push({uid:nuid(),name:nm,testName:document.getElementById('af-tn')?.value||'Manual',status:'New',priority:document.getElementById('af-pr')?.value||'High',penetration:'0mm',disciplineA:document.getElementById('af-da')?.value||'',disciplineB:document.getElementById('af-db')?.value||'',elementA:document.getElementById('af-ea')?.value||'',elementB:document.getElementById('af-eb')?.value||'',assignedTo:'',notes:'',date:new Date().toLocaleDateString('en-GB'),x:0,y:0,z:0,/* STATUS-HIST: initial entry for manually-added clash */statusHistory:[(function(){const _wy=_weekYearNow();return{week:_wy.week,year:_wy.year,status:'New'};})()]});
   sv('clashes',S.clashes);regenWeeklyFromRegister();updSB();updSS();hideAF();nav('register');
 }
-function chgSt(uid,sel){if(!can('edit_register')){updSS();return;}uf(uid,'status',sel.value);const nw=nwc(sel.value);sel.style.background=nw.bg;sel.style.color=nw.tx;sel.style.borderColor=nw.bd;sel.closest('tr').style.borderLeft=`3px solid ${nw.s}`;updSB();updSS();}
+function chgSt(uid,sel){if(!can('edit_register')){updSS();return;}
+  /* APPROVE-ACTION-CLASH-REGISTER-DROPDOWN start: intercept per-row
+     selection of 'Approved' and route through the type-APPROVE confirm
+     modal instead of the direct uf() status write. Cancel path restores
+     the dropdown to the prior status so the DOM matches the unchanged
+     model. Guard on prev!=='Approved' avoids opening the modal when a
+     clash was already Approved (idempotent re-select). All other status
+     transitions (New/Active/Reviewed/Resolved) fall through to the
+     unchanged path below. */
+  if(sel.value==='Approved'){
+    const c=(S.clashes||[]).find(x=>x.uid===uid);
+    const prev=c?c.status:sel.value;
+    if(prev!=='Approved'){
+      _crApproveOpen([uid],()=>{sel.value=prev;});
+      return;
+    }
+  }
+  /* APPROVE-ACTION-CLASH-REGISTER-DROPDOWN end */
+  uf(uid,'status',sel.value);const nw=nwc(sel.value);sel.style.background=nw.bg;sel.style.color=nw.tx;sel.style.borderColor=nw.bd;sel.closest('tr').style.borderLeft=`3px solid ${nw.s}`;updSB();updSS();}
 function uf(uid,f,v){const c=(S.clashes||[]).find(x=>x.uid===uid);if(c){/* STATUS-HIST: record status change before mutating, so the prior status remains in history */if(f==='status'&&c.status!==v){pushStatusHistory(c,v);}c[f]=v;sv('clashes',S.clashes);if(f==='status'||f==='priority'||f==='date')regenWeeklyFromRegister();}}
 function delC(uid){if(!can('edit_register')){showToast('Read-only access');return;}if(!confirm('Remove '+uid+'?'))return;S.clashes=S.clashes.filter(x=>x.uid!==uid);sv('clashes',S.clashes);regenWeeklyFromRegister();updSB();updSS();nav('register');}
 
