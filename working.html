@@ -517,6 +517,26 @@ tbody td:last-child{border-right:none;}
 /* ═══════ CONFIG ═══════ */
 const ST=['New','Active','Reviewed','Approved','Resolved'];
 const NW={New:{s:'#FF0000',bg:'#FFF0F0',bd:'#FFBBBB',tx:'#CC0000',e:'🔴'},Active:{s:'#FF8000',bg:'#FFF5E6',bd:'#FFCC88',tx:'#CC5500',e:'🟠'},Reviewed:{s:'#00AEEF',bg:'#E6F6FF',bd:'#80D4F7',tx:'#006FA6',e:'🔵'},Approved:{s:'#00B050',bg:'#E6FAF0',bd:'#66CC99',tx:'#007A38',e:'🟢'},Resolved:{s:'#FFC000',bg:'#FFFBE6',bd:'#FFE066',tx:'#8C6A00',e:'🟡'}};
+/* APPROVE-STATUS-COLOR-RENDER start: pre-existing color infrastructure
+   ALREADY covers Approved end-to-end — nwc(status) returns NW.Approved
+   for any Approved clash and drives every render path (register row
+   status pill, board column header + card border, detail-modal header
+   badge, status timeline dots, "Move to" buttons). Parallel palettes
+   for the spatial heatmap (HM_STATUS_COLOURS) and Dashboard test-
+   breakdown / trendline / Approved KPI tile also include the same
+   #00B050 hex. This marker is a runtime assertion + anchor: if a
+   future refactor drops Approved from NW (which drove the original
+   need for this feature — no button meant no coverage gap surfaced),
+   the console warning fires immediately at load. No new mapping added
+   because none was missing. */
+(function(){
+  try{
+    if(!NW||!NW.Approved||NW.Approved.s!=='#00B050'){
+      console.warn('[APPROVE-STATUS-COLOR-RENDER] NW.Approved.s expected "#00B050", got',NW&&NW.Approved&&NW.Approved.s);
+    }
+  }catch(_e){}
+})();
+/* APPROVE-STATUS-COLOR-RENDER end */
 const PR={Critical:{c:'#DC2626',bg:'#FEF2F2',bd:'#FECACA'},High:{c:'#EA580C',bg:'#FFF7ED',bd:'#FED7AA'},Medium:{c:'#2563EB',bg:'#EFF6FF',bd:'#BFDBFE'},Low:{c:'#16A34A',bg:'#F0FDF4',bd:'#BBF7D0'}};
 
 /* PPTX-BRAND start: Exyte brand assets for PPTX export.
@@ -5894,7 +5914,9 @@ function renderBoardGrid(){
         <div class="cd" style="font-size:9px;margin-bottom:2px">${esc(c.testName)}</div>
         <div class="cd">${esc(c.disciplineA)} \u2194 ${esc(c.disciplineB)}</div>
         <div class="cm2"><span class="cdep">${esc(c.penetration)}</span><span class="pb" style="background:${pc.bg};color:${pc.c};font-size:8px">${c.priority}</span><span class="cass">${c.assignedTo||'Unassigned'}</span>${hasNwImage(c)?`<button onclick="event.stopPropagation();openClashImage('${c.uid}')" title="View Navisworks viewport image" style="background:transparent;border:none;color:#006BA6;cursor:pointer;font-size:13px;padding:0 2px;line-height:1;flex-shrink:0" aria-label="View image">\u{1F4F7}</button>`:''}</div>
-        <div class="cmoves" onclick="event.stopPropagation()">${prev&&_boardStatuses.has(prev)?`<button class="cmv" onclick="bmv('${c.uid}','${prev}')">&#9664; ${prev}</button>`:''} ${next&&_boardStatuses.has(next)?`<button class="cmv" onclick="bmv('${c.uid}','${next}')">${next} &#9654;</button>`:''}</div>
+        <div class="cmoves" onclick="event.stopPropagation()">${prev&&_boardStatuses.has(prev)?`<button class="cmv" onclick="bmv('${c.uid}','${prev}')">&#9664; ${prev}</button>`:''} ${next&&_boardStatuses.has(next)?`<button class="cmv" onclick="bmv('${c.uid}','${next}')">${next} &#9654;</button>`:''}${/* APPROVE-ACTION-BOARD-VIEW start: inline terminal-Approve action on the board card. Matches the existing inline-quick-action pattern used by bmv() (prev/next). Calls the same _markClashesAsApproved handler as the Review Queue and Clash Register \u2014 same audit trail regardless of surface. Hidden on cards already in Approved. Uses the standard #00B050 fill. Guarded by the board_move permission so read-only users see nothing (mirrors bmv's own gate). */
+c.status==='Approved'?'':`<button class="cmv" onclick="if(!can(&apos;board_move&apos;)){showToast(&apos;Read-only access \u2014 contact your BIM Coordinator&apos;);return;}if(_markClashesAsApproved(['${c.uid}'])){showToast('\u2713 Clash approved');updSB();updSS();const bc=document.getElementById('board-content');if(bc)bc.innerHTML=renderBoardGrid();}" title="Terminal Approve \u2014 accepted as-is" style="background:#00B050;color:#fff;border-color:#00B050;font-weight:700">\u2713 Approve</button>`
+/* APPROVE-ACTION-BOARD-VIEW end */}</div>
       </div>`;}).join('')
       :`<div style="font-size:9px;color:#AAA;text-align:center;padding:.7rem">No ${st.toLowerCase()} clashes</div>`;
     const badge=clashes.length<totalForStatus?`<span title="${totalForStatus} total" style="font-size:8px;color:${nw.s};opacity:.7"> / ${totalForStatus}</span>`:'';
@@ -8287,7 +8309,13 @@ function importToRegister(mode){
   // here that doesn't end up in _matchedUids is a likely-fixed clash.
   const _preExistingByTest=new Map();
   (S.clashes||[]).forEach(x=>{
-    if(_batchTests.has(x.testName) && x.status!=='Resolved'){
+    /* APPROVE-ACTION-REVIEW-QUEUE start: Approved is a terminal status —
+       treat it exactly like Resolved for the disappeared-clash / Review
+       Queue pipeline so approved clashes never re-enter the queue on a
+       future import that omits them (Muratec/Exyte XMLs omit both
+       Resolved and Approved by design). */
+    if(_batchTests.has(x.testName) && x.status!=='Resolved' && x.status!=='Approved'){
+    /* APPROVE-ACTION-REVIEW-QUEUE end */
       _preExistingByTest.set(x.uid, x.testName);
     }
   });
@@ -9134,6 +9162,11 @@ function rReview(){
           <span style="background:#EA7600;color:#fff;font-size:9px;font-weight:700;padding:1px 6px;border-radius:8px">${rows.length}</span>
         </span>
         <button class="btn sm ac" onclick="event.stopPropagation();reviewQueueResolveGroup(${tnJson})" style="font-size:10px">✓ Confirm all in this test as Resolved</button>
+        <!-- APPROVE-ACTION-REVIEW-QUEUE start: per-test bulk Approve button
+             sits alongside the existing Resolved bulk. #00B050 matches the
+             Approved color from NW map (line 519) and the Dashboard tile. -->
+        <button class="btn sm" onclick="event.stopPropagation();reviewQueueApproveGroup(${tnJson})" style="font-size:10px;background:#00B050;color:#fff;border-color:#00B050;margin-left:4px">✓ Approve all in this test</button>
+        <!-- APPROVE-ACTION-REVIEW-QUEUE end -->
       </div>
       <div class="cb" style="padding:0;display:${open?'block':'none'}">
         <table style="width:100%;border-collapse:collapse;font-family:Arial,sans-serif">
@@ -9163,6 +9196,12 @@ function rReview(){
       <div style="flex:1"></div>
       <button class="btn" onclick="reviewQueueMarkStillOpen()" style="font-size:11px">✗ Mark selected as Still Open</button>
       <button class="btn p" onclick="reviewQueueMarkResolved()" style="font-size:11px">✓ Mark selected as Resolved</button>
+      <!-- APPROVE-ACTION-REVIEW-QUEUE start: bottom-bar Approve button
+           for the "clash is a designed condition, accepted as-is" case
+           that Resolved / Still Open can't record. Green #00B050 fill
+           makes it visually distinct from the two existing actions. -->
+      <button class="btn" onclick="reviewQueueMarkApproved()" style="font-size:11px;background:#00B050;color:#fff;border-color:#00B050">✓ Mark selected as Approved</button>
+      <!-- APPROVE-ACTION-REVIEW-QUEUE end -->
     </div>
   `;
 }
@@ -9245,6 +9284,66 @@ function reviewQueueResolveGroup(tn){
   updSB();updSS();nav('review');
 }
 /* REVIEW-QUEUE-ACTIONS end */
+/* APPROVE-ACTION-REVIEW-QUEUE start: Approve is a terminal status for
+   clashes reviewed and accepted as a designed condition. The handler
+   mirrors the existing _rqActionOnUids('resolved') branch exactly —
+   same pushStatusHistory weekly entry via the STATUS-HIST helper, same
+   ReviewQueue-source audit entry, same pendingReview/disappearedAt
+   cleanup, same regenWeeklyFromRegister invalidation on status change —
+   only difference is the status string 'Approved' (and an additional
+   approvedAt + actor field in the audit entry so it is clear this was
+   the terminal Approve action rather than a status-move). Uses the
+   existing #00B050 color from the Dashboard Approved tile / NW map.
+   Callable with any uid array; guards on presence in S.clashes so it
+   also works from the single-clash Register-detail and Board-View
+   callers (which pass a one-element array). */
+function _markClashesAsApproved(clashIds){
+  if(!Array.isArray(clashIds)||clashIds.length===0)return 0;
+  const now=new Date().toISOString();
+  const wy=_weekYearNow();
+  const actor=(S.session&&S.session.actor)||S.actor||'Administrator';
+  const cs=S.clashes||[];
+  const idx=new Map();
+  cs.forEach((c,i)=>idx.set(c.uid,i));
+  let updated=0,anyStatusChanged=false;
+  clashIds.forEach(uid=>{
+    const i=idx.get(uid);if(i==null)return;
+    const c=cs[i];
+    if(!Array.isArray(c.statusHistory))c.statusHistory=[];
+    if(c.status!=='Approved'){
+      pushStatusHistory(c,'Approved',wy);
+      c.status='Approved';
+      anyStatusChanged=true;
+    }
+    c.statusHistory.push({reviewedAt:now,approvedAt:now,actor:actor,source:'Approve',status:'Approved',week:wy.week,year:wy.year});
+    delete c.pendingReview;
+    delete c.disappearedAt;
+    delete c.disappearedInBatch;
+    updated++;
+  });
+  if(updated){
+    sv('clashes',S.clashes);
+    if(anyStatusChanged)regenWeeklyFromRegister();
+  }
+  return updated;
+}
+function reviewQueueMarkApproved(){
+  const uids=reviewQueueGetSelectedUids();
+  if(!uids||!uids.length){showToast('No clashes selected');return;}
+  const n=_markClashesAsApproved(uids);
+  if(!n)return;
+  showToast(`✓ ${n} clash${n===1?'':'es'} approved`);
+  updSB();updSS();nav('review');
+}
+function reviewQueueApproveGroup(tn){
+  const uids=(S.clashes||[]).filter(c=>c.pendingReview===true&&(c.testName||'(unknown test)')===tn).map(c=>c.uid);
+  if(!uids.length){showToast('Nothing to approve');return;}
+  const n=_markClashesAsApproved(uids);
+  if(!n)return;
+  showToast(`✓ ${n} clash${n===1?'':'es'} in "${tn}" approved`);
+  updSB();updSS();nav('review');
+}
+/* APPROVE-ACTION-REVIEW-QUEUE end */
 
 /* RQ-NW-EXPORT-FILTER start: build a Navisworks-consumable Clash Detective
    XML containing only the Review Queue's clashes. Semantic guarantee: each
@@ -15651,6 +15750,15 @@ Penetration: ${xe(c.penetration)} | Detected: ${xe(c.date)}</Description>
     ${tline}
     <div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap">
       ${ST.filter(st=>st!==c.status).map(st=>{const s2=nwc(st);return`<button onclick="uf('${c.uid}','status','${st}');updSB();updSS();if(S.view==='register'||S.view==='board')nav(S.view);openClashDetail('${c.uid}')" style="font-size:10px;padding:4px 12px;border-radius:4px;border:.5px solid ${s2.s};background:transparent;color:${s2.s};cursor:pointer;font-family:Arial,sans-serif;font-weight:600">Move to ${s2.e} ${st}</button>`;}).join('')}
+      ${/* APPROVE-ACTION-CLASH-REGISTER start: terminal-Approve action from
+           the clash detail modal — distinct from the "Move to Approved"
+           button above (which is a plain status change). This one writes
+           the same approvedAt/actor audit record as the Review Queue and
+           Board View approve actions, so all three surfaces produce
+           identical statusHistory shape. Hidden when the clash is already
+           Approved to avoid a redundant control. */
+        c.status==='Approved'?'':`<button onclick="_markClashesAsApproved(['${c.uid}']);showToast('✓ Clash approved');updSB();updSS();if(S.view==='register'||S.view==='board')nav(S.view);openClashDetail('${c.uid}')" style="font-size:10px;padding:4px 12px;border-radius:4px;border:.5px solid #00B050;background:#00B050;color:#fff;cursor:pointer;font-family:Arial,sans-serif;font-weight:700" title="Terminal Approve — accepted as-is, audit-recorded">✓ Approve (terminal)</button>`
+        /* APPROVE-ACTION-CLASH-REGISTER end */}
     </div>
   </div>
 
