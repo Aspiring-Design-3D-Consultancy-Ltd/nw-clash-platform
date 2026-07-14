@@ -385,6 +385,18 @@ tbody td:last-child{border-right:none;}
 let _crApproveUids=[];
 let _crApproveCancelCb=null;
 function _crApproveOpen(uids,cancelCb){
+  /* APPROVE-ACTION-CLASH-REGISTER-CONFIRM-MODAL: defensive re-entry guard.
+     The modal is position:fixed;inset:0 with a full-viewport backdrop so
+     in practice a second _crApproveOpen call is unreachable via clicks —
+     but a programmatic caller, focus-and-Enter on a lingering button, or
+     future integration could slip past. If the modal is already open,
+     fire the prior open's cancel callback (restores its dropdown) before
+     overwriting the shared state so no dropdown DOM element ever gets
+     stranded showing 'Approved' with the model still on the prior status. */
+  const _crMPrev=document.getElementById('cr-approve-modal');
+  if(_crMPrev&&_crMPrev.style.display==='flex'&&typeof _crApproveCancelCb==='function'){
+    try{_crApproveCancelCb();}catch(_e){}
+  }
   _crApproveUids=Array.isArray(uids)?uids.slice():[];
   _crApproveCancelCb=typeof cancelCb==='function'?cancelCb:null;
   const n=_crApproveUids.length;
@@ -8396,11 +8408,25 @@ function importToRegister(mode){
   const _batchUids=new Set();
   /* WEEKLY-SNAPSHOT-RECORD end */
   // Snapshot UIDs of pre-existing clashes for tests in this batch, excluding
-  // already-Resolved (don't re-count fixes from previous imports). Anything
-  // here that doesn't end up in _matchedUids is a likely-fixed clash.
+  // already-Resolved (don't re-count fixes from previous imports) AND
+  // already-Approved (terminal status per PR #35 — an approved clash is a
+  // designed condition, must not re-enter Review Queue when the next XML
+  // omits it, same semantic as Resolved). Anything here that doesn't end
+  // up in _matchedUids is a likely-fixed clash.
   const _preExistingByTest=new Map();
   (S.clashes||[]).forEach(x=>{
-    if(_batchTests.has(x.testName) && x.status!=='Resolved'){
+    /* APPROVE-TERMINAL-STATUS-FILTER start: Approved is terminal per
+       PR #35 brief. Muratec/Exyte XML exports omit Approved clashes by
+       design (only New + Active are exported), so a re-imported XML
+       WILL show every prior Approved clash as absent. Without this
+       exclusion those clashes would land in _preExistingByTest, then
+       (unmatched) get pendingReview=true and re-enter the Review
+       Queue — violating the "Approve is terminal" contract that Review
+       Queue Approve, Clash Register per-row Approve, and Clash
+       Register bulk Approve all rely on. Mirrors the pre-existing
+       Resolved exclusion. */
+    if(_batchTests.has(x.testName) && x.status!=='Resolved' && x.status!=='Approved'){
+    /* APPROVE-TERMINAL-STATUS-FILTER end */
       _preExistingByTest.set(x.uid, x.testName);
     }
   });
@@ -9425,7 +9451,17 @@ function _markClashesAsApproved(clashIds,source='ReviewQueue'){
       c.status='Approved';
       anyStatusChanged=true;
     }
-    c.statusHistory.push({reviewedAt:now,approvedAt:now,actor:actor,source:source,status:'Approved',week:wy.week,year:wy.year});
+    /* APPROVE-ACTION-HANDLER: preserve the Review Queue provenance
+       (disappearedInBatch batch-id and disappearedAt weekDate) into the
+       audit entry BEFORE the cleanup deletes on the clash. Otherwise a
+       clash that was flagged into the queue on batch bat-abc and then
+       approved via any surface loses its RQ provenance forever — the
+       audit trail would show "who + when + source" but not "which batch
+       import surfaced this clash for review". Empty strings when the
+       clash was never flagged (direct-from-Register Approve). */
+    const _preDisBatch=c.disappearedInBatch||'';
+    const _preDisAt=c.disappearedAt||'';
+    c.statusHistory.push({reviewedAt:now,approvedAt:now,actor:actor,source:source,status:'Approved',week:wy.week,year:wy.year,reviewedInBatch:_preDisBatch,reviewedAtBatchDate:_preDisAt});
     delete c.pendingReview;
     delete c.disappearedAt;
     delete c.disappearedInBatch;
