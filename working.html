@@ -1631,8 +1631,57 @@ function regenWeeklyFromRegister(anchorDate){
     touched.add(yr+'-'+wk);
     const idx=existing.findIndex(w=>w.week===wk&&(w.year||0)===yr);
 
-    // Frozen snapshot? Leave it alone.
-    if(idx>=0&&existing[idx].capturedAt)return;
+    /* FROZEN-WEEK-TERMINAL-REFRESH start: frozen weeks preserve their HISTORICAL
+       counts (new, active, critical, high, medium, low) at the moment the freeze
+       ran — that's the design intent (auto-freeze on import via
+       WEEKLY-CAPTURE-AUTOFREEZE). But TERMINAL statuses (approved, reviewed,
+       resolved) are ongoing coordination decisions made against clashes with
+       historical c.date values; they must always reflect the live register.
+       PREVIOUSLY: `if(idx>=0&&existing[idx].capturedAt)return;` — this skipped
+       frozen weeks entirely, so any Approve / Review / Resolve action taken after
+       the freeze on a clash whose c.date fell into that frozen week became
+       invisible in the weekly array. Symptom: user approves 12 clashes today, the
+       sidebar Approved tile reads 12 (live register), but the trend chart's
+       Approved series stays flat zero forever because the approvals landed in
+       already-frozen historical buckets.
+       FIX: for frozen weeks, refresh the three terminal-status counts in place
+       and recompute per-test approved/reviewed/resolved + maturity rate. Leave
+       new/active/critical/high/medium/low + tests[].new/.active/.critical/etc.
+       and label/date/capturedAt/imports untouched via the `return;` at end.
+       KNOWN EDGE CASE: a clash Active during the frozen week that is Approved
+       today will appear in BOTH frozen.active (historical) AND frozen.approved
+       (refreshed) — double-counted if you tally lines across the trend chart.
+       Root fix requires clashStatusAt(c, wk, yr) projection across every
+       counter, deferred to a future PR to keep scope contained. */
+    if(idx>=0&&existing[idx].capturedAt){
+      const frozen=existing[idx];
+      frozen.approved=bcl.filter(c=>c.status==='Approved').length;
+      frozen.reviewed=bcl.filter(c=>c.status==='Reviewed').length;
+      frozen.resolved=bcl.filter(c=>c.status==='Resolved').length;
+      // Recompute per-test terminal counts + maturity rate. Preserve historical
+      // new/active/critical fields on each test row; only touch approved/
+      // reviewed/resolved and the maturity rate computed from them.
+      if(Array.isArray(frozen.tests)){
+        const tCount={}; // testName -> {approved,reviewed,resolved}
+        bcl.forEach(c=>{
+          const n=c.testName||c.name||'Untitled test';
+          if(!tCount[n])tCount[n]={approved:0,reviewed:0,resolved:0};
+          if(c.status==='Approved')tCount[n].approved++;
+          else if(c.status==='Reviewed')tCount[n].reviewed++;
+          else if(c.status==='Resolved')tCount[n].resolved++;
+        });
+        frozen.tests.forEach(t=>{
+          const c=tCount[t.name]||{approved:0,reviewed:0,resolved:0};
+          t.approved=c.approved;
+          t.reviewed=c.reviewed;
+          t.resolved=c.resolved;
+          const tot=(t.new||0)+(t.active||0)+t.reviewed+t.resolved+t.approved;
+          t.rate=tot>0?Math.round((t.resolved+t.approved)/tot*100):0;
+        });
+      }
+      return;
+    }
+    /* FROZEN-WEEK-TERMINAL-REFRESH end */
 
     // Build per-test breakdown for clashes in THIS bucket only.
     const tMap={};
@@ -4390,14 +4439,36 @@ function rDash(){
   regenWeeklyFromRegister();
   const wds=S.weekly||[];const wd=wds[wds.length-1]||{new:0,active:0,reviewed:0,resolved:0,approved:0,critical:0,high:0,medium:0,low:0,tests:[],label:'',date:''};
   const pw=wds.length>1?wds[wds.length-2]:null;
-  /* CHART-DEFAULT-W14 start: Exyte's involvement on this project began at
-     Week 14 2026, so the chart period selector defaults to Week 14 as the
-     minimum start. Older clashes remain in the dataset and remain visible
-     by manually sliding the range back. Math.max keeps the floor behaviour
-     no-op when wds[0].week is already >= 14 (which is the case for all
-     current FAB and CUB imports, weeks 22-26 of 2026). */
-  if(wds.length){_chartFrom=Math.max(wds[0].week, 14);_chartTo=wds[wds.length-1].week;}else{_chartFrom=1;_chartTo=9999;}
+  /* CHART-DEFAULT-W14 start: doc anchor preserved per CLAUDE.md invariant.
+     The historical "floor at Week 14 2026" behaviour was subsumed by
+     CHART-PERIOD-YEAR-AWARE below when it was discovered that the old
+     Math.max(week, 14) filter was silently a no-op whenever S.weekly
+     spanned a year boundary (e.g. any dataset with pre-2026 backfill data
+     produced wds[0].week=41 for 2025-W41, so Math.max(41,14)=41 and the
+     "Exyte started W14 2026" intent was defeated). Range now defaults to
+     full-range oldest→newest, encoded as year*100+week ordinals — see
+     CHART-PERIOD-YEAR-AWARE for rationale. This anchor stays as a
+     documentation pointer for anyone grepping for "W14" or "Exyte start". */
   /* CHART-DEFAULT-W14 end */
+  /* CHART-PERIOD-YEAR-AWARE start: _chartFrom / _chartTo are year+week
+     ordinals (year*100+week). Default range = oldest → newest weekly entry.
+     PREVIOUSLY: _chartFrom=Math.max(wds[0].week, 14), _chartTo=wds[wds.length-1].week.
+     That failed when wds crossed a year boundary: e.g. wds[0]=2025-W41,
+     wds[-1]=2026-W28 produced _chartFrom=41, _chartTo=28, an impossible
+     filter that returned zero weeks and rendered every chart empty. The
+     old W14 floor was a no-op in that failure case (Math.max(41,14)=41)
+     so the "Exyte started W14 2026" intent was silently defeated whenever
+     any pre-2026 demo/backfill data existed. Retained behaviour: full-
+     range default; user can narrow via the two chart-from/chart-to
+     dropdowns. All read/write sites treat _chartFrom/_chartTo as opaque
+     integers; display code strips the year prefix via `% 100`. */
+  if(wds.length){
+    _chartFrom=(wds[0].year||0)*100+wds[0].week;
+    _chartTo=(wds[wds.length-1].year||0)*100+wds[wds.length-1].week;
+  } else {
+    _chartFrom=0;_chartTo=999999;
+  }
+  /* CHART-PERIOD-YEAR-AWARE end */
 
   /* SCOPE-FILTER start: filter the CURRENT-STATE views (status cards, maturity
      banner, severity chart, current-week test breakdown) by S.dashScope. The
@@ -4546,14 +4617,19 @@ function rDash(){
         <span class="pf-lbl">Chart period</span>
         <div style="display:flex;align-items:center;gap:7px">
           <span style="font-size:10px;color:rgba(255,255,255,.55)">From</span>
+          <!-- CHART-PERIOD-YEAR-AWARE: option values encode year*100+week
+               so ranges spanning a year boundary (e.g. 2025-W41 to
+               2026-W28) filter correctly. Previously used raw w.week which
+               produced an impossible "41 → 28" range and rendered every
+               chart empty. -->
           <select id="chart-from" class="fsel" onchange="updateChartRange()">
-            ${(S.weekly||[]).map((w,i)=>`<option value="${w.week}"${i===0?' selected':''}>${esc(w.label)}</option>`).join('')}
+            ${(S.weekly||[]).map((w,i)=>`<option value="${(w.year||0)*100+w.week}"${i===0?' selected':''}>${esc(w.label)}</option>`).join('')}
           </select>
           <span style="font-size:10px;color:rgba(255,255,255,.55)">to</span>
           <select id="chart-to" class="fsel" onchange="updateChartRange()">
-            ${(S.weekly||[]).map((w,i,arr)=>`<option value="${w.week}"${i===arr.length-1?' selected':''}>${esc(w.label)}</option>`).join('')}
+            ${(S.weekly||[]).map((w,i,arr)=>`<option value="${(w.year||0)*100+w.week}"${i===arr.length-1?' selected':''}>${esc(w.label)}</option>`).join('')}
           </select>
-          <span id="chart-range-label" style="font-size:10px;font-weight:700;color:#fff;background:rgba(255,255,255,.12);padding:3px 9px;border-radius:10px">All ${(S.weekly||[]).length} weeks</span>
+          <button id="chart-range-label" onclick="resetChartRange()" title="Reset to full range" style="cursor:pointer;font-size:10px;font-weight:700;color:#fff;background:rgba(255,255,255,.12);padding:3px 9px;border-radius:10px;border:1px solid rgba(255,255,255,.2);font-family:Arial,sans-serif">All ${(S.weekly||[]).length} weeks</button>
         </div>
       </div>
       <span class="pf-hint">${scopeHint}</span>
@@ -4643,7 +4719,11 @@ function bldKpi(label,total,open,closed,color,sel,filterKey){
   </div>`;
 }
 function kpi(){/* dead — preserved as no-op for safety; can be removed entirely */return'';}
-let _chartFrom=1,_chartTo=9999; // week numbers; 9999=all
+/* CHART-PERIOD-YEAR-AWARE start: _chartFrom / _chartTo now hold year*100+week
+   ordinals (e.g. 202541 = 2025-W41, 202628 = 2026-W28). This lets filters
+   compare across year boundaries. All read/write sites treat them as opaque
+   integers; display code converts back to raw week numbers via `% 100`. */
+let _chartFrom=0,_chartTo=999999; // year*100+week ordinals; 0..999999 = all
 function updateChartRange(){
   const wds=S.weekly||[];
   const fromEl=document.getElementById('chart-from');
@@ -4656,15 +4736,56 @@ function updateChartRange(){
   const lbl=document.getElementById('chart-range-label');
   if(lbl){
     const wkCount=dispWds.length;
-    lbl.textContent=wkCount===wds.length?'All '+wds.length+' weeks':'Weeks '+_chartFrom+'\u2013'+_chartTo+' ('+wkCount+' week'+(wkCount>1?'s':'')+')';
+    // Display raw week numbers in the label (strip the year*100 prefix).
+    const fromW=_chartFrom%100, toW=_chartTo%100;
+    lbl.textContent=wkCount===wds.length?'All '+wds.length+' weeks':'Weeks '+fromW+'\u2013'+toW+' ('+wkCount+' week'+(wkCount>1?'s':'')+')';
   }
   Object.values(S.charts).forEach(c=>{try{c&&c.destroy();}catch(e){}});S.charts={};
   initCharts();buildTestBreakdown();
 }
 function getDisplayWds(){
   const wds=S.weekly||[];
-  return wds.filter(w=>w.week>=_chartFrom&&w.week<=_chartTo);
+  return wds.filter(w=>{
+    const ord=(w.year||0)*100+w.week;
+    return ord>=_chartFrom&&ord<=_chartTo;
+  });
 }
+/* CHART-PERIOD-YEAR-AWARE: reset button handler \u2014 collapses filter back to
+   full range and re-renders. Wired to the "All N weeks" label which was
+   previously a static <span>; users tried to click it as a reset and
+   nothing happened. Now it's a real button. */
+function resetChartRange(){
+  const wds=S.weekly||[];
+  if(!wds.length){_chartFrom=0;_chartTo=999999;return;}
+  _chartFrom=(wds[0].year||0)*100+wds[0].week;
+  _chartTo=(wds[wds.length-1].year||0)*100+wds[wds.length-1].week;
+  const fromEl=document.getElementById('chart-from');
+  const toEl=document.getElementById('chart-to');
+  if(fromEl)fromEl.value=String(_chartFrom);
+  if(toEl)toEl.value=String(_chartTo);
+  updateChartRange();
+}
+/* CHART-PERIOD-YEAR-AWARE end */
+/* CHART-XAXIS-YEAR-LABEL start: when a chart's dataset spans multiple ISO
+   years (e.g. 2025-W41 → 2026-W28), plain "Wk 41, Wk 42, ..." x-axis
+   labels visually collapse the year boundary — "Wk 52" is followed by
+   "Wk 1", making the transition look like a reset. Fix: emit "Wk N" when
+   all weeks are in one year, and "Wk N/YY" when they span years. Called
+   from Lifecycle and Trend charts; keep the standalone spatial-heatmap
+   x-axis (line ~15524) on the raw "Wk N" format because it's short-range
+   and single-year by construction. Argument wds is the ARRAY of weekly
+   entries actually being plotted, not the full S.weekly — that lets the
+   label style follow the visible slice. */
+function _wkLabelFor(w, wds){
+  if(!w)return '';
+  if(!Array.isArray(wds)||!wds.length)return 'Wk '+w.week;
+  const y0=wds[0].year||0;
+  const spansYears=wds.some(x=>(x.year||0)!==y0);
+  if(!spansYears)return 'Wk '+w.week;
+  const yy=String((w.year||0)).slice(-2);
+  return 'Wk '+w.week+'/'+yy;
+}
+/* CHART-XAXIS-YEAR-LABEL end */
 function initCharts(){
   const allWds=S.weekly||[];if(!allWds.length)return;
   const wds=getDisplayWds(); // slider-filtered weeks
@@ -4685,7 +4806,7 @@ function initCharts(){
   /* STATUS-HIST: when scope!='all', reconstruct per-week counts from per-clash
      statusHistory; when scope='all', use the existing aggregates unchanged. */
   const _lcWds=scopedWds(wds,S.dashScope);
-  if(el1)S.charts.lc=new Chart(el1,{type:'bar',data:{labels:_lcWds.map(w=>`Wk ${w.week}`),datasets:[{label:'New',data:_lcWds.map(w=>w.new),backgroundColor:'#FF0000',borderRadius:4,borderSkipped:false},{label:'Active',data:_lcWds.map(w=>w.active),backgroundColor:'#FF8000',borderRadius:4,borderSkipped:false},{label:'Reviewed',data:_lcWds.map(w=>w.reviewed),backgroundColor:'#00AEEF',borderRadius:4,borderSkipped:false},{label:'Approved',data:_lcWds.map(w=>w.approved),backgroundColor:'#00B050',borderRadius:4,borderSkipped:false},{label:'Resolved',data:_lcWds.map(w=>w.resolved),backgroundColor:'#FFC000',borderRadius:4,borderSkipped:false}]},options:{responsive:true,maintainAspectRatio:false,animation:_scopeReflow?false:undefined,plugins:{legend:{display:false},tooltip:tf},scales:{x:{...gopt.x},y:{...gopt.y}}}});
+  if(el1)S.charts.lc=new Chart(el1,{type:'bar',data:{labels:_lcWds.map(w=>_wkLabelFor(w,_lcWds)),datasets:[{label:'New',data:_lcWds.map(w=>w.new),backgroundColor:'#FF0000',borderRadius:4,borderSkipped:false},{label:'Active',data:_lcWds.map(w=>w.active),backgroundColor:'#FF8000',borderRadius:4,borderSkipped:false},{label:'Reviewed',data:_lcWds.map(w=>w.reviewed),backgroundColor:'#00AEEF',borderRadius:4,borderSkipped:false},{label:'Approved',data:_lcWds.map(w=>w.approved),backgroundColor:'#00B050',borderRadius:4,borderSkipped:false},{label:'Resolved',data:_lcWds.map(w=>w.resolved),backgroundColor:'#FFC000',borderRadius:4,borderSkipped:false}]},options:{responsive:true,maintainAspectRatio:false,animation:_scopeReflow?false:undefined,plugins:{legend:{display:false},tooltip:tf},scales:{x:{...gopt.x},y:{...gopt.y}}}});
   buildTrendChart();
   // Severity — count current clashes by priority, NOT a sum across weekly
   // snapshots. The old code summed `w.critical` etc. across every week in the
@@ -4742,7 +4863,7 @@ function buildTrendChart(){
   const el=document.getElementById('ch-tr');if(!el)return;
   if(S.charts.tr){try{S.charts.tr.destroy();}catch(e){}S.charts.tr=null;}
   if(_trendMode==='breakdown'){
-    S.charts.tr=new Chart(el,{type:'line',data:{labels:_trWds.map(w=>`Wk ${w.week}`),datasets:[
+    S.charts.tr=new Chart(el,{type:'line',data:{labels:_trWds.map(w=>_wkLabelFor(w,_trWds)),datasets:[
       {label:'New',      data:_trWds.map(w=>w.new),      borderColor:'#FF0000',backgroundColor:'rgba(255,0,0,.07)',      fill:true,borderWidth:2,pointRadius:3,tension:0},
       {label:'Active',   data:_trWds.map(w=>w.active),   borderColor:'#FF8000',backgroundColor:'rgba(255,128,0,.07)',    fill:true,borderWidth:2,pointRadius:3,tension:0},
       {label:'Reviewed', data:_trWds.map(w=>w.reviewed), borderColor:'#00AEEF',backgroundColor:'rgba(0,174,239,.07)',    fill:true,borderWidth:2,pointRadius:3,tension:0},
@@ -4751,7 +4872,7 @@ function buildTrendChart(){
     ]},options:{responsive:true,maintainAspectRatio:false,animation:_scopeReflow?false:undefined,plugins:{legend:{display:false},tooltip:tf},scales:gopt}});
     const btn=document.getElementById('tr-tog');if(btn){btn.textContent='Simple view';btn.style.background='#EFF6FF';btn.style.color='#1D4ED8';btn.style.borderColor='#BFDBFE';}
   } else {
-    S.charts.tr=new Chart(el,{type:'line',data:{labels:_trWds.map(w=>`Wk ${w.week}`),datasets:[
+    S.charts.tr=new Chart(el,{type:'line',data:{labels:_trWds.map(w=>_wkLabelFor(w,_trWds)),datasets:[
       {label:'Open',  data:_trWds.map(w=>w.new+w.active+w.reviewed), borderColor:'#FF8000',backgroundColor:'rgba(255,128,0,.08)',fill:true,borderWidth:2,pointRadius:3,tension:0},
       {label:'Closed',data:_trWds.map(w=>w.resolved+w.approved),     borderColor:'#00B050',backgroundColor:'rgba(0,176,80,.08)',fill:true,borderWidth:2,pointRadius:3,tension:0},
     ]},options:{responsive:true,maintainAspectRatio:false,animation:_scopeReflow?false:undefined,plugins:{legend:{display:false},tooltip:tf},scales:gopt}});
