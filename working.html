@@ -1635,6 +1635,12 @@ function _rqdaReclassifyAll(){
       delete c._deltaAnalysisCandidate;
       delete c._bucketFallback;
     }
+    // Step 3 addition: persist the matched pattern name for B3 so the
+    // VIEW marker can render "Matched: <pattern>" on the card and the
+    // BULK-APPLY audit trail can stamp matchedPattern on each entry.
+    // Two-line change per Section 7 of the Step 2 mockup approval.
+    if(res.bucket===3&&res.patternName)c._bucketPattern=res.patternName;
+    else delete c._bucketPattern;
     touched++;
   });
   if(touched)sv('clashes',S.clashes);
@@ -1660,6 +1666,59 @@ function _rqdaReclassifyAll(){
        different name → this migration still adds the two named
        seeds. Duplicate patterns are harmless (either-direction
        matching, first-match-wins in the classifier). */
+/* SETTINGS-DESIGNED-CONDITION-PATTERNS: Settings-tab UI handlers.
+   Thin wrappers over the storage accessors — the reclassify hook
+   is baked into the setters so every save triggers live re-classify
+   of the pending set. Edit uses a prompt-based mini-modal for MVP
+   simplicity; upgrade path to a proper modal is straightforward if
+   the workflow warrants it. All handlers re-render the Settings tab
+   via nav('settings') after mutation so the pattern list reflects
+   the change immediately. */
+function _rqdaUiSaveTol(){
+  const el=document.getElementById('rqda-tol-mm');
+  if(!el){showToast('Tolerance input not found');return;}
+  const v=parseFloat(el.value);
+  if(!isFinite(v)||v<5||v>500){showToast('Tolerance must be 5–500 mm');return;}
+  _rqdaSetTolMm(v);
+  showToast('✓ Tolerance saved · re-classified pending clashes');
+  nav('settings');
+}
+function _rqdaUiToggleEnabled(idx,checked){
+  const patterns=_rqdaGetPatterns();
+  if(!patterns[idx])return;
+  patterns[idx].enabled=!!checked;
+  _rqdaSetPatterns(patterns);
+  showToast('✓ Pattern '+(checked?'enabled':'disabled')+' · re-classified');
+  nav('settings');
+}
+function _rqdaUiRemove(idx){
+  const patterns=_rqdaGetPatterns();
+  if(!patterns[idx])return;
+  if(!confirm('Remove pattern "'+(patterns[idx].name||'(unnamed)')+'"? This will trigger re-classification.'))return;
+  patterns.splice(idx,1);
+  _rqdaSetPatterns(patterns);
+  showToast('✓ Pattern removed · re-classified');
+  nav('settings');
+}
+function _rqdaUiEdit(idx){
+  const patterns=_rqdaGetPatterns();
+  const existing=(idx>=0&&patterns[idx])?patterns[idx]:{name:'',aRegex:'',bRegex:'',note:'',enabled:true};
+  const name=prompt('Pattern name:',existing.name||'');
+  if(name==null)return;
+  const aRegex=prompt('aRegex (matches element A):',existing.aRegex||'');
+  if(aRegex==null)return;
+  const bRegex=prompt('bRegex (matches element B):',existing.bRegex||'');
+  if(bRegex==null)return;
+  try{new RegExp(aRegex);new RegExp(bRegex);}
+  catch(e){showToast('✗ Invalid regex: '+e.message);return;}
+  const note=prompt('Note (optional):',existing.note||'')||'';
+  const next=patterns.slice();
+  const payload={name:name.trim()||'(unnamed)',aRegex:aRegex,bRegex:bRegex,note:note,enabled:existing.enabled!==false};
+  if(idx>=0)next[idx]=payload;else next.push(payload);
+  _rqdaSetPatterns(next);
+  showToast('✓ Pattern '+(idx>=0?'updated':'added')+' · re-classified');
+  nav('settings');
+}
 function _rqdaMigrateSeedPatternsV2(){
   try{
     if(localStorage.getItem('nw:designedConditionPatternsV2Seeded')==='1')return 0;
@@ -9805,32 +9864,63 @@ function rReview(){
   pending.forEach(c=>{const t=c.testName||'(unknown test)';(byTest[t]=byTest[t]||[]).push(c);});
   const testNames=Object.keys(byTest).sort();
   const groups=testNames.map(tn=>{
-    const rows=byTest[tn];
+    const allRows=byTest[tn];
+    /* REVIEW-QUEUE-DELTA-ANALYSIS-VIEW: apply the active bucket filter
+       to the per-group row set. `rows` (used downstream for the table
+       body render) is the FILTERED subset; `allRows` retains the full
+       group so the group header count and BULK-APPLY per-bucket
+       button counts always reflect the true test totals regardless of
+       filter (per Step 2 mockup section 5). Group is hidden entirely
+       when the filter empties it. */
+    const rows=(_rqdaBucketFilter==='all')
+      ? allRows
+      : allRows.filter(c=>String(c._bucket||1)===_rqdaBucketFilter);
+    if(_rqdaBucketFilter!=='all' && !rows.length)return '';
     const open=!!_rqOpen[tn];
     const tnJson=JSON.stringify(tn).replace(/"/g,'&quot;');
     const rowHtml=rows.map(c=>{
       const hist=_rqLastStatusChange(c);
+      /* REVIEW-QUEUE-DELTA-ANALYSIS-VIEW: bucket badge injected next to
+         the UID; per-bucket extras rendered as a colspan sub-row
+         beneath the primary row. B2 sub-row is clickable (opens
+         candidate in Clash Register detail modal via openClashDetail
+         per Q5); B3 sub-row shows matched pattern name; B1 sub-row is
+         omitted (nothing to show beyond the base data). */
+      const badge=(typeof _rqdaBucketBadge==='function')?_rqdaBucketBadge(c._bucket||1):'';
+      const extras=(typeof _rqdaCardExtras==='function')?_rqdaCardExtras(c):'';
+      const extrasTr=extras?`<tr><td colspan="7" style="padding:2px 8px 6px 40px;background:#FCFCFD">${extras}</td></tr>`:'';
       return `<tr style="border-top:.5px solid var(--bd)">
         <td style="padding:5px 8px;text-align:center;width:28px" onclick="event.stopPropagation()"><input type="checkbox" class="rq-chk" data-uid="${esc(c.uid)}" onchange="reviewQueueUpdateSelCount()" style="cursor:pointer"></td>
-        <td style="padding:5px 8px;font-family:monospace;font-size:10px;color:var(--tm);white-space:nowrap">${esc(c.uid)}</td>
+        <td style="padding:5px 8px;font-family:monospace;font-size:10px;color:var(--tm);white-space:nowrap">${esc(c.uid)}${badge}</td>
         <td style="padding:5px 8px;font-size:11px;font-weight:600;color:var(--t1)">${esc(c.nwOrig||'')}</td>
         <td style="padding:5px 8px;font-size:11px;color:var(--t2)">${esc(c.elementA||'')}</td>
         <td style="padding:5px 8px;font-size:11px;color:var(--t2)">${esc(c.elementB||'')}</td>
         <td style="padding:5px 8px;font-size:10px;color:#64748B;white-space:nowrap">${_rqFmtDate(c.disappearedAt)}</td>
         <td style="padding:5px 8px;font-size:10px;color:#64748B">${hist}</td>
-      </tr>`;
+      </tr>${extrasTr}`;
     }).join('');
     /* REVIEW-QUEUE-DATE-GUARD-BANNER: per-group banner. Only renders when
        this test has an active suppressed-import flag from the last import.
        Sits above the group card so it visibly explains the queue count. */
     const _rqGrpBanner=_rqBannerForTest(tn);
+    /* REVIEW-QUEUE-DELTA-ANALYSIS-VIEW: header badge shows filtered
+       count over group total when a bucket filter is active; single
+       total when filter is 'all'. BULK-APPLY buttons operate on the
+       FULL group (allRows) not the filtered subset — user can inspect
+       via filter, bulk-apply per-bucket regardless. */
+    const _cntLbl=(_rqdaBucketFilter==='all')?String(rows.length):(rows.length+' of '+allRows.length);
     return `${_rqGrpBanner}<div class="card" data-rq-group="${esc(tn)}" style="margin-bottom:8px">
-      <div class="ch" style="cursor:pointer" onclick="reviewQueueToggleGroup(${tnJson})">
+      <div class="ch" style="cursor:pointer;flex-wrap:wrap;gap:4px" onclick="reviewQueueToggleGroup(${tnJson})">
         <span class="ct" style="display:flex;align-items:center;gap:8px">
           <span style="font-size:11px;color:#64748B">${open?'▼':'▶'}</span>
           ${esc(tn)}
-          <span style="background:#EA7600;color:#fff;font-size:9px;font-weight:700;padding:1px 6px;border-radius:8px">${rows.length}</span>
+          <span style="background:#EA7600;color:#fff;font-size:9px;font-weight:700;padding:1px 6px;border-radius:8px">${_cntLbl}</span>
         </span>
+        <!-- REVIEW-QUEUE-DELTA-ANALYSIS-BULK-APPLY: three per-bucket
+             buttons rendered inline; only appear when their bucket has
+             ≥1 clash in this test. Come BEFORE the existing whole-test
+             buttons so the bucket-driven workflow is the primary path. -->
+        ${(typeof _rqdaBulkApplyBucketButtons==='function')?_rqdaBulkApplyBucketButtons(tn,allRows):''}
         <button class="btn sm ac" onclick="event.stopPropagation();reviewQueueResolveGroup(${tnJson})" style="font-size:10px">✓ Confirm all in this test as Resolved</button>
         <!-- APPROVE-ACTION-REVIEW-QUEUE-UI start: per-test bulk Approve
              button in the Review Queue group header. Green #00B050 fill
@@ -9857,6 +9947,10 @@ function rReview(){
   }).join('');
   return `
     ${_rqNoDateBanner}
+    <!-- REVIEW-QUEUE-DELTA-ANALYSIS-VIEW: bucket filter tab strip at
+         the top of the queue. All / B1 / B2 / B3 with per-bucket
+         counts, tint-underlined when active. Default 'all' per Q4. -->
+    ${(typeof _rqdaFilterTabs==='function')?_rqdaFilterTabs():''}
     <div class="card" style="border-top:3px solid #EA7600;margin-bottom:9px"><div class="cb" style="padding:10px 14px">
       <div style="font-size:12px;font-weight:700;color:#0F1824;margin-bottom:3px">${pending.length} clash${pending.length===1?'':'es'} awaiting review</div>
       <div style="font-size:10.5px;color:#64748B;line-height:1.5">These clashes were in the register but did not appear in the latest import for the same test. They may have been fixed in the model — or the XML may be a partial export. Confirm each: <strong>Resolved</strong> closes the clash and records a status-history entry. <strong>Still Open</strong> keeps the current status and prevents it from being re-flagged on future imports.</div>
@@ -9890,6 +9984,139 @@ function reviewQueueUpdateSelCount(){
   if(el)el.textContent=reviewQueueGetSelectedUids().length+' selected';
 }
 /* REVIEW-QUEUE-VIEW end */
+/* REVIEW-QUEUE-DELTA-ANALYSIS-VIEW start: bucket-aware Review Queue
+   enrichment. Adds four pieces of UI plumbing consumed by the
+   existing rReview() render (via injection points inside
+   REVIEW-QUEUE-VIEW):
+     • Module-scope filter state _rqdaBucketFilter — 'all' | '1' |
+       '2' | '3'; default 'all' per Q4.
+     • _rqdaFilterTabs() — top-of-queue filter tab strip with per-
+       bucket badge tint underlines matching the palette approved in
+       the Step 2 mockup (Q1 tinted-action-colour scheme).
+     • _rqdaBucketBadge(bucket) — pill markup rendered inline in each
+       card. Same tint palette so filter tab and card badge match.
+     • _rqdaCardExtras(clash) — the per-bucket sub-row rendered as a
+       colspan tr beneath the primary row:
+         B2 → "→ candidate CLX-XXX · Δ N.N mm · gap N days", clickable
+              per Q5 opens the candidate in the Clash Register detail
+              modal via openClashDetail (existing shipped modal).
+         B3 → "Matched: <pattern>" from c._bucketPattern (persisted by
+              _rqdaReclassifyAll extension above).
+   Filter logic is applied inside rReview()'s row iteration below —
+   see the REVIEW-QUEUE-DELTA-ANALYSIS-VIEW second region (row-filter
+   marker inside REVIEW-QUEUE-VIEW that will be added by a follow-up
+   edit if we ever need a physically separate region; currently the
+   filter check reads the module var directly). */
+let _rqdaBucketFilter='all';
+function _rqdaSetBucketFilter(v){
+  _rqdaBucketFilter=(v==='1'||v==='2'||v==='3')?v:'all';
+  nav('review');
+}
+function _rqdaBucketCounts(){
+  const p=(S.clashes||[]).filter(c=>c.pendingReview===true);
+  const out={all:p.length,'1':0,'2':0,'3':0};
+  p.forEach(c=>{const b=String(c._bucket||1);if(out.hasOwnProperty(b))out[b]++;});
+  return out;
+}
+function _rqdaFilterTabs(){
+  const c=_rqdaBucketCounts();
+  const active=_rqdaBucketFilter;
+  const tab=function(v,lbl,n,fill,tint){
+    const on=active===v;
+    return `<button onclick="_rqdaSetBucketFilter('${v}')" style="padding:6px 14px;border:none;background:${on?tint:'transparent'};color:${on?fill:'#475569'};border-bottom:2px solid ${on?fill:'transparent'};font-family:Arial,sans-serif;font-size:11px;font-weight:${on?700:600};cursor:pointer;margin-right:2px;border-radius:4px 4px 0 0" title="${esc(lbl)}">${esc(lbl)} <span style="opacity:.75;font-weight:400">${n}</span></button>`;
+  };
+  return `<div style="display:flex;gap:2px;padding:6px 12px 0;background:#F8FAFC;border:.5px solid var(--bd);border-radius:5px 5px 0 0;border-bottom:none;margin-bottom:0">
+    ${tab('all','All',c.all,'#0F1824','#E2E8F0')}
+    ${tab('1','B1 Likely Resolved',c['1'],'#92400E','#FEF3C7')}
+    ${tab('2','B2 Likely Republish',c['2'],'#C2410C','#FFEDD5')}
+    ${tab('3','B3 Designed Condition',c['3'],'#14532D','#DCFCE7')}
+  </div>`;
+}
+function _rqdaBucketBadge(b){
+  const map={
+    1:{bg:'#FEF3C7',tx:'#92400E',lbl:'B1'},
+    2:{bg:'#FFEDD5',tx:'#C2410C',lbl:'B2'},
+    3:{bg:'#DCFCE7',tx:'#14532D',lbl:'B3'}
+  };
+  const m=map[b]||map[1];
+  return `<span style="display:inline-block;padding:1px 6px;border-radius:8px;background:${m.bg};color:${m.tx};font-size:9px;font-weight:700;white-space:nowrap;margin-left:4px">${m.lbl}</span>`;
+}
+function _rqdaCardExtras(c){
+  const b=c._bucket||1;
+  if(b===2){
+    const cand=c._deltaAnalysisCandidate||{};
+    const cid=cand.candidateUid||'';
+    const dmm=(typeof cand.deltaMm==='number')?cand.deltaMm.toFixed(1)+' mm':'?';
+    const disMs=new Date(c.disappearedAt||0).getTime();
+    const candMs=new Date(cand.candidateFirstSeenAt||cand.candidateWeekDate||0).getTime();
+    const gap=(disMs&&candMs)?(Math.round((candMs-disMs)/(1000*60*60*24))+' days'):'?';
+    if(cid){
+      return `<span onclick="event.stopPropagation();if(typeof openClashDetail==='function')openClashDetail('${esc(cid)}')" title="Open candidate ${esc(cid)} in the Clash Register detail modal" style="cursor:pointer;color:#006BA6;text-decoration:underline;font-size:10.5px">→ candidate <strong>${esc(cid)}</strong> · Δ ${esc(dmm)} · gap ${esc(gap)}</span>`;
+    }
+    return `<span style="color:#94A3B8;font-size:10.5px">→ candidate unknown · Δ ${esc(dmm)} · gap ${esc(gap)}</span>`;
+  }
+  if(b===3){
+    const pn=c._bucketPattern||'(unnamed pattern)';
+    return `<span style="color:#14532D;font-size:10.5px">Matched: <strong>${esc(pn)}</strong></span>`;
+  }
+  return '';
+}
+/* REVIEW-QUEUE-DELTA-ANALYSIS-VIEW end */
+/* REVIEW-QUEUE-DELTA-ANALYSIS-BULK-APPLY start: per-test-per-bucket
+   bulk-apply buttons rendered in each group header alongside the
+   existing PR #35/#36 whole-test buttons (Q1: keep both). Renders
+   only when the bucket has ≥1 clash in that test.
+   Handlers route through the shipped helpers with a distinguishing
+   source='ReviewQueueBulkDelta' tag on statusHistory entries so
+   audit-log downstream can tell delta-driven bulk actions apart
+   from per-clash Approve actions:
+     B1 → _rqActionOnUids(uids, 'resolved',  'ReviewQueueBulkDelta')
+     B2 → _rqActionOnUids(uids, 'stillOpen', 'ReviewQueueBulkDelta')
+     B3 → _crApproveOpen(uids, null, 'ReviewQueueBulkDelta') — routes
+          through the shipped PR #36 type-APPROVE modal; ONE typed
+          APPROVE confirmation covers the whole bulk (PR #36
+          contract), then _crApproveConfirm invokes
+          _markClashesAsApproved(uids, 'ReviewQueueBulkDelta').
+   Button label format per Q6: "Apply all Bx (N) as <Verb>" with
+   count visible before click. */
+function _rqdaBulkApplyBucketButtons(tn,rows){
+  const b1=rows.filter(c=>(c._bucket||1)===1);
+  const b2=rows.filter(c=>(c._bucket||1)===2);
+  const b3=rows.filter(c=>(c._bucket||1)===3);
+  const tnJson=JSON.stringify(tn).replace(/"/g,'&quot;');
+  let html='';
+  if(b1.length){
+    html+=`<button class="btn sm" onclick="event.stopPropagation();reviewQueueBulkApplyDelta(${tnJson},1)" style="font-size:10px;background:#FEF3C7;color:#92400E;border-color:#F59E0B;margin-left:4px" title="Bulk-apply Bucket 1 (Likely Resolved) as Resolved">✓ Apply all B1 (${b1.length}) as Resolved</button>`;
+  }
+  if(b2.length){
+    html+=`<button class="btn sm" onclick="event.stopPropagation();reviewQueueBulkApplyDelta(${tnJson},2)" style="font-size:10px;background:#FFEDD5;color:#C2410C;border-color:#EA580C;margin-left:4px" title="Bulk-apply Bucket 2 (Likely Republish) as Still Open">✗ Apply all B2 (${b2.length}) as Still Open</button>`;
+  }
+  if(b3.length){
+    html+=`<button class="btn sm" onclick="event.stopPropagation();reviewQueueBulkApplyDelta(${tnJson},3)" style="font-size:10px;background:#DCFCE7;color:#14532D;border-color:#16A34A;margin-left:4px" title="Bulk-apply Bucket 3 (Designed Condition) as Approved — type-APPROVE gate opens once for the whole bulk">✓ Apply all B3 (${b3.length}) as Approved</button>`;
+  }
+  return html;
+}
+function reviewQueueBulkApplyDelta(tn,bucket){
+  const uids=(S.clashes||[])
+    .filter(c=>c.pendingReview===true&&(c.testName||'(unknown test)')===tn&&(c._bucket||1)===bucket)
+    .map(c=>c.uid);
+  if(!uids.length){showToast('No B'+bucket+' clashes in this test');return;}
+  if(bucket===3){
+    if(typeof _crApproveOpen==='function'){
+      _crApproveOpen(uids,null,'ReviewQueueBulkDelta');
+    } else {
+      showToast('Approve modal unavailable');
+    }
+    return;
+  }
+  const action=(bucket===1)?'resolved':'stillOpen';
+  const n=_rqActionOnUids(uids,action,'ReviewQueueBulkDelta');
+  if(!n)return;
+  const verb=(bucket===1)?'marked Resolved':'kept Still Open';
+  showToast(`✓ ${n} B${bucket} clash${n===1?'':'es'} in "${tn}" ${verb}`);
+  updSB();updSS();nav('review');
+}
+/* REVIEW-QUEUE-DELTA-ANALYSIS-BULK-APPLY end */
 /* REVIEW-QUEUE-ACTIONS start: mark-Resolved and mark-Still-Open handlers.
    Both mutate the flagged clashes in S.clashes, clear pendingReview, append a
    statusHistory entry tagged source='ReviewQueue', persist via sv(), and
@@ -9897,28 +10124,39 @@ function reviewQueueUpdateSelCount(){
    the queue exists to make easy). Mark-Still-Open sets reviewedStillOpen=true
    so REVIEW-QUEUE-DETECT skips this clash on future imports — status
    stays whatever it was (Active, Reviewed, whatever the user's workflow had). */
-function _rqActionOnUids(uids,action){
+function _rqActionOnUids(uids,action,source){
   if(!uids||!uids.length){showToast('No clashes selected');return 0;}
   const now=new Date().toISOString();
   const cs=S.clashes||[];
   const idx=new Map();
   cs.forEach((c,i)=>idx.set(c.uid,i));
+  /* Step-3 extension (REVIEW-QUEUE-DELTA-ANALYSIS): optional third
+     `source` parameter identifies the surface that triggered this
+     action so ReviewQueueBulkDelta audit entries can be told apart
+     from per-clash ReviewQueue entries downstream. Default preserves
+     the shipped 'ReviewQueue' behaviour byte-for-byte for existing
+     callers that omit the argument. matchedPattern is stamped from
+     c._bucketPattern when present (empty string otherwise) so B3
+     bulk-delta audits carry the pattern name — B1/B2 clashes have no
+     _bucketPattern so the field is empty for them, harmless. */
+  const _src=source||'ReviewQueue';
   let n=0;
   uids.forEach(uid=>{
     const i=idx.get(uid);if(i==null)return;
     const c=cs[i];
     if(c.pendingReview!==true)return;
     if(!Array.isArray(c.statusHistory))c.statusHistory=[];
+    const _mp=c._bucketPattern||'';
     if(action==='resolved'){
       if(c.status!=='Resolved'){
         const wy=_weekYearNow();
         pushStatusHistory(c,'Resolved',wy);
         c.status='Resolved';
       }
-      c.statusHistory.push({reviewedAt:now,reviewedInBatch:c.disappearedInBatch||'',source:'ReviewQueue',status:'Resolved'});
+      c.statusHistory.push({reviewedAt:now,reviewedInBatch:c.disappearedInBatch||'',source:_src,status:'Resolved',matchedPattern:_mp});
     } else {
       c.reviewedStillOpen=true;
-      c.statusHistory.push({reviewedAt:now,reviewedStillOpen:true,source:'ReviewQueue'});
+      c.statusHistory.push({reviewedAt:now,reviewedStillOpen:true,source:_src,matchedPattern:_mp});
     }
     delete c.pendingReview;
     delete c.disappearedAt;
@@ -10020,7 +10258,14 @@ function _markClashesAsApproved(clashIds,source='ReviewQueue'){
        clash was never flagged (direct-from-Register Approve). */
     const _preDisBatch=c.disappearedInBatch||'';
     const _preDisAt=c.disappearedAt||'';
-    c.statusHistory.push({reviewedAt:now,approvedAt:now,actor:actor,source:source,status:'Approved',week:wy.week,year:wy.year,reviewedInBatch:_preDisBatch,reviewedAtBatchDate:_preDisAt});
+    /* Step-3 extension (REVIEW-QUEUE-DELTA-ANALYSIS): stamp matchedPattern
+       from c._bucketPattern so audit trail records WHICH pattern
+       matched when this Approve came from a B3 bulk-delta action.
+       Empty string for non-B3 clashes (direct-from-Register Approve,
+       per-clash Review Queue Approve — those don't have a bucket
+       pattern). Backwards-compatible: field is always present. */
+    const _mp=c._bucketPattern||'';
+    c.statusHistory.push({reviewedAt:now,approvedAt:now,actor:actor,source:source,status:'Approved',week:wy.week,year:wy.year,reviewedInBatch:_preDisBatch,reviewedAtBatchDate:_preDisAt,matchedPattern:_mp});
     delete c.pendingReview;
     delete c.disappearedAt;
     delete c.disappearedInBatch;
@@ -13471,6 +13716,66 @@ function rSet(){
     <button onclick="removeIsoItem('${type}','${esc(item.code)}')" style="font-size:9px;padding:1px 6px;border:.5px solid #FECACA;border-radius:3px;background:#fff;color:#DC2626;cursor:pointer">✕</button>
   </div>`;}
   return`
+
+  <!-- SETTINGS-DESIGNED-CONDITION-PATTERNS start: second region of the
+       existing marker (region 1 owns the storage backend + accessors +
+       reclassify hook around line 1500). This region renders the
+       Settings UI:
+         • Republish tolerance input (5..500, current default 25)
+         • Enabled toggle per pattern
+         • Edit / Remove per pattern
+         • Add pattern button
+       Placed FIRST in the Settings tab per Q3 (workflow-adjacent, not
+       admin-adjacent). Live re-classification is triggered by the
+       existing _rqdaSetPatterns / _rqdaSetTolMm setters (both call
+       _rqdaReclassifyAll internally) so this UI stays a thin shell
+       over the shipped storage layer. -->
+  <div class="ss-sec"><div class="ss-tit">Designed condition patterns &amp; republish tolerance</div>
+    <div class="ibox" style="margin-bottom:10px">
+      Governs Review Queue delta-analysis classification. Any candidate clash within the tolerance of a pending clash (same test + same source pair + arrived after disappearance) is a <strong>Bucket 2 Likely Republish</strong> signal. Pattern matches on element names promote a pending clash to <strong>Bucket 3 Designed Condition</strong>. Changes trigger automatic re-classification of all pending clashes — no re-import needed.
+    </div>
+    <div class="fg2" style="margin-bottom:10px;grid-template-columns:180px 1fr">
+      <div class="fg"><label>Republish tolerance (mm)</label>
+        <input class="fi" id="rqda-tol-mm" type="number" min="5" max="500" step="1" value="${(typeof _rqdaGetTolMm==='function')?_rqdaGetTolMm():25}">
+        <span style="font-size:8px;color:#94A3B8">Range 5–500. Default 25.</span>
+      </div>
+      <div class="fg" style="justify-content:flex-end;align-items:flex-end">
+        <button class="btn p sm" onclick="_rqdaUiSaveTol()" style="align-self:flex-end">Save tolerance</button>
+      </div>
+    </div>
+    <div style="font-size:9px;font-weight:700;color:#94A3B8;text-transform:uppercase;letter-spacing:.06em;margin:8px 0 4px">Patterns — first match wins; regex tests either A→A/B→B or A→B/B→A</div>
+    <div id="rqda-patterns-list">${(function(){
+      const patterns=(typeof _rqdaGetPatterns==='function')?_rqdaGetPatterns():[];
+      if(!patterns.length){
+        return '<div style="font-size:10px;color:#94A3B8;padding:8px;background:#F8FAFC;border-radius:4px">No patterns defined. Click "+ Add pattern" below.</div>';
+      }
+      return patterns.map(function(p,idx){
+        const nm=esc(p.name||'(unnamed)');
+        const ar=esc(p.aRegex||'');
+        const br=esc(p.bRegex||'');
+        const nt=esc(p.note||'');
+        const en=p.enabled!==false;
+        return `<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:#F8FAFC;border:.5px solid var(--bd);border-radius:4px;margin-bottom:4px">
+          <input type="checkbox" ${en?'checked':''} onchange="_rqdaUiToggleEnabled(${idx},this.checked)" title="Enabled" style="cursor:pointer">
+          <div style="flex:1;min-width:0">
+            <div style="font-size:11px;font-weight:700;color:#0F1824">${nm}</div>
+            <div style="font-size:9px;color:#64748B;font-family:monospace">aRegex: ${ar} &nbsp;·&nbsp; bRegex: ${br}</div>
+            ${nt?`<div style="font-size:9px;color:#94A3B8;margin-top:2px">${nt}</div>`:''}
+          </div>
+          <button class="btn sm" onclick="_rqdaUiEdit(${idx})" style="font-size:9px;padding:3px 8px">Edit</button>
+          <button class="btn sm d" onclick="_rqdaUiRemove(${idx})" style="font-size:9px;padding:3px 8px">Remove</button>
+        </div>`;
+      }).join('');
+    })()}</div>
+    <button class="btn p sm" onclick="_rqdaUiEdit(-1)" style="margin-top:6px">+ Add pattern</button>
+    <div style="margin-top:8px;padding:8px;background:#EFF6FF;border-left:2px solid #006BA6;border-radius:0 4px 4px 0;font-size:10px;color:#334155">
+      Live pending-clash counts: ${(function(){
+        const c=(typeof _rqdaBucketCounts==='function')?_rqdaBucketCounts():{all:0,'1':0,'2':0,'3':0};
+        return `<strong>${c.all}</strong> total · B1 <strong>${c['1']}</strong> · B2 <strong>${c['2']}</strong> · B3 <strong>${c['3']}</strong>`;
+      })()}
+    </div>
+  </div>
+  <!-- SETTINGS-DESIGNED-CONDITION-PATTERNS end -->
 
   <!-- ── ROLE MANAGEMENT — Admin only ─────────────────────────────────── -->
   ${rRoleCard()}
