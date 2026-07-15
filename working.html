@@ -1498,6 +1498,200 @@ function backfillStatusHistory(){
   }
   return backfilled;
 }
+
+/* SETTINGS-DESIGNED-CONDITION-PATTERNS start: storage backend for the
+   REVIEW-QUEUE-DELTA-ANALYSIS feature. Owns two localStorage keys and
+   their accessors:
+     nw:designedConditionPatterns — Array<{name, aRegex, bRegex, note, enabled}>
+     nw:republishToleranceMm      — Number, mm, clamped 5..500, default 25
+   First-read seeds nw:designedConditionPatterns with the MIMO vs
+   MML_Maintenance pattern per spec. Setters persist and trigger a live
+   re-classification of every pendingReview clash via
+   _rqdaReclassifyAll — no re-import required.
+   Settings UI surface is intentionally deferred to Step 3 of this
+   feature; this block owns storage + accessors + live-reclass hook
+   ONLY. */
+const _RQDA_TOL_MIN=5;
+const _RQDA_TOL_MAX=500;
+const _RQDA_TOL_DEFAULT=25;
+const _RQDA_SEED_PATTERNS=[{
+  name:'MIMO vs MML_Maintenance',
+  aRegex:'MIMO',
+  bRegex:'MML_Maintenance',
+  note:'Designed condition',
+  enabled:true
+}];
+function _rqdaGetPatterns(){
+  try{
+    const raw=localStorage.getItem('nw:designedConditionPatterns');
+    if(raw==null){
+      localStorage.setItem('nw:designedConditionPatterns',JSON.stringify(_RQDA_SEED_PATTERNS));
+      return _RQDA_SEED_PATTERNS.slice();
+    }
+    const p=JSON.parse(raw);
+    return Array.isArray(p)?p:_RQDA_SEED_PATTERNS.slice();
+  }catch(_e){return _RQDA_SEED_PATTERNS.slice();}
+}
+function _rqdaSetPatterns(list){
+  if(!Array.isArray(list))return;
+  localStorage.setItem('nw:designedConditionPatterns',JSON.stringify(list));
+  _rqdaReclassifyAll();
+}
+function _rqdaGetTolMm(){
+  const raw=localStorage.getItem('nw:republishToleranceMm');
+  const v=raw==null?_RQDA_TOL_DEFAULT:parseFloat(raw);
+  if(!isFinite(v)||v<_RQDA_TOL_MIN)return _RQDA_TOL_DEFAULT;
+  if(v>_RQDA_TOL_MAX)return _RQDA_TOL_MAX;
+  return v;
+}
+function _rqdaSetTolMm(v){
+  const n=parseFloat(v);
+  if(!isFinite(n))return;
+  const clamped=Math.max(_RQDA_TOL_MIN,Math.min(_RQDA_TOL_MAX,n));
+  localStorage.setItem('nw:republishToleranceMm',String(clamped));
+  _rqdaReclassifyAll();
+}
+/* _rqdaReclassifyAll: re-runs classification on every clash currently
+   flagged pendingReview. Batch data isn't available at settings-change
+   time (imports have long since ended) so we call the classifier with
+   an empty batchClashes array. Bucket 3 (pattern) evaluates correctly;
+   Bucket 2 (coord candidate) cannot fire without batch data, so those
+   fall to Bucket 1 with _bucketFallback=true (identical to MIGRATE
+   semantics). Idempotent — safe to call any number of times. */
+function _rqdaReclassifyAll(){
+  const cs=S.clashes||[];
+  const patterns=_rqdaGetPatterns();
+  const tolMm=_rqdaGetTolMm();
+  let touched=0;
+  cs.forEach(c=>{
+    if(c.pendingReview!==true)return;
+    const res=_rqdaClassify(c,[],patterns,tolMm);
+    if(res.bucket===3){
+      c._bucket=3;
+      delete c._deltaAnalysisCandidate;
+      delete c._bucketFallback;
+    }else{
+      c._bucket=1;
+      c._bucketFallback=true;
+      delete c._deltaAnalysisCandidate;
+    }
+    touched++;
+  });
+  if(touched)sv('clashes',S.clashes);
+}
+/* SETTINGS-DESIGNED-CONDITION-PATTERNS end */
+
+/* REVIEW-QUEUE-DELTA-ANALYSIS-CLASSIFY start: classification engine for
+   pendingReview clashes. Reads the batch data (if available), the
+   enabled designed-condition patterns, and the republish tolerance in
+   mm, then assigns each clash to one of three buckets:
+     Bucket 3 (Designed Condition, highest precedence) — clash element
+       names match an enabled regex pattern in either order (A→A/B→B or
+       A→B/B→A). A pattern match wins even if a coordinate candidate
+       exists, because designed conditions are semantic properties of
+       the pair rather than accidents of geometry.
+     Bucket 2 (Likely Republish) — at least one batch clash with the
+       SAME testName and the SAME sourceA/sourceB pair (in either
+       order) whose clash point is within `tolMm` mm of this clash's
+       point. Stores the nearest candidate as _deltaAnalysisCandidate.
+     Bucket 1 (Likely Resolved) — the fallback when neither above fires.
+   PURELY ENRICHMENT — writes _bucket + _deltaAnalysisCandidate on the
+   clash object; never mutates status. Terminal transitions still
+   require an explicit user click per PR #36 contract. Called from
+   three sites: (a) the import-time invocation block below (same
+   marker, second region), (b) SETTINGS reclassify hook, (c) MIGRATE
+   one-shot. */
+function _rqdaClassify(clash,batchClashes,patterns,tolMm){
+  // Bucket 3 — pattern match (highest precedence)
+  const enabled=(patterns||[]).filter(p=>p&&p.enabled&&p.aRegex&&p.bRegex);
+  const eA=String(clash.elementA||'');
+  const eB=String(clash.elementB||'');
+  for(const p of enabled){
+    let aRe,bRe;
+    try{aRe=new RegExp(p.aRegex);bRe=new RegExp(p.bRegex);}
+    catch(_re){continue;}
+    if((aRe.test(eA)&&bRe.test(eB))||(aRe.test(eB)&&bRe.test(eA))){
+      return{bucket:3,patternName:p.name};
+    }
+  }
+  // Bucket 2 — coordinate-adjacent candidate in same test, same source pair
+  const tn=clash.testName||'';
+  const sA=clash.sourceA||'';
+  const sB=clash.sourceB||'';
+  const cx=parseFloat(clash.x||0),cy=parseFloat(clash.y||0),cz=parseFloat(clash.z||0);
+  let best=null;
+  (batchClashes||[]).forEach(b=>{
+    if(!b)return;
+    const btn=b.tn||b.testName||'';
+    if(btn!==tn)return;
+    const bsA=b.sA||b.sourceA||'';
+    const bsB=b.sB||b.sourceB||'';
+    const srcMatch=(bsA===sA&&bsB===sB)||(bsA===sB&&bsB===sA);
+    if(!srcMatch)return;
+    const bx=parseFloat(b.x||0),by=parseFloat(b.y||0),bz=parseFloat(b.z||0);
+    const dx=bx-cx,dy=by-cy,dz=bz-cz;
+    // Native-unit Euclidean, then normalise to mm using the same
+    // magnitude heuristic bcfCoord() uses: max coord > 1000 means the
+    // source is stored in mm; otherwise it is stored in metres.
+    const nativeDist=Math.sqrt(dx*dx+dy*dy+dz*dz);
+    const maxMag=Math.max(Math.abs(cx),Math.abs(cy),Math.abs(cz),Math.abs(bx),Math.abs(by),Math.abs(bz));
+    const distMm=(maxMag>1000)?nativeDist:(nativeDist*1000);
+    if(distMm<=tolMm&&(!best||distMm<best.deltaMm)){
+      best={
+        batchId:b.uid||b.nwOrig||b.name||'',
+        elementA:b.eA||b.elementA||'',
+        elementB:b.eB||b.elementB||'',
+        pointX:bx,pointY:by,pointZ:bz,
+        deltaMm:distMm
+      };
+    }
+  });
+  if(best)return{bucket:2,candidate:best};
+  // Bucket 1 — fallback
+  return{bucket:1};
+}
+/* REVIEW-QUEUE-DELTA-ANALYSIS-CLASSIFY end */
+
+/* REVIEW-QUEUE-DELTA-ANALYSIS-MIGRATE start: one-shot migration for
+   existing pendingReview clashes flagged by prior imports whose batch
+   data is no longer available. Gated on the
+   nw:reviewQueueDeltaAnalysisMigrated localStorage key so it runs
+   exactly once per browser. Iterates every pendingReview clash and
+   calls _rqdaClassify with an empty batchClashes array. Bucket 3
+   (pattern) evaluates correctly; Bucket 2 (coord candidate) cannot
+   fire without batch data, so B2 falls through to Bucket 1 with
+   _bucketFallback=true to mark the classification as low-confidence.
+   Auto-runs 1500ms after load, same pattern as backfillStatusHistory /
+   backfillImportFilenames. Idempotent by construction (gate flag). */
+function _rqdaMigrate(){
+  try{
+    if(localStorage.getItem('nw:reviewQueueDeltaAnalysisMigrated')==='1')return 0;
+    const cs=S.clashes||[];
+    const patterns=_rqdaGetPatterns();
+    const tolMm=_rqdaGetTolMm();
+    let touched=0;
+    cs.forEach(c=>{
+      if(c.pendingReview!==true)return;
+      const res=_rqdaClassify(c,[],patterns,tolMm);
+      if(res.bucket===3){
+        c._bucket=3;
+        delete c._bucketFallback;
+        delete c._deltaAnalysisCandidate;
+      }else{
+        c._bucket=1;
+        c._bucketFallback=true;
+        delete c._deltaAnalysisCandidate;
+      }
+      touched++;
+    });
+    localStorage.setItem('nw:reviewQueueDeltaAnalysisMigrated','1');
+    if(touched)sv('clashes',S.clashes);
+    console.log('REVIEW-QUEUE-DELTA-ANALYSIS: migrated '+touched+' pendingReview clash'+(touched===1?'':'es'));
+    return touched;
+  }catch(e){console.warn('REVIEW-QUEUE-DELTA-ANALYSIS migration error:',e);return 0;}
+}
+/* REVIEW-QUEUE-DELTA-ANALYSIS-MIGRATE end */
+
 function scopedWds(wds,scope,bldGroup){
   // Returns a scope-aware copy of wds (the per-week chart data array).
   // For scope='all' AND bldGroup='all' (or undefined), returns wds unchanged
@@ -9029,6 +9223,37 @@ function importToRegister(mode){
     sv('clashes',S.clashes);
   }
   /* REVIEW-QUEUE-DETECT end */
+  /* REVIEW-QUEUE-DELTA-ANALYSIS-CLASSIFY start: post-DETECT enrichment.
+     Reads the clashes freshly flagged by REVIEW-QUEUE-DETECT in this
+     batch (identified by disappearedInBatch === _rqBatch) and writes
+     _bucket + _deltaAnalysisCandidate on each. Does not mutate
+     REVIEW-QUEUE-DETECT itself (per non-negotiable). Scoped to append
+     mode only because DETECT only sets pendingReview in append.
+     Idempotent — re-running on the same batch is a no-op net-of-state
+     because the classifier is pure and writes the same result. */
+  if(mode==='append'){
+    const _rqdaPatterns=(typeof _rqdaGetPatterns==='function')?_rqdaGetPatterns():[];
+    const _rqdaTol=(typeof _rqdaGetTolMm==='function')?_rqdaGetTolMm():25;
+    let _rqdaEnriched=0;
+    (S.clashes||[]).forEach(c=>{
+      if(c.pendingReview!==true)return;
+      if(c.disappearedInBatch!==_rqBatch)return;
+      const res=_rqdaClassify(c,_bcfC||[],_rqdaPatterns,_rqdaTol);
+      c._bucket=res.bucket;
+      if(res.bucket===2&&res.candidate){
+        c._deltaAnalysisCandidate=res.candidate;
+        delete c._bucketFallback;
+      }else{
+        delete c._deltaAnalysisCandidate;
+        // Batch data WAS available in the import-time path — a non-B2
+        // result here is a confident B1 or B3, not a fallback.
+        delete c._bucketFallback;
+      }
+      _rqdaEnriched++;
+    });
+    if(_rqdaEnriched)sv('clashes',S.clashes);
+  }
+  /* REVIEW-QUEUE-DELTA-ANALYSIS-CLASSIFY end */
   /* REVIEW-QUEUE-DATE-GUARD-BANNER start: per-test flag persisted for the
      Review Queue UI to surface an amber "import pre-dates register" banner
      when the DATE-GUARD suppressed flagging for a whole test. Set when the
@@ -16286,7 +16511,12 @@ setTimeout(backfillImportFilenames,1500);
    this feature. Idempotent — skips clashes that already have a history. Same
    1500ms delay so it runs after state has finished loading. */
 setTimeout(backfillStatusHistory,1500);
-/* STATUS-HIST end */};
+/* STATUS-HIST end */
+/* REVIEW-QUEUE-DELTA-ANALYSIS-MIGRATE: auto-run the one-shot migration
+   1500ms after load so state (S.clashes) is fully hydrated. Gated on
+   nw:reviewQueueDeltaAnalysisMigrated inside the helper — safe to
+   fire on every load; short-circuits after the first run. */
+setTimeout(function(){try{_rqdaMigrate();}catch(_e){console.warn('rqda migrate:',_e);}},1600);};
 </script>
 </body>
 </html>
