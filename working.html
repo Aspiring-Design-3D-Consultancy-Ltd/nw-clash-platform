@@ -1514,13 +1514,39 @@ function backfillStatusHistory(){
 const _RQDA_TOL_MIN=5;
 const _RQDA_TOL_MAX=500;
 const _RQDA_TOL_DEFAULT=25;
-const _RQDA_SEED_PATTERNS=[{
-  name:'MIMO vs MML_Maintenance',
-  aRegex:'MIMO',
-  bRegex:'MML_Maintenance',
-  note:'Designed condition',
-  enabled:true
-}];
+const _RQDA_SEED_PATTERNS=[
+  {
+    name:'MIMO vs MML_Maintenance',
+    aRegex:'MIMO',
+    bRegex:'MML_Maintenance',
+    note:'Designed condition',
+    enabled:true
+  },
+  /* V2 seed additions (Shane's 164-clash live-data diagnosis showed
+     the designed-condition signal is broader than just MIMO∧MML:
+     MML_Maintenance on either side is a designed clearance envelope
+     between Muratec maintenance zones and whatever building element
+     it touches — Hilti brackets, precast concrete, DWC, various
+     steelwork). Both mirror patterns ship enabled so first-load
+     users get the correct behaviour out of the box. The classifier's
+     either-direction match means either single pattern would cover
+     both sides on its own, but shipping both makes the Settings
+     surface (deferred to Step 3) self-explanatory. */
+  {
+    name:'Anything vs MML_Maintenance',
+    aRegex:'MML_Maintenance',
+    bRegex:'.*',
+    note:'Designed Muratec maintenance zone envelope',
+    enabled:true
+  },
+  {
+    name:'MML_Maintenance vs anything',
+    aRegex:'.*',
+    bRegex:'MML_Maintenance',
+    note:'Designed Muratec maintenance zone envelope',
+    enabled:true
+  }
+];
 function _rqdaGetPatterns(){
   try{
     const raw=localStorage.getItem('nw:designedConditionPatterns');
@@ -1613,6 +1639,51 @@ function _rqdaReclassifyAll(){
   });
   if(touched)sv('clashes',S.clashes);
   return touched;
+}
+/* _rqdaMigrateSeedPatternsV2: one-shot migration that APPENDS the two
+   broad MML_Maintenance patterns to an existing user's pattern list
+   without overwriting any of their edits (preserves enabled flags on
+   existing patterns, does not touch existing names/regexes/notes).
+   Gated on nw:designedConditionPatternsV2Seeded so it runs exactly
+   once per browser. Behaviour matrix:
+     * No localStorage patterns at all → _rqdaGetPatterns seeds all 3
+       from _RQDA_SEED_PATTERNS on its first read; this migration then
+       sees all names present, adds nothing, just sets the gate.
+     * localStorage has the original 1-pattern V1 seed → this
+       migration appends the 2 new patterns, sets gate, triggers
+       _rqdaReclassifyAll so existing pendingReview clashes pick up
+       the new patterns without needing a re-import.
+     * localStorage has user-authored patterns that happen to include
+       one or both target names → skip appending those; migration is
+       name-keyed idempotent.
+     * localStorage has the user's own broad MML pattern under a
+       different name → this migration still adds the two named
+       seeds. Duplicate patterns are harmless (either-direction
+       matching, first-match-wins in the classifier). */
+function _rqdaMigrateSeedPatternsV2(){
+  try{
+    if(localStorage.getItem('nw:designedConditionPatternsV2Seeded')==='1')return 0;
+    const patterns=_rqdaGetPatterns();
+    const existingNames=new Set((patterns||[]).map(p=>p&&p.name).filter(Boolean));
+    const toAppend=[];
+    if(!existingNames.has('Anything vs MML_Maintenance')){
+      toAppend.push({name:'Anything vs MML_Maintenance',aRegex:'MML_Maintenance',bRegex:'.*',note:'Designed Muratec maintenance zone envelope',enabled:true});
+    }
+    if(!existingNames.has('MML_Maintenance vs anything')){
+      toAppend.push({name:'MML_Maintenance vs anything',aRegex:'.*',bRegex:'MML_Maintenance',note:'Designed Muratec maintenance zone envelope',enabled:true});
+    }
+    if(toAppend.length){
+      const next=patterns.concat(toAppend);
+      localStorage.setItem('nw:designedConditionPatterns',JSON.stringify(next));
+      console.log('REVIEW-QUEUE-DELTA-ANALYSIS: seeded V2 patterns ('+toAppend.length+' appended)');
+    }
+    localStorage.setItem('nw:designedConditionPatternsV2Seeded','1');
+    if(toAppend.length&&typeof _rqdaReclassifyAll==='function'){
+      const n=_rqdaReclassifyAll();
+      console.log('REVIEW-QUEUE-DELTA-ANALYSIS: V2 patterns triggered reclassify of '+n+' pending clash'+(n===1?'':'es'));
+    }
+    return toAppend.length;
+  }catch(e){console.warn('REVIEW-QUEUE-DELTA-ANALYSIS V2 pattern seed error:',e);return 0;}
 }
 /* SETTINGS-DESIGNED-CONDITION-PATTERNS end */
 
@@ -16657,8 +16728,14 @@ setTimeout(backfillStatusHistory,1500);
 /* REVIEW-QUEUE-DELTA-ANALYSIS-MIGRATE: auto-run the one-shot migration
    1500ms after load so state (S.clashes) is fully hydrated. Gated on
    nw:reviewQueueDeltaAnalysisMigrated inside the helper — safe to
-   fire on every load; short-circuits after the first run. */
-setTimeout(function(){try{_rqdaMigrate();}catch(_e){console.warn('rqda migrate:',_e);}},1600);};
+   fire on every load; short-circuits after the first run.
+   V2 pattern seed runs first (also gated, also idempotent) so any
+   pending reclassify uses the full 3-pattern set. Both share the same
+   timer to keep window.onload compact. */
+setTimeout(function(){
+  try{_rqdaMigrateSeedPatternsV2();}catch(_e){console.warn('rqda seed v2:',_e);}
+  try{_rqdaMigrate();}catch(_e){console.warn('rqda migrate:',_e);}
+},1600);};
 </script>
 </body>
 </html>
