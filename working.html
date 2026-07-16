@@ -13172,7 +13172,7 @@ function rHelp(){
       <li><strong>↓ Backup JSON</strong> — full project state backup: clashes, weekly snapshots, role roster, settings. Use this for SharePoint/OneDrive distribution or audit archival. Drag-and-drop a previous backup JSON onto the app window to restore it.</li>
       <!-- SELECTIVE-RESET-HELP start --><li><strong>🎯 Selective reset</strong> — opens a modal to clear specific categories only (images, clashes, weekly snapshots, levels/grids, plans, settings, PIN). Everything not ticked is preserved. Offers an optional JSON backup before wiping. Less destructive than the two below; use it when you want to reload a subset (e.g. images only) without losing other state.</li><!-- SELECTIVE-RESET-HELP end -->
       <li><strong>⟲ Factory reset</strong> — wipes ALL data (clashes, weekly snapshots, levels, grids, plans, settings, IndexedDB stores), then installs the 104-clash 4-week demo dataset fresh. Useful for training/testing. Asks whether to also clear the Admin PIN.</li>
-      <li><strong>🗑 Clear all data</strong> — wipes EVERYTHING to a blank state. Unlike Factory Reset, no demo data is installed afterwards. Asks whether to also clear the Admin PIN. Use with care.</li>
+      <li><strong>🗑 Clear all data</strong> — wipes clash-test data only: the register, weekly snapshots, dedup/review queue state, and the IndexedDB stores (images + plans). Preserves the Admin PIN, designed-condition patterns, audit logs, settings (assignees, BCF, managers, grouping), levels/grids, project name/week, ISO codes, and migration flags. No demo data is installed afterwards. Use Factory Reset if you want to wipe everything and reinstall the demo dataset.</li>
     </ul>
     <p style="margin:0 0 8px 0"><strong>Data Manager tab</strong> (this is the sidebar tab labelled "Data Manager") only displays:</p>
     <ul style="margin:0 0 8px 0;padding-left:18px;line-height:1.7">
@@ -14172,7 +14172,7 @@ function rSet(){
       <!-- PAIR-ID-BACKFILL-BTN start --><button class="btn sm" onclick="pairIdBackfill()" title="Reparse archived XMLs to fill in missing Element IDs / GUIDs on existing register clashes. Status, notes, priority are preserved.">&#x1F517; Backfill pair IDs</button><!-- PAIR-ID-BACKFILL-BTN end -->
       <!-- SELECTIVE-RESET-BTN start --><button class="btn sm d" onclick="selectiveReset()" title="Pick specific categories to clear (images, clashes, weekly, levels, plans, settings, PIN). Everything not ticked is preserved.">&#x1F3AF; Selective reset</button><!-- SELECTIVE-RESET-BTN end -->
       <button class="btn sm d" onclick="factoryReset()" title="Wipe everything, then install the 104-clash 4-week demo dataset. Useful for training/testing.">⟲ Factory reset</button>
-      <button class="btn sm d" onclick="clearAll()" title="Wipe everything to a blank state — no demo data installed afterwards.">🗑 Clear all data</button>
+      <button class="btn sm d" onclick="clearAll()" title="Wipe clash-test data (register + snapshots + queues + IDB stores). Preserves PIN, patterns, audit logs, and settings. No demo data installed afterwards.">🗑 Clear all data</button>
     </div>
   </div>
   <!-- ── ABOUT ─────────────────────────────────────────── -->
@@ -14892,43 +14892,80 @@ async function factoryReset(){
   alert('Factory reset complete. The page will reload with demo data.');
   location.reload();
 }
+/* CLEAR-ALL-DATA-SCOPE-FIX start: whitelist wipe. The previous
+   implementation delegated to _wipeAllStorage() which scans every nw:*
+   key and removes it — a broad-brush destroyer that in production
+   left nw:clashes / nw:weekly intact anyway (56KB / 104 clashes
+   reported surviving a Clear All Data click). The fix flips the
+   model: an explicit WIPE list. Everything not on the list survives
+   by construction, so the failure mode changes from destructive
+   (data wiped unrecoverably when a key is forgotten from a preserve
+   list) to safe (data survives recoverably when a key is forgotten
+   from the wipe list). PIN, patterns, audit logs, settings, and
+   migration flags all survive without needing to be individually
+   named. The old "Also clear the Admin PIN?" prompt is dropped per
+   spec — nw:pin must be preserved regardless; Factory Reset still
+   asks for users who want that path. IDB scope unchanged (images +
+   plans wiped via _wipeIdbWithVerify('full') — the DB rebuilds on
+   next launch). */
 async function clearAll(){
+  const CLEAR_ALL_WIPE_KEYS=[
+    'clashes',                  // clash register
+    'weekly',                   // weekly snapshots
+    'dedupQueue',               // dedup candidate queue
+    'reviewQueueBanners',       // per-test suppressed-import banner map
+    'reviewQueueNoDateBanner',  // fail-closed no-date flag
+  ];
   const msg=[
     'CLEAR ALL DATA',
     '',
-    'This will wipe EVERYTHING to a blank state:',
-    '  \u2022 All clash tests and history',
-    '  \u2022 All weekly snapshots',
-    '  \u2022 All level/grid/plan configurations',
-    '  \u2022 All assignee/BCF/manager settings',
-    '  \u2022 All IndexedDB stores (images + plans)',
+    'WIPED (clash-test data only):',
+    '  \u2022 Clash register (all clashes and history)',
+    '  \u2022 Weekly snapshots',
+    '  \u2022 Dedup Queue',
+    '  \u2022 Review Queue transient banner state',
+    '  \u2022 IndexedDB stores (images + plans)',
+    '',
+    'PRESERVED (survives the wipe):',
+    '  \u2022 Admin PIN',
+    '  \u2022 Designed-condition patterns',
+    '  \u2022 Audit logs (dedup action + incident)',
+    '  \u2022 Settings (assignees, BCF, managers, grouping)',
+    '  \u2022 Levels, grids, project name/week, ISO codes',
+    '  \u2022 Migration / one-shot flags',
     '',
     'Unlike Factory Reset, NO demo data will be installed afterwards.',
-    'You will be left with a completely empty app.',
+    'The clash register will be empty on reload.',
     '',
-    'You will next be asked whether to also clear your Admin PIN.',
     'Click OK to continue.'
   ].join('\n');
   if(!confirm(msg))return;
-  const clearPin=confirm('Also clear the Admin PIN?\n\nOK = clear the PIN (you\'ll set a new one on next launch)\nCancel = keep the current PIN');
   if(!confirm('Last chance — click Cancel if you have NOT exported your data via Backup JSON.\n\nClick OK to proceed.'))return;
+  // Whitelist wipe. Any key not on the list survives by construction —
+  // the safe failure mode when a future key is forgotten.
+  try{
+    CLEAR_ALL_WIPE_KEYS.forEach(k=>{try{localStorage.removeItem('nw:'+k);}catch(e){}});
+  }catch(e){console.warn('clearAll localStorage wipe:',e);}
   /* WIPE-VERIFY: same fail-loud contract as factoryReset — abort the
      reload if the IDB wipe couldn't be verified. */
-  try{ await _wipeAllStorage(clearPin); }
+  try{ await _wipeIdbWithVerify('full'); }
   catch(e){
     alert('Clear All FAILED — IndexedDB wipe could not be verified.\n\n'+e.message+'\n\nThe page will NOT reload. Try closing every other tab open on this file:// URL and running the reset again. If that doesn\'t help, open DevTools > Application > IndexedDB and delete NWClashImages manually before reloading.');
     return;
   }
-  // Persist EMPTY arrays so launch()'s demo-data fallback (lines ~953/~1007)
+  // Persist EMPTY arrays so launch()'s demo-data fallback at ~L1088/~L1090
   // sees Array.isArray(true) and skips installing the demo dataset.
+  // nw:dataVersion is preserved implicitly by the whitelist (not on wipe
+  // list); the sv() below is a belt-and-braces reassertion.
   try{
     sv('clashes',[]);
     sv('weekly',[]);
     sv('dataVersion',DATA_VERSION);
   }catch(e){console.warn('clearAll empty-persist:',e);}
-  alert('All data cleared. The page will reload to a blank state.');
+  alert('All data cleared. The page will reload to a blank state.\n\n(Admin PIN, patterns, audit logs, settings, and migration flags preserved.)');
   location.reload();
 }
+/* CLEAR-ALL-DATA-SCOPE-FIX end */
 /* RESET-HELPERS end */
 
 /* SELECTIVE-RESET start: granular wipe — user ticks categories to clear in a
