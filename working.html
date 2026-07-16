@@ -9952,7 +9952,7 @@ function rReview(){
          counts, tint-underlined when active. Default 'all' per Q4. -->
     ${(typeof _rqdaFilterTabs==='function')?_rqdaFilterTabs():''}
     <div class="card" style="border-top:3px solid #EA7600;margin-bottom:9px"><div class="cb" style="padding:10px 14px">
-      <div style="font-size:12px;font-weight:700;color:#0F1824;margin-bottom:3px">${pending.length} clash${pending.length===1?'':'es'} awaiting review</div>
+      <div style="font-size:12px;font-weight:700;color:#0F1824;margin-bottom:3px">${(typeof _rqdaHeaderCountLine==='function')?_rqdaHeaderCountLine(pending.length):(pending.length+' clash'+(pending.length===1?'':'es')+' awaiting review')}</div>
       <div style="font-size:10.5px;color:#64748B;line-height:1.5">These clashes were in the register but did not appear in the latest import for the same test. They may have been fixed in the model — or the XML may be a partial export. Confirm each: <strong>Resolved</strong> closes the clash and records a status-history entry. <strong>Still Open</strong> keeps the current status and prevents it from being re-flagged on future imports.</div>
     </div></div>
     ${groups}
@@ -10041,6 +10041,21 @@ function _rqdaBucketBadge(b){
   const m=map[b]||map[1];
   return `<span style="display:inline-block;padding:1px 6px;border-radius:8px;background:${m.bg};color:${m.tx};font-size:9px;font-weight:700;white-space:nowrap;margin-left:4px">${m.lbl}</span>`;
 }
+/* _rqdaHeaderCountLine: filter-aware header text for the amber
+   "awaiting review" banner. On the All tab shows total pending; on
+   any bucket tab shows the bucket-specific count and label with
+   the total in parenthesis for context. Called from the header line
+   inside rReview() (see call site inside REVIEW-QUEUE-VIEW). */
+function _rqdaHeaderCountLine(totalPending){
+  const filter=_rqdaBucketFilter;
+  if(filter==='all'){
+    return totalPending+' clash'+(totalPending===1?'':'es')+' awaiting review';
+  }
+  const c=_rqdaBucketCounts();
+  const map={'1':{n:c['1'],lbl:'B1 Likely Resolved'},'2':{n:c['2'],lbl:'B2 Likely Republish'},'3':{n:c['3'],lbl:'B3 Designed Condition'}};
+  const m=map[filter]||{n:0,lbl:'?'};
+  return m.n+' clash'+(m.n===1?'':'es')+' in '+m.lbl+' (of '+totalPending+' awaiting review)';
+}
 function _rqdaCardExtras(c){
   const b=c._bucket||1;
   if(b===2){
@@ -10084,14 +10099,28 @@ function _rqdaBulkApplyBucketButtons(tn,rows){
   const b2=rows.filter(c=>(c._bucket||1)===2);
   const b3=rows.filter(c=>(c._bucket||1)===3);
   const tnJson=JSON.stringify(tn).replace(/"/g,'&quot;');
+  /* Filter-aware rendering per Step-3 follow-up brief item 1. On the
+     'all' tab all three buttons render (subject to per-bucket ≥1
+     count as before). On a bucket-specific tab only the matching
+     bucket's button renders — prevents the "Apply all B1 (87)"
+     footgun when the user is viewing B2 or B3 cards and can't see
+     the 87 clashes the click would touch. Count in the label stays
+     the true full-bucket count within this test group (reflects
+     action scope, not filter view). Existing PR #35/#36 whole-test
+     buttons still render on every tab, handled in rReview() at the
+     group-header markup — not here. */
+  const filter=_rqdaBucketFilter;
+  const showB1=(filter==='all'||filter==='1')&&b1.length;
+  const showB2=(filter==='all'||filter==='2')&&b2.length;
+  const showB3=(filter==='all'||filter==='3')&&b3.length;
   let html='';
-  if(b1.length){
+  if(showB1){
     html+=`<button class="btn sm" onclick="event.stopPropagation();reviewQueueBulkApplyDelta(${tnJson},1)" style="font-size:10px;background:#FEF3C7;color:#92400E;border-color:#F59E0B;margin-left:4px" title="Bulk-apply Bucket 1 (Likely Resolved) as Resolved">✓ Apply all B1 (${b1.length}) as Resolved</button>`;
   }
-  if(b2.length){
+  if(showB2){
     html+=`<button class="btn sm" onclick="event.stopPropagation();reviewQueueBulkApplyDelta(${tnJson},2)" style="font-size:10px;background:#FFEDD5;color:#C2410C;border-color:#EA580C;margin-left:4px" title="Bulk-apply Bucket 2 (Likely Republish) as Still Open">✗ Apply all B2 (${b2.length}) as Still Open</button>`;
   }
-  if(b3.length){
+  if(showB3){
     html+=`<button class="btn sm" onclick="event.stopPropagation();reviewQueueBulkApplyDelta(${tnJson},3)" style="font-size:10px;background:#DCFCE7;color:#14532D;border-color:#16A34A;margin-left:4px" title="Bulk-apply Bucket 3 (Designed Condition) as Approved — type-APPROVE gate opens once for the whole bulk">✓ Apply all B3 (${b3.length}) as Approved</button>`;
   }
   return html;
