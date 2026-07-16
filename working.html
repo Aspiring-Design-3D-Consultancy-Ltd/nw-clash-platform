@@ -1083,11 +1083,24 @@ async function initAuth(){
        badge + view survive reloads. Defaults to [] on first launch. */
     S.dedupQueue=lv('dedupQueue',[])||[];
     if(!Array.isArray(S.dedupQueue))S.dedupQueue=[];
-    // Only load demo data if nothing has EVER been saved (null = first launch).
-    // An empty array [] means the user intentionally cleared their data — respect that.
-    if(!Array.isArray(S.clashes)){S.clashes=DC.map(c=>({...c}));sv('clashes',S.clashes);_uid=104;}
+    /* CLEAR-ALL-SUPPRESS-DEMO-SEED start: dataVersion presence is the
+       "already initialized" signal. The primary seed at L1067 already
+       fires only when savedVer!==DATA_VERSION (i.e. missing or bumped),
+       which is the correct first-launch trigger. This secondary fallback
+       used to re-install the demo dataset whenever S.clashes was null,
+       so ANY code path that removed nw:clashes without touching
+       nw:dataVersion caused the demo to rehydrate on next load — the
+       exact "104 clashes return after Clear All Data" bug reported after
+       PR #40 shipped. Fix: treat a null register post-init as legitimate
+       empty state, not a signal to re-seed. Clear All Data preserves
+       nw:dataVersion, so it correctly lands here with an empty register
+       and stays empty on reload. A genuinely fresh browser (no
+       dataVersion) never reaches this branch — it hits the L1067
+       first-launch path and gets the demo. */
+    if(!Array.isArray(S.clashes)){S.clashes=[];sv('clashes',S.clashes);_uid=0;}
     else{const mx=Math.max(0,...(S.clashes||[]).map(c=>parseInt((c.uid||'CLX-0').replace(/\D/g,''),10)||0));_uid=mx;}
-    if(!Array.isArray(S.weekly)){S.weekly=DW;sv('weekly',S.weekly);}
+    if(!Array.isArray(S.weekly)){S.weekly=[];sv('weekly',S.weekly);}
+    /* CLEAR-ALL-SUPPRESS-DEMO-SEED end */
     // Backfill nwOrig for existing clashes that don't have it
     (S.clashes||[]).forEach(c=>{if(!c.nwOrig&&c.name)c.nwOrig=c.name;});
     // Clear bad groupNames — if unique group count ≈ total clash count, grouping is broken
@@ -1263,8 +1276,14 @@ async function initAuth(){
       else if(S.projectManager?.pinHash&&h===S.projectManager.pinHash){_ROLE='projectManager';_roleMember=S.projectManager;}
       else if((S.viewers||[]).find(v=>v.pinHash&&h===v.pinHash)){_ROLE='viewer';_roleMember=(S.viewers||[]).find(v=>v.pinHash&&h===v.pinHash);}
       else{document.getElementById('aerr').textContent='Incorrect PIN.';shk();return;}
-      if(!Array.isArray(S.clashes)){S.clashes=DC.map(c=>({...c}));sv('clashes',S.clashes);}
-      if(!Array.isArray(S.weekly)){S.weekly=DW;sv('weekly',S.weekly);}
+      /* CLEAR-ALL-SUPPRESS-DEMO-SEED start: mirror of the L1088 fix on the
+         PIN-login pathway. Same rule — null register post-init is
+         legitimate empty state, not a signal to re-seed the demo dataset.
+         Prevents demo rehydration after Clear All Data followed by a
+         logout/lock cycle. */
+      if(!Array.isArray(S.clashes)){S.clashes=[];sv('clashes',S.clashes);}
+      if(!Array.isArray(S.weekly)){S.weekly=[];sv('weekly',S.weekly);}
+      /* CLEAR-ALL-SUPPRESS-DEMO-SEED end */
       launch();
     });
   }
