@@ -1,0 +1,106 @@
+name: Stamp build
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stamp-build
+  cancel-in-progress: false
+
+jobs:
+  stamp:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Skip if this is already a stamp commit
+        id: guard
+        run: |
+          SUBJECT="$(git log -1 --pretty=%s)"
+          echo "subject=$SUBJECT"
+          if [[ "$SUBJECT" == chore:\ stamp\ build* ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute SHA + date
+        if: steps.guard.outputs.skip == 'false'
+        id: vars
+        run: |
+          SHA_FULL="$(git rev-parse HEAD)"
+          SHA_SHORT="$(git rev-parse --short=7 HEAD)"
+          COMMIT_DATE="$(git log -1 --format=%cs HEAD)"
+          echo "sha_full=$SHA_FULL"     >> "$GITHUB_OUTPUT"
+          echo "sha_short=$SHA_SHORT"   >> "$GITHUB_OUTPUT"
+          echo "commit_date=$COMMIT_DATE" >> "$GITHUB_OUTPUT"
+
+      - name: Rewrite BUILD-STAMP block
+        if: steps.guard.outputs.skip == 'false'
+        env:
+          SHA_FULL:    ${{ steps.vars.outputs.sha_full }}
+          SHA_SHORT:   ${{ steps.vars.outputs.sha_short }}
+          COMMIT_DATE: ${{ steps.vars.outputs.commit_date }}
+          REPO:        ${{ github.repository }}
+        run: |
+          python3 <<'PY'
+          import os, re, sys, pathlib
+          sha_full    = os.environ["SHA_FULL"]
+          sha_short   = os.environ["SHA_SHORT"]
+          commit_date = os.environ["COMMIT_DATE"]
+          repo        = os.environ["REPO"]
+          commit_url  = f"https://github.com/{repo}/commit/{sha_full}"
+          label       = f"{sha_short} · {commit_date}"
+
+          path = pathlib.Path("working.html")
+          src  = path.read_text(encoding="utf-8")
+
+          # HTML-comment-delimited region only. The CSS region uses /* */ delimiters
+          # so it is invisible to this pattern.
+          block_re = re.compile(
+              r'<!-- BUILD-STAMP start[^>]*?-->.*?<!-- BUILD-STAMP end -->',
+              re.DOTALL,
+          )
+          matches = block_re.findall(src)
+          if len(matches) != 1:
+              sys.exit(f"expected exactly one HTML BUILD-STAMP block, found {len(matches)}")
+
+          new_block = (
+              '<!-- BUILD-STAMP start: git commit SHA banner; auto-injected by '
+              '.github/workflows/stamp-build.yml on push to main. \'dev\' '
+              'placeholder is what unpushed working copies show. Wrapper '
+              '.tb-right-group (see CSS) preserves #tbr\'s right-edge slot. -->'
+              f'<a href="{commit_url}" target="_blank" rel="noopener" '
+              f'class="build-stamp" id="build-stamp" title="{sha_full}">{label}</a>'
+              '<!-- BUILD-STAMP end -->'
+          )
+
+          out = block_re.sub(new_block, src, count=1)
+          if out == src:
+              print("BUILD-STAMP block already up-to-date; nothing to write")
+          else:
+              path.write_text(out, encoding="utf-8")
+              print(f"stamped {sha_short} ({commit_date})")
+          PY
+
+      - name: Commit and push
+        if: steps.guard.outputs.skip == 'false'
+        env:
+          SHA_SHORT: ${{ steps.vars.outputs.sha_short }}
+        run: |
+          if git diff --quiet -- working.html; then
+            echo "no changes to commit"
+            exit 0
+          fi
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add working.html
+          git commit -m "chore: stamp build ${SHA_SHORT} [skip ci]"
+          git push origin HEAD:main

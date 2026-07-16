@@ -124,6 +124,11 @@ body{font-family:Arial,sans-serif;font-size:13px;background:#F0F2F7;color:#0F172
 .topbar{background:#fff;border-bottom:1px solid var(--bd);padding:.52rem 1.1rem;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}
 .tb-t{font-family:Arial,sans-serif;font-size:18px;font-weight:700;color:var(--t1);}
 .tb-r{display:flex;gap:6px;}
+/* BUILD-STAMP start: styles for header build-stamp banner (paired with HTML region at #build-stamp). Wrapper class .tb-right-group holds #tbr + the stamp so #tbr keeps its right-edge slot. */
+.tb-right-group{display:flex;align-items:center;gap:12px;}
+.build-stamp{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;color:var(--tm);text-decoration:none;padding:2px 6px;border-radius:3px;border:.5px solid var(--bd);background:rgba(0,0,0,.02);white-space:nowrap;}
+.build-stamp:hover{text-decoration:underline;color:var(--t2);}
+/* BUILD-STAMP end */
 .tbtn{padding:5px 12px;border-radius:4px;font-size:11px;cursor:pointer;border:.5px solid var(--bd);background:#fff;color:var(--t2);font-family:Arial,sans-serif;font-weight:500;white-space:nowrap;}.tbtn-fw{min-width:120px;text-align:center;}
 .tbtn:hover{background:var(--bg);}
 .tbtn.ac{background:var(--acc);color:#fff;border-color:var(--acc);}
@@ -502,7 +507,7 @@ function _crApproveConfirm(){
     <div class="sb-lk" onclick="doLock()">🔒 Lock platform</div>
   </nav>
   <div id="main">
-    <div class="topbar"><div class="tb-t" id="tbt">Dashboard</div><div class="tb-r" id="tbr"></div></div>
+    <div class="topbar"><div class="tb-t" id="tbt">Dashboard</div><div class="tb-right-group"><div class="tb-r" id="tbr"></div><!-- BUILD-STAMP start: git commit SHA banner; auto-injected by .github/workflows/stamp-build.yml on push to main. 'dev' placeholder is what unpushed working copies show. Wrapper .tb-right-group (see CSS) preserves #tbr's right-edge slot. --><a href="#" target="_blank" rel="noopener" class="build-stamp" id="build-stamp">dev</a><!-- BUILD-STAMP end --></div></div>
     <div class="va" id="va"></div>
   </div>
 </div>
