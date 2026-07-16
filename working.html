@@ -15532,8 +15532,26 @@ async function _executeSelectiveReset(cats,modalId){
      two protected keys from lsKill so a future edit that accidentally
      wires them into a category's lsKeys still can't destroy them.
      Also protects the 2026-07-13 incident log idempotency flag so
-     the incident event isn't re-logged on next load after a reset. */
-  const _protectedAuditKeys=['dedupActionHistory','dedupIncidentLog:20260713:v1'];
+     the incident event isn't re-logged on next load after a reset.
+     Step-3 extension: the four Review-Queue-Delta-Analysis settings
+     keys are added to the same protection set. Rationale: patterns
+     and tolerance are user-authored workflow config (not per-project
+     clash data) and the two migration gate flags encode "we've
+     already run this one-shot" — resetting either wipes user config
+     or triggers phantom re-seeding on next load. All four are also
+     without the `nw:` prefix here (prefix is added at the removeItem
+     call three lines below). */
+  const _protectedAuditKeys=[
+    'dedupActionHistory',
+    'dedupIncidentLog:20260713:v1',
+    /* REVIEW-QUEUE-DELTA-ANALYSIS: user-authored classification
+       config + one-shot migration gate flags. See SETTINGS-
+       DESIGNED-CONDITION-PATTERNS marker for definitions. */
+    'designedConditionPatterns',
+    'designedConditionPatternsV2Seeded',
+    'republishToleranceMm',
+    'reviewQueueDeltaAnalysisMigrated'
+  ];
   _protectedAuditKeys.forEach(k=>lsKill.delete(k));
   /* SELECTIVE-RESET-PROTECT-AUDIT-LOG end */
   // 3) localStorage wipes. Use removeItem on the prefixed key directly so
