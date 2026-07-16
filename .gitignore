@@ -160,3 +160,7 @@ tests/package-lock.json
 selective-reset-partial-modal.png
 selective-reset-partial-success.png
 weekly-import-summary.png
+
+# Ad-hoc scratch artifacts (debug scripts, one-off screenshots, temp data).
+# Reserved for local experimentation — never intended for version control.
+scratch/
