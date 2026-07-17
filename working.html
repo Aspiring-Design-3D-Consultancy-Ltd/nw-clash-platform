@@ -1434,6 +1434,30 @@ function _weekYearFromDate(dateStr){
   const d=parseDMY(dateStr);if(!d)return null;
   return{week:isoWeekNum(d),year:isoWeekYear(d)};
 }
+/* PR-02-NEW-STAMP-IMPORT-CLOCK start: ISO-format sibling of
+   _weekYearFromDate. parseDMY splits on both / and - but assumes
+   day-first ordering — passing an ISO YYYY-MM-DD string like the
+   weekDate field would silently misparse as year-first (2026-06-01
+   → d=2026, m=6, yr=1 → fullYear=2001). This helper matches the
+   canonical YYYY-MM-DD shape explicitly. Used by importToRegister
+   to derive history[0]'s week/year from the import-batch clock
+   (weekDate, clock 2) rather than the Navisworks detection clock
+   (c.nwCreated / c.date, clock 1) — a New-status entry semantically
+   describes "first seen in the platform", which is a clock-2 event.
+   Placed as a sibling to _weekYearFromDate (same helper cluster)
+   rather than the schema-guard cluster, because it's a date-parsing
+   utility, not a mutation guard. */
+function _weekYearFromISO(isoStr){
+  if(!isoStr||typeof isoStr!=='string')return null;
+  const m=isoStr.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if(!m)return null;
+  const yr=parseInt(m[1],10),mo=parseInt(m[2],10),dy=parseInt(m[3],10);
+  if(!isFinite(yr)||!isFinite(mo)||!isFinite(dy))return null;
+  const d=new Date(yr,mo-1,dy);
+  if(isNaN(d.getTime()))return null;
+  return{week:isoWeekNum(d),year:isoWeekYear(d)};
+}
+/* PR-02-NEW-STAMP-IMPORT-CLOCK end */
 function _weekYearNow(){
   const d=new Date();
   return{week:isoWeekNum(d),year:isoWeekYear(d)};
@@ -9272,9 +9296,26 @@ function importToRegister(mode){
     _uid++;
     const uid='CLX-'+String(_uid).padStart(3,'0');
     const testName=c.tn||`${c.dA} vs ${c.dB}`;
-    /* STATUS-HIST: initial history entry uses the clash's creation week. */
+    /* PR-02-NEW-STAMP-IMPORT-CLOCK start: history[0] must reflect the
+       import-batch clock (weekDate, clock 2 — "first seen in the
+       platform"), not the Navisworks detection clock (c.nwCreated,
+       clock 1 — "when NW first saw the geometry"). Pre-PR-02 the
+       primary source was _weekYearFromDate(c.nwCreated), which meant
+       an import taken in week-260601 could stamp history[0] with a
+       week from months earlier if the underlying model had been
+       clashing since then. This conflated clocks 1 and 2 and broke
+       Backlog P weekly reconstruction (which needs "when did this
+       clash enter the register"). Fallback is _weekYearNow() (wall
+       clock, action clock 3) rather than c.nwCreated because when
+       weekDate is null (paste imports, non-wrapper folders) the
+       import IS happening at wall-clock time — that's still a
+       clock-2 approximation, just less precise. c.nwCreated is
+       deliberately absent from the fallback chain; it's the wrong
+       clock semantically. c.date (persisted onto the register clash
+       at L9308 below) is unchanged — Navisworks clock is preserved. */
     const _initStatus=(isFirstImport||!knownTests.has(testName))?'New':c.mappedSt;
-    const _initWY=_weekYearFromDate(c.nwCreated)||_weekYearFromDate(dateStr)||_weekYearNow();
+    const _initWY=_weekYearFromISO(c.weekDate)||_weekYearNow();
+    /* PR-02-NEW-STAMP-IMPORT-CLOCK end */
     S.clashes.push({
       uid,
       name:`${uid} \u2014 ${c.nwName}`,
