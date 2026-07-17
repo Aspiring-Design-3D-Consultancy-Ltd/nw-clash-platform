@@ -1453,6 +1453,12 @@ function _weekYearFromISO(isoStr){
   if(!m)return null;
   const yr=parseInt(m[1],10),mo=parseInt(m[2],10),dy=parseInt(m[3],10);
   if(!isFinite(yr)||!isFinite(mo)||!isFinite(dy))return null;
+  /* PR-03-ISO-RANGE-HARDEN: reject semantically invalid ranges before
+     Date construction. new Date(2026,12,45) rolls over silently to
+     Feb 14 2027 — regex alone accepts 2026-13-45. Not observed in
+     live workflow (weekDate comes from folder-name convention) but
+     closes a silent-accept path. */
+  if(mo<1||mo>12||dy<1||dy>31)return null;
   const d=new Date(yr,mo-1,dy);
   if(isNaN(d.getTime()))return null;
   return{week:isoWeekNum(d),year:isoWeekYear(d)};
@@ -8724,14 +8730,22 @@ function _xtResolveSkip(modalId, mode){
   matches.forEach(function(m){
     var ex = m.exist, c = m.cand;
     if(!ex || !c || !c.mappedSt) return;
+    /* PR-03-CLOCK2-STATUS-TRANSITIONS start: duplicate-merge status
+       transitions stamp with the import-batch clock (candidate
+       c.weekDate, clock 2). Candidates in _xtPendingMatches come
+       from the parser's _bcfC stream — same source as
+       importToRegister input — so weekDate is populated on the same
+       guarantee as Site 1. Defensive typeof guards preserved for
+       compatibility with the original defensive style at this site. */
     if(ex.status !== c.mappedSt){
       try {
-        var wy = (typeof _weekYearFromDate === 'function' && _weekYearFromDate(c.nwCreated)) ||
+        var wy = (typeof _weekYearFromISO === 'function' && _weekYearFromISO(c.weekDate)) ||
                  (typeof _weekYearNow === 'function' && _weekYearNow()) || null;
         if(wy && typeof pushStatusHistory === 'function') pushStatusHistory(ex, c.mappedSt, wy);
       } catch(e){}
       ex.status = c.mappedSt;
     }
+    /* PR-03-CLOCK2-STATUS-TRANSITIONS end */
   });
   // Filter dupes out of _bcfC by identity reference
   var dupSet = new Set(matches.map(function(m){ return m.cand; }));
@@ -9229,13 +9243,24 @@ function importToRegister(mode){
       const newPen=c.depMm+'mm';
       const stChanged=(exist.status!==c.mappedSt);
       const geomChanged=(exist.penetration!==newPen||exist.x!==c.x||exist.y!==c.y||exist.z!==c.z);
-      /* STATUS-HIST: record status change at the import's week (before mutating
-         exist.status). Use the import batch's detection week, not the clash's
-         original creation date — re-imports represent point-in-time state updates. */
+      /* PR-03-CLOCK2-STATUS-TRANSITIONS start: re-import status
+         transitions stamp with the import-batch clock (weekDate,
+         clock 2), not the Navisworks detection clock (c.nwCreated,
+         clock 1). Pre-PR-03 this site read c.nwCreated in the same
+         way PR-02 fixed history[0] for new inserts — the pre-existing
+         STATUS-HIST comment already said "record status change at the
+         import's week" but the code was reading a different clock, so
+         the comment intent is now honestly reflected in the code.
+         Fallback is _weekYearNow() (wall clock, clock 3) for parity
+         with PR-02 handling of paste-imports where weekDate is null.
+         c.nwCreated is deliberately absent from the fallback chain —
+         same reasoning as PR-02. Companion fix at Site 2
+         (_xtResolveSkip) below. */
       if(stChanged){
-        const wy=_weekYearFromDate(c.nwCreated)||_weekYearNow();
+        const wy=_weekYearFromISO(c.weekDate)||_weekYearNow();
         pushStatusHistory(exist,c.mappedSt,wy);
       }
+      /* PR-03-CLOCK2-STATUS-TRANSITIONS end */
       exist.status=c.mappedSt;// NW is the authoritative source for clash status
       if(geomChanged){exist.penetration=newPen;exist.x=c.x;exist.y=c.y;exist.z=c.z;}
       /* PAIR-KEY-COORD-TIER-USE: stamp tier + refresh coordinates when the
