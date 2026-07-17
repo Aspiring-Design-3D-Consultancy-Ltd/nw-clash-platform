@@ -1455,7 +1455,11 @@ function pushStatusHistory(c,status,wkYr){
   if(last&&last.week===wy.week&&last.year===wy.year){
     last.status=status;return;
   }
-  c.statusHistory.push({week:wy.week,year:wy.year,status:status});
+  /* PR-0-SCHEMA-GUARD: route the primary status stamp through the
+     schema-guard helper. De-dupe / same-week-replace above are
+     in-place mutations of an existing entry — they don't push, so
+     they legitimately bypass the guard. */
+  _appendStatusHistory(c,{week:wy.week,year:wy.year,status:status});
 }
 function clashStatusAt(c,week,year){
   // Status of clash c at the END of (year, week). Returns null if clash didn't
@@ -1513,7 +1517,11 @@ function backfillStatusHistory(){
   (S.clashes||[]).forEach(c=>{
     if(Array.isArray(c.statusHistory)&&c.statusHistory.length)return;
     const wy=_weekYearFromDate(c.date)||_weekYearNow();
-    c.statusHistory=[{week:wy.week,year:wy.year,status:c.status||'New'}];
+    /* PR-0-SCHEMA-GUARD: initial backfill entry routed through the
+       schema guard. c.statusHistory reset to [] first so the guard's
+       append lands as the single first entry. */
+    c.statusHistory=[];
+    _appendStatusHistory(c,{week:wy.week,year:wy.year,status:c.status||'New'});
     backfilled++;
   });
   if(backfilled>0){
@@ -7189,6 +7197,35 @@ function _appendDedupAuditEvent(evt){
   }
 }
 /* DEDUP-ACTION-LOG end */
+/* PR-0-SCHEMA-GUARD start: single insertion point for statusHistory
+   entries. Rejects malformed entries at write time so the register
+   never accepts an entry missing status / week / year again — the
+   17-Jul-2026 audit found 636 entries whose last statusHistory item
+   was {status:'Resolved'} with no week/year because the Resolve
+   handler pushed its audit trail directly with .push() and forgot the
+   week stamp. Every handler that appends to statusHistory (Resolve,
+   Approve, Still-Open, pushStatusHistory, backfillStatusHistory)
+   MUST route through this helper. Direct pushes are the bug we are
+   preventing — fix the call site if a required field is missing;
+   never relax the guard. Located near _appendDedupAuditEvent to
+   mirror the established audit-helper naming pattern. */
+function _appendStatusHistory(clash,entry){
+  if(typeof entry!=='object'||entry===null){
+    console.error('[SCHEMA-GUARD] _appendStatusHistory rejected non-object entry:',entry);
+    return;
+  }
+  if(!entry.status||typeof entry.status!=='string'){
+    console.error('[SCHEMA-GUARD] _appendStatusHistory rejected entry with missing/invalid status:',entry);
+    return;
+  }
+  if(typeof entry.week!=='number'||typeof entry.year!=='number'){
+    console.error('[SCHEMA-GUARD] _appendStatusHistory rejected entry with missing week/year:',entry,'on clash',clash?.uid);
+    return;
+  }
+  if(!Array.isArray(clash.statusHistory))clash.statusHistory=[];
+  clash.statusHistory.push(entry);
+}
+/* PR-0-SCHEMA-GUARD end */
 /* DEDUP-INCIDENT-LOG-2026-07-13-v1 start: one-shot record of the
    14 documented-but-lost actioned pairs from the 2026-07-13
    review session. Between that session (118 pairs actioned)
@@ -9297,6 +9334,17 @@ function importToRegister(mode){
       weekTag:(c.weekTag!==undefined?c.weekTag:null),
       weekDate:(c.weekDate!==undefined?c.weekDate:null),
       /* WEEKLY-IMPORT-CAPTURE end */
+      /* PR-01-FIRST-SEEN start: immutable first-appearance stamps. The
+         17-Jul-2026 audit surfaced that weekTag/weekDate above use
+         last-seen semantics — they're refreshed on every re-import at
+         the update branch (L9173-9174), so they cannot answer "when
+         did this clash first enter the register" required by Backlog P
+         weekly reconstruction. firstSeenWeekTag/firstSeenWeekDate are
+         written ONLY on this new-insert path and never touched again;
+         the update branch above deliberately does not mention them. */
+      firstSeenWeekTag:(c.weekTag!==undefined?c.weekTag:null),
+      firstSeenWeekDate:(c.weekDate!==undefined?c.weekDate:null),
+      /* PR-01-FIRST-SEEN end */
       /* IMG-POS: persist positional index for later positional fallback lookup */
       testIdx:typeof c.testIdx==='number'?c.testIdx:undefined,
       /* STATUS-HIST: initial history entry */
@@ -10146,17 +10194,26 @@ function _rqActionOnUids(uids,action,source){
     if(c.pendingReview!==true)return;
     if(!Array.isArray(c.statusHistory))c.statusHistory=[];
     const _mp=c._bucketPattern||'';
+    /* PR-0-RESOLVE-STAMP start: pre-fix the Resolve and Still-Open audit
+       pushes went out with no week/year (Resolve) and no status either
+       (Still-Open), so the 17-Jul-2026 audit found 636 of 2253 clashes
+       whose LAST statusHistory entry was {status:'Resolved'} with no
+       week or year. Both audit writes now route through
+       _appendStatusHistory (PR-0-SCHEMA-GUARD) with the canonical
+       {status, week, year} triple. wy is hoisted above the if/else so
+       both branches see the same stamp — no per-branch declaration. */
+    const wy=_weekYearNow();
     if(action==='resolved'){
       if(c.status!=='Resolved'){
-        const wy=_weekYearNow();
         pushStatusHistory(c,'Resolved',wy);
         c.status='Resolved';
       }
-      c.statusHistory.push({reviewedAt:now,reviewedInBatch:c.disappearedInBatch||'',source:_src,status:'Resolved',matchedPattern:_mp});
+      _appendStatusHistory(c,{reviewedAt:now,reviewedInBatch:c.disappearedInBatch||'',source:_src,status:'Resolved',matchedPattern:_mp,week:wy.week,year:wy.year});
     } else {
       c.reviewedStillOpen=true;
-      c.statusHistory.push({reviewedAt:now,reviewedStillOpen:true,source:_src,matchedPattern:_mp});
+      _appendStatusHistory(c,{reviewedAt:now,reviewedStillOpen:true,source:_src,matchedPattern:_mp,status:c.status||'Active',week:wy.week,year:wy.year});
     }
+    /* PR-0-RESOLVE-STAMP end */
     delete c.pendingReview;
     delete c.disappearedAt;
     delete c.disappearedInBatch;
@@ -10264,7 +10321,11 @@ function _markClashesAsApproved(clashIds,source='ReviewQueue'){
        per-clash Review Queue Approve — those don't have a bucket
        pattern). Backwards-compatible: field is always present. */
     const _mp=c._bucketPattern||'';
-    c.statusHistory.push({reviewedAt:now,approvedAt:now,actor:actor,source:source,status:'Approved',week:wy.week,year:wy.year,reviewedInBatch:_preDisBatch,reviewedAtBatchDate:_preDisAt,matchedPattern:_mp});
+    /* PR-0-RESOLVE-STAMP: Approve audit push routed through the
+       schema guard. Entry already carries week/year (see PR #17 fix);
+       the refactor is a no-op behaviour-wise, but centralises the
+       write so every future audit-line writer inherits the guard. */
+    _appendStatusHistory(c,{reviewedAt:now,approvedAt:now,actor:actor,source:source,status:'Approved',week:wy.week,year:wy.year,reviewedInBatch:_preDisBatch,reviewedAtBatchDate:_preDisAt,matchedPattern:_mp});
     delete c.pendingReview;
     delete c.disappearedAt;
     delete c.disappearedInBatch;
