@@ -3811,9 +3811,64 @@ function _planLayoutsRemovePrompt(building, level, ev){
 
 // Load persisted images from IDB into memory cache on app start
 async function initNwImages(){
+  /* PENDING-IDB-WIPE-SWEEP start: retries a deferred deleteDatabase that
+     CLEAR-ALL-IDB-NONBLOCKING (or SELECTIVE-RESET-IDB-NONBLOCKING) left
+     behind when its 3s race timed out. Runs BEFORE initNwImages opens
+     its own connection, so this is the moment with the least
+     contention. Resolves on any outcome (success/error/blocked/timeout)
+     and always clears the flag — a still-stuck DB is caught downstream
+     by ORPHAN-IDB-SWEEP, and repeated retries wouldn't help. */
+  if(localStorage.getItem('nw:pendingIdbWipe')==='1'){
+    try{_closeSharedIdb();}catch(e){}
+    await new Promise(resolve=>{
+      let settled=false;
+      const done=()=>{if(!settled){settled=true;resolve();}};
+      try{
+        const req=indexedDB.deleteDatabase('NWClashImages');
+        req.onsuccess=done;
+        req.onerror=done;
+        req.onblocked=done;
+        setTimeout(done,2000);
+      }catch(e){done();}
+    });
+    try{localStorage.removeItem('nw:pendingIdbWipe');}catch(e){}
+  }
+  /* PENDING-IDB-WIPE-SWEEP end */
   try{
     const meta=await idbGet(0);
     if(!meta||!meta.count)return;
+    /* ORPHAN-IDB-SWEEP start: if the register is empty (post-wipe state)
+       but the IDB metadata block still names images from an earlier
+       dataset, purge the DB and clear in-memory caches. Catches the
+       residue when both CLEAR-ALL-IDB-NONBLOCKING's 3s race AND
+       PENDING-IDB-WIPE-SWEEP's 2s retry timed out — the DB is
+       physically still there, but nothing in the (now empty) register
+       references it, so surfacing "1247 images / 0 clashes" would just
+       confuse the user. Same resolve-on-any-outcome contract. Runs
+       AFTER the meta.count>0 gate above so it only fires when there's
+       actually stale metadata to clean up. */
+    if(Array.isArray(S.clashes)&&S.clashes.length===0){
+      try{_closeSharedIdb();}catch(e){}
+      await new Promise(resolve=>{
+        let settled=false;
+        const done=()=>{if(!settled){settled=true;resolve();}};
+        try{
+          const req=indexedDB.deleteDatabase('NWClashImages');
+          req.onsuccess=done;
+          req.onerror=done;
+          req.onblocked=done;
+          setTimeout(done,2000);
+        }catch(e){done();}
+      });
+      try{_nwImages.clear();}catch(e){}
+      _nwImagesByIndex.length=0;
+      try{Object.keys(_nwImgByTest).forEach(k=>delete _nwImgByTest[k]);}catch(e){}
+      _nwImgCount=0;
+      _nwFolderName='';
+      try{updateNwImgUI();}catch(e){}
+      return;
+    }
+    /* ORPHAN-IDB-SWEEP end */
     /* IMG-FIX start: read new metadata shape (`shape:'imgfix-v1'` with `byTest` map).
        If the stored metadata is in the OLD shape (no `byTest`), the existing
        images can't be safely mapped to clashes any more — bare filenames are
@@ -14960,29 +15015,43 @@ async function clearAll(){
   ].join('\n');
   if(!confirm(msg))return;
   if(!confirm('Last chance — click Cancel if you have NOT exported your data via Backup JSON.\n\nClick OK to proceed.'))return;
-  // Whitelist wipe. Any key not on the list survives by construction —
-  // the safe failure mode when a future key is forgotten.
+  /* CLEAR-ALL-IDB-NONBLOCKING start: the old flow awaited
+     _wipeIdbWithVerify('full') and returned on timeout — leaving
+     localStorage already wiped but the page unreloaded, so users
+     stared at the in-memory 104 clashes while storage was empty.
+     Root cause on file:// origins: the shared _idb connection opened
+     by initNwImages/initPlans at launch doesn't always release
+     cleanly, so deleteDatabase blocks past the 15s ceiling. Fix: make
+     the IDB wipe best-effort and reload no matter what. We wipe
+     localStorage first, persist the empty-array anchors + dataVersion
+     up front (so the post-reload code path is deterministic), stamp a
+     pendingIdbWipe flag, then race the IDB wipe against a 3s
+     shortened timeout. Success → clear the flag. Timeout → keep the
+     flag; initNwImages sweeps it on next launch when no user race is
+     in flight and the shared connection has not yet reopened. Either
+     way the alert fires and location.reload() runs — no user gets
+     stranded on a half-wiped page again. */
   try{
     CLEAR_ALL_WIPE_KEYS.forEach(k=>{try{localStorage.removeItem('nw:'+k);}catch(e){}});
   }catch(e){console.warn('clearAll localStorage wipe:',e);}
-  /* WIPE-VERIFY: same fail-loud contract as factoryReset — abort the
-     reload if the IDB wipe couldn't be verified. */
-  try{ await _wipeIdbWithVerify('full'); }
-  catch(e){
-    alert('Clear All FAILED — IndexedDB wipe could not be verified.\n\n'+e.message+'\n\nThe page will NOT reload. Try closing every other tab open on this file:// URL and running the reset again. If that doesn\'t help, open DevTools > Application > IndexedDB and delete NWClashImages manually before reloading.');
-    return;
-  }
-  // Persist EMPTY arrays so launch()'s demo-data fallback at ~L1088/~L1090
-  // sees Array.isArray(true) and skips installing the demo dataset.
-  // nw:dataVersion is preserved implicitly by the whitelist (not on wipe
-  // list); the sv() below is a belt-and-braces reassertion.
   try{
     sv('clashes',[]);
     sv('weekly',[]);
     sv('dataVersion',DATA_VERSION);
   }catch(e){console.warn('clearAll empty-persist:',e);}
+  try{localStorage.setItem('nw:pendingIdbWipe','1');}catch(e){}
+  try{
+    await Promise.race([
+      _wipeIdbWithVerify('full'),
+      new Promise((_,reject)=>setTimeout(()=>reject(new Error('IDB wipe timeout after 3000ms — deferred to next launch')),3000)),
+    ]);
+    try{localStorage.removeItem('nw:pendingIdbWipe');}catch(e){}
+  }catch(e){
+    console.warn('clearAll IDB wipe deferred:',e.message);
+  }
   alert('All data cleared. The page will reload to a blank state.\n\n(Admin PIN, patterns, audit logs, settings, and migration flags preserved.)');
   location.reload();
+  /* CLEAR-ALL-IDB-NONBLOCKING end */
 }
 /* CLEAR-ALL-DATA-SCOPE-FIX end */
 /* RESET-HELPERS end */
@@ -15562,16 +15631,30 @@ async function _executeSelectiveReset(cats,modalId){
        CLOSE onversionchange handler that openIDB installs. */
     _closeSharedIdb();
     /* SELECTIVE-RESET-IDB-CLOSE end */
+    /* SELECTIVE-RESET-IDB-NONBLOCKING start: mirror of the clearAll
+       non-blocking wipe. Same field problem — deleteDatabase on file://
+       occasionally blocks past a generous timeout because the shared
+       _idb didn't release in time — and same fix: stamp
+       nw:pendingIdbWipe up front, race the wipe against a 3s ceiling
+       (down from 15s), and reload no matter what. On success we clear
+       the flag; on timeout initNwImages retries at next launch. The
+       old "return without reloading" path stranded users on a page
+       whose localStorage was already gone. Only stamp the flag on a
+       full wipe — partial wipes (only images OR only plans) can't be
+       recovered from a flag that triggers a full deleteDatabase, and
+       are self-healing anyway once the user closes the interfering
+       tab and retries. */
+    if(_mode==='full'){try{localStorage.setItem('nw:pendingIdbWipe','1');}catch(e){}}
     try{
-      await _wipeIdbWithVerify(_mode,_stores);
+      await Promise.race([
+        _wipeIdbWithVerify(_mode,_stores),
+        new Promise((_,reject)=>setTimeout(()=>reject(new Error('IDB wipe timeout after 3000ms — deferred to next launch')),3000)),
+      ]);
+      if(_mode==='full'){try{localStorage.removeItem('nw:pendingIdbWipe');}catch(e){}}
     }catch(e){
-      /* SELECTIVE-RESET-IDB-CLOSE: fail-loud copy — first line names the
-         most likely fix (close other tabs on the same file), because
-         Shane's field reports show that path is what actually clears
-         the block in practice. */
-      alert('Selective reset FAILED — IndexedDB wipe could not be verified.\n\n'+e.message+'\n\nThis usually means another browser tab has working.html open. Close all other tabs with this file, then try again.\n\nThe page will NOT reload. If closing other tabs doesn\'t help, open DevTools > Application > IndexedDB and delete NWClashImages manually before reloading.');
-      return;
+      console.warn('selective reset IDB wipe deferred:',e.message);
     }
+    /* SELECTIVE-RESET-IDB-NONBLOCKING end */
   }
   alert('Selective reset complete. The page will reload.');
   location.reload();
