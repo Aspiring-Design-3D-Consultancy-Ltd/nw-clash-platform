@@ -1518,6 +1518,63 @@ function _labelForPlatformWeek(py,pw){
   return 'Wk '+pw+' — '+dmy;
 }
 /* PR-A-PLATFORM-WEEKS end */
+/* PR-A3-EXPORT-PLATFORM-WEEKS start: shared data-source helpers for
+   Weekly Report (exportReport) and PowerPoint (exportPPTX). Both
+   exports previously read S.weekly (includes phantom pre-platform
+   buckets) and wd.tests (frozen aggregate) — same pattern the
+   dashboard suffered from before PR-A/A2/#48. These helpers
+   reconstruct via _platformWeeks + statusCountsAt (weekly rows) and
+   clashExistsAt + clashStatusAt (per-test rows), guaranteeing sum-
+   consistency with the dashboard's KPI tiles. Fallback to S.weekly
+   for the empty-platform edge case (fresh install / pre-firstSeen),
+   mirroring the fallback discipline of PR-A. Consumer sites (see
+   marker regions inside exportReport and exportPPTX) call these
+   helpers instead of iterating S.weekly / wd.tests directly. */
+function _reportWeeklyRows(){
+  const pw=_platformWeeks();
+  if(!pw.length){
+    return (S.weekly||[]).map(w=>Object.assign({},w,{
+      week:w.week,year:w.year||0,
+      label:w.label||('Wk '+w.week),
+      new:w.new||0,active:w.active||0,reviewed:w.reviewed||0,
+      approved:w.approved||0,resolved:w.resolved||0,
+      critical:w.critical||0,high:w.high||0,medium:w.medium||0,low:w.low||0,
+      total:(w.new||0)+(w.active||0)+(w.reviewed||0)+(w.resolved||0)+(w.approved||0),
+    }));
+  }
+  return pw.map(p=>{
+    const cnt=statusCountsAt(p.week,p.year,'all','all');
+    return Object.assign({
+      week:p.week,year:p.year,
+      label:_labelForPlatformWeek(p.year,p.week),
+    },cnt);
+  });
+}
+function _reportTestBreakdownRows(){
+  const pw=_platformWeeks();
+  const latest=pw.length?pw[pw.length-1]:_weekYearNow();
+  const agg={};
+  (S.clashes||[]).forEach(c=>{
+    if(!clashExistsAt(c,latest.week,latest.year))return;
+    const st=clashStatusAt(c,latest.week,latest.year);
+    if(!st)return;
+    const n=c.testName||c.name||'Untitled test';
+    if(!agg[n])agg[n]={name:n,new:0,active:0,reviewed:0,approved:0,resolved:0,critical:0,rate:0};
+    const t=agg[n];
+    if(st==='New')t.new++;
+    else if(st==='Active')t.active++;
+    else if(st==='Reviewed')t.reviewed++;
+    else if(st==='Approved')t.approved++;
+    else if(st==='Resolved')t.resolved++;
+    if(c.priority==='Critical')t.critical++;
+  });
+  Object.values(agg).forEach(t=>{
+    const tot=t.new+t.active+t.reviewed+t.approved+t.resolved;
+    t.rate=tot>0?Math.round((t.resolved+t.approved)/tot*100):0;
+  });
+  return Object.values(agg);
+}
+/* PR-A3-EXPORT-PLATFORM-WEEKS end */
 function _weekYearCmp(a,b){
   // Returns -1, 0, 1 for a<b, a==b, a>b on (year, week) tuples.
   if(a.year!==b.year)return a.year<b.year?-1:1;
@@ -16117,7 +16174,13 @@ async function exportPPTX(){
     slide.addText('Target: 85% before construction issue',{x:5.5,y:matY+0.60,w:7.5,h:0.18,fontSize:8,fontFace:'Arial',color:EX_GREYTEXT,align:'right'});
 
     // ── Trends: two charts side by side ────────────────────────────────────
-    const allWds=S.weekly||[];
+    /* PR-A3-EXPORT-PLATFORM-WEEKS start: chart data source is
+       platform-week reconstruction, not S.weekly. Prevents the
+       scope-overview trend slides from rendering S.weekly-length
+       x-axis points (which would include the phantom pre-platform
+       buckets regenWeeklyFromRegister writes from c.date). */
+    const allWds=(typeof _reportWeeklyRows==='function'?_reportWeeklyRows():(S.weekly||[]));
+    /* PR-A3-EXPORT-PLATFORM-WEEKS end */
     const wdsForChart=scope==='all'?allWds:(typeof scopedWds==='function'?scopedWds(allWds,scope):allWds);
     if(wdsForChart.length){
       const lbls=wdsForChart.map(w=>'Wk '+w.week);
@@ -16183,6 +16246,15 @@ async function exportPPTX(){
 
     const wds=S.weekly||[];
     const wd =wds[wds.length-1]||{tests:[]};
+    /* PR-A3-EXPORT-PLATFORM-WEEKS start: weekly-slide table + test-
+       breakdown slide sourced from platform reconstruction. Old wds
+       and wd bindings retained above for any other consumer within
+       this slide block; the two specific sites (wkRows source and
+       tbAll source) are retargeted below. Same rationale as
+       exportReport counterpart — see helper block comment. */
+    const _reportWds=(typeof _reportWeeklyRows==='function'?_reportWeeklyRows():wds);
+    const _reportTests=(typeof _reportTestBreakdownRows==='function'?_reportTestBreakdownRows():(wd.tests||[]));
+    /* PR-A3-EXPORT-PLATFORM-WEEKS end */
     const NAV_HEAD='0F1824';
     const SC_NEW='FF0000',SC_ACT='FF8000',SC_REV='00AEEF',SC_APR='00B050',SC_RES='FFC000';
     const matCol=(p)=>p>=70?EX_LIME:p>=40?EX_MIDBLUE:EX_RED;
@@ -16196,7 +16268,9 @@ async function exportPPTX(){
     const s1Y=1.30;
     wkSectionTitle(s1Y,'WEEKLY COORDINATION DATA');
     const WK_MAX=6;
-    const wkRows=wds.slice(-WK_MAX);
+    /* PR-A3-EXPORT-PLATFORM-WEEKS: platform rows (was wds). WK_MAX
+       truncation preserved — layout constraint (slide fit). */
+    const wkRows=_reportWds.slice(-WK_MAX);
     if(wkRows.length){
       const wkHead=[Object.assign(hCell('Week'),{options:Object.assign({},hCell('Week').options,{align:'left'})}),
         hCell('New',SC_NEW),hCell('Active',SC_ACT),hCell('Reviewed',SC_REV),
@@ -16233,7 +16307,12 @@ async function exportPPTX(){
     // — Section 2: CLASH TEST BREAKDOWN ─────────────────────────────────────
     const s2Y=3.20;
     const TB_MAX=10;
-    const tbAll=(wd.tests||[]);
+    /* PR-A3-EXPORT-PLATFORM-WEEKS: reconstruction rows (was wd.tests
+       frozen aggregate). TB_MAX truncation preserved; "Showing N of
+       M tests" note above still surfaces the count correctly since
+       tbAll.length reflects the reconstructed total (11 in live
+       register vs 10 frozen). */
+    const tbAll=_reportTests;
     const tbRows=tbAll.slice(0,TB_MAX);
     const tbMore=tbAll.length-tbRows.length;
     slide_w.addText('CLASH TEST BREAKDOWN',{x:0.4,y:s2Y,w:8,h:0.20,fontSize:9,fontFace:'Arial',color:EX_MIDBLUE,charSpacing:1.5});
@@ -16502,6 +16581,20 @@ function exportReport(format){
   regenWeeklyFromRegister();
   const wds=S.weekly||[];
   const wd=wds[wds.length-1]||{new:0,active:0,reviewed:0,resolved:0,approved:0,critical:0,high:0,medium:0,low:0,tests:[],label:''};
+  /* PR-A3-EXPORT-PLATFORM-WEEKS start: source the weekly-data table
+     rows AND the clash-test-breakdown rows from the platform
+     reconstruction helpers rather than the frozen S.weekly /
+     wd.tests aggregates. Prior to this the PDF included 32 rows
+     spanning W41/2025 → W30/2026 (24 phantom pre-platform buckets)
+     and a test-breakdown showing W29-close counts with newer tests
+     missing entirely — the report-surface twin of the dashboard bug
+     PR-A/A2/#48 fixed. wds/wd are left declared because a few
+     downstream sites in this function still read them (label
+     lookups, chart-block gates); the specific table and chart uses
+     are retargeted to _reportWds/_reportTests below. */
+  const _reportWds=_reportWeeklyRows();
+  const _reportTests=_reportTestBreakdownRows();
+  /* PR-A3-EXPORT-PLATFORM-WEEKS end */
   const cl=S.clashes||[];
   // Current state from register (authoritative — matches what user sees)
   const cur={
@@ -16668,14 +16761,20 @@ tbody td{padding:4px 7px;border-bottom:.5px solid #F0F0F0;vertical-align:middle;
   <!-- Weekly data -->
   <h2>Weekly Coordination Data</h2>
   <table><thead><tr><th>Week</th><th style="color:#FF8888">New</th><th style="color:#FFBB66">Active</th><th style="color:#66CCFF">Reviewed</th><th style="color:#66EE99">Approved</th><th style="color:#FFEE88">Resolved</th><th>Critical</th><th>High</th><th>Maturity</th></tr></thead>
-  <tbody>${wds.map(w=>{const t=w.new+w.active+w.reviewed+w.resolved+w.approved;const r=t>0?Math.round((w.resolved+w.approved)/t*100):0;const rc=r>=70?'#83BD00':r>=40?'#0085CA':'#BE3A34';return`<tr><td style="font-weight:600">${esc(w.label||'Wk '+w.week)}</td><td style="color:#FF0000;font-weight:600;text-align:center">${w.new}</td><td style="color:#FF8000;text-align:center">${w.active}</td><td style="color:#00AEEF;text-align:center">${w.reviewed}</td><td style="color:#00B050;text-align:center">${w.approved}</td><td style="color:#FFC000;text-align:center">${w.resolved}</td><td style="color:${w.critical>0?'#DC2626':'#94A3B8'};font-weight:${w.critical>0?700:400};text-align:center">${w.critical}</td><td style="color:${w.high>0?'#EA580C':'#94A3B8'};text-align:center">${w.high}</td><td><span style="font-weight:700;color:${rc}">${r}%</span></td></tr>`;}).join('')}</tbody></table>
+  <tbody>${/* PR-A3-EXPORT-PLATFORM-WEEKS: platform-week rows only */_reportWds.map(w=>{const t=w.new+w.active+w.reviewed+w.resolved+w.approved;const r=t>0?Math.round((w.resolved+w.approved)/t*100):0;const rc=r>=70?'#83BD00':r>=40?'#0085CA':'#BE3A34';return`<tr><td style="font-weight:600">${esc(w.label||'Wk '+w.week)}</td><td style="color:#FF0000;font-weight:600;text-align:center">${w.new}</td><td style="color:#FF8000;text-align:center">${w.active}</td><td style="color:#00AEEF;text-align:center">${w.reviewed}</td><td style="color:#00B050;text-align:center">${w.approved}</td><td style="color:#FFC000;text-align:center">${w.resolved}</td><td style="color:${w.critical>0?'#DC2626':'#94A3B8'};font-weight:${w.critical>0?700:400};text-align:center">${w.critical}</td><td style="color:${w.high>0?'#EA580C':'#94A3B8'};text-align:center">${w.high}</td><td><span style="font-weight:700;color:${rc}">${r}%</span></td></tr>`;}).join('')}</tbody></table>
 
-  ${wds.length?(()=>{
+  ${/* PR-A3-EXPORT-PLATFORM-WEEKS: chart block gated + fed from platform rows */_reportWds.length?(()=>{
     // Build trend-chart SVGs from weekly data
     function trendSVG(title,series,W,H){
       const ml=42,mr=12,mt=24,mb=30;
       const pw=W-ml-mr,ph=H-mt-mb;
-      const n=wds.length;
+      /* PR-A3-EXPORT-PLATFORM-WEEKS: chart n + x-axis labels source
+         from _reportWds so the trend charts render at the platform
+         cardinality (e.g. 8 labels for W23-W30) instead of S.weekly's
+         full length (e.g. 32 including phantom W41/2025 → W22/2026
+         buckets). Fixes the "x-axis labels overlap unreadably at 32
+         weeks" symptom for free. */
+      const n=_reportWds.length;
       let maxV=0;series.forEach(s=>s.values.forEach(v=>{if(v>maxV)maxV=v;}));
       if(maxV<5)maxV=5;
       // Nice round max
@@ -16696,7 +16795,7 @@ tbody td{padding:4px 7px;border-bottom:.5px solid #F0F0F0;vertical-align:middle;
       }
       // X labels
       let xlabels='';
-      wds.forEach((w,i)=>{xlabels+=`<text x="${xAt(i)}" y="${mt+ph+16}" font-size="9" fill="#94A3B8" text-anchor="middle" font-family="Arial">Wk ${w.week}</text>`;});
+      _reportWds.forEach((w,i)=>{xlabels+=`<text x="${xAt(i)}" y="${mt+ph+16}" font-size="9" fill="#94A3B8" text-anchor="middle" font-family="Arial">Wk ${w.week}</text>`;});
       // Series lines + areas + points
       let plot='';
       series.forEach(s=>{
@@ -16725,7 +16824,9 @@ tbody td{padding:4px 7px;border-bottom:.5px solid #F0F0F0;vertical-align:middle;
        Each scope produces its own Open-vs-Closed and Breakdown chart pair. */
     const SCOPE_LABELS={all:'Project overall',exyte:'Exyte (Muratec) scope',muratec:'Muratec scope'};
     const scopeBlocks=['all','exyte','muratec'].map(scope=>{
-      const swds=scopedWds(wds,scope);
+      /* PR-A3-EXPORT-PLATFORM-WEEKS: scopedWds fed platform rows so
+         the per-scope series render one point per platform week. */
+      const swds=scopedWds(_reportWds,scope);
       const openSeries=[
         {name:'Open',  color:'#FF8000',values:swds.map(w=>(w.new||0)+(w.active||0)+(w.reviewed||0))},
         {name:'Closed',color:'#00B050',values:swds.map(w=>(w.resolved||0)+(w.approved||0))}
@@ -16761,7 +16862,7 @@ tbody td{padding:4px 7px;border-bottom:.5px solid #F0F0F0;vertical-align:middle;
   <!-- Test breakdown -->
   <h2>Clash Test Breakdown</h2>
   <table><thead><tr><th>Test Name</th><th style="color:#FF8888">New</th><th style="color:#FFBB66">Active</th><th style="color:#66CCFF">Reviewed</th><th style="color:#66EE99">Approved</th><th style="color:#FFEE88">Resolved</th><th>Maturity</th></tr></thead>
-  <tbody>${(wd.tests||[]).map(t=>{const tot=t.new+t.active+t.reviewed+t.resolved+t.approved;const r=tot>0?Math.round((t.resolved+t.approved)/tot*100):t.rate||0;const rc=r>=70?'#83BD00':r>=40?'#0085CA':'#BE3A34';return`<tr><td style="font-weight:600">${esc(t.name)}</td><td style="color:#FF0000;font-weight:600;text-align:center">${t.new}</td><td style="color:#FF8000;text-align:center">${t.active}</td><td style="color:#00AEEF;text-align:center">${t.reviewed}</td><td style="color:#00B050;text-align:center">${t.approved}</td><td style="color:#FFC000;text-align:center">${t.resolved}</td><td><span style="font-weight:700;color:${rc}">${r}%</span></td></tr>`;}).join('')}</tbody></table>
+  <tbody>${/* PR-A3-EXPORT-PLATFORM-WEEKS: test-breakdown rows reconstructed at latest platform week (was wd.tests frozen aggregate) */_reportTests.map(t=>{const tot=t.new+t.active+t.reviewed+t.resolved+t.approved;const r=tot>0?Math.round((t.resolved+t.approved)/tot*100):t.rate||0;const rc=r>=70?'#83BD00':r>=40?'#0085CA':'#BE3A34';return`<tr><td style="font-weight:600">${esc(t.name)}</td><td style="color:#FF0000;font-weight:600;text-align:center">${t.new}</td><td style="color:#FF8000;text-align:center">${t.active}</td><td style="color:#00AEEF;text-align:center">${t.reviewed}</td><td style="color:#00B050;text-align:center">${t.approved}</td><td style="color:#FFC000;text-align:center">${t.resolved}</td><td><span style="font-weight:700;color:${rc}">${r}%</span></td></tr>`;}).join('')}</tbody></table>
 
   <!-- Page break for print -->
   <div class="page-break"></div>
