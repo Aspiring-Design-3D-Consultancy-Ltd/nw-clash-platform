@@ -1575,6 +1575,116 @@ function _reportTestBreakdownRows(){
   return Object.values(agg);
 }
 /* PR-A3-EXPORT-PLATFORM-WEEKS end */
+/* PR-A4-LEVEL-BREAKDOWN start: shared helpers for the Level Breakdown
+   section injected into exportReport (PDF) and exportPPTX. Two data-
+   quality issues in the current register are normalised at render
+   time (persisted values on c.level are NOT mutated — see Backlog S
+   for the follow-up that moves this to parse-time):
+     1. CUP_L30_NN → CUP_L30 (spurious _NN suffix from the Muratec
+        parser for CUP levels)
+     2. CUB_* → CUP_* (legacy partner naming; _migrateCUBtoCUP already
+        handles current register but future imports may arrive before
+        migration runs, and the test fixture seeds CUB_ directly)
+   buildLevelBreakdown groups by building × normalised level with
+   status counts reconstructed via clashStatusAt at the latest
+   platform week — same primitive PR #48's simple-mode branch and
+   PR-A3's _reportTestBreakdownRows use, guaranteeing sum-consistency
+   with the dashboard KPI. Empty-level clashes bucket under an
+   "Unassigned" row nested inside the building derived from
+   clashBuildingGroup (which reads test-name + source metadata). */
+function _normaliseLevel(raw){
+  if(raw==null)return raw;
+  const s=String(raw);
+  if(!s.trim())return s;
+  const v=s.replace(/^CUB[_-]/i,'CUP_');
+  const m=v.match(/^([A-Z]{2,})_([LB]\d+)(?:_.*)?$/i);
+  if(m)return m[1].toUpperCase()+'_'+m[2].toUpperCase();
+  return v;
+}
+function _levelSortKey(lvl){
+  const m=String(lvl||'').match(/_([LB])(\d+)$/i);
+  if(!m)return[3,0];
+  const t=m[1].toUpperCase();
+  const n=parseInt(m[2],10)||0;
+  return t==='L'?[1,-n]:[2,n];
+}
+function _bldSortKey(b){
+  const o={FAB:0,CUP:1,BSGS:2,Other:3};
+  return o[b]!==undefined?o[b]:4;
+}
+function _shortTestLabel(tn){
+  const s=String(tn||'').trim();
+  if(!s)return'—';
+  let out=s.replace(/^Exyte\s+/i,'').replace(/_v_\d+_[A-Z0-9]+$/i,'').replace(/^\d+_/,'');
+  return out.trim()||s;
+}
+function buildLevelBreakdown(){
+  const pw=(typeof _platformWeeks==='function')?_platformWeeks():[];
+  const latest=pw.length?pw[pw.length-1]:(typeof _weekYearNow==='function'?_weekYearNow():{week:1,year:2026});
+  const cl=S.clashes||[];
+  const bldMap={};
+  const mkCell=()=>({new:0,active:0,reviewed:0,approved:0,resolved:0,total:0});
+  const bump=(cell,st)=>{
+    if(st==='New')cell.new++;
+    else if(st==='Active')cell.active++;
+    else if(st==='Reviewed')cell.reviewed++;
+    else if(st==='Approved')cell.approved++;
+    else if(st==='Resolved')cell.resolved++;
+    else return;
+    cell.total++;
+  };
+  cl.forEach(c=>{
+    if(typeof clashExistsAt==='function'&&!clashExistsAt(c,latest.week,latest.year))return;
+    const st=(typeof clashStatusAt==='function')?clashStatusAt(c,latest.week,latest.year):(c&&c.status||'');
+    if(!st)return;
+    const norm=_normaliseLevel(c&&c.level);
+    let bld,lvl;
+    if(!norm||!String(norm).trim()){
+      bld=(typeof clashBuildingGroup==='function')?clashBuildingGroup(c):'Other';
+      if(bld==='Other')bld='FAB';
+      lvl=null;
+    } else {
+      const m=String(norm).match(/^([A-Z]{2,})_/i);
+      const raw=m?m[1].toUpperCase():'Other';
+      bld=raw==='CUB'?'CUP':(raw==='FAB'||raw==='CUP'||raw==='BSGS'?raw:'Other');
+      lvl=String(norm);
+    }
+    if(!bldMap[bld])bldMap[bld]={levels:{},unassigned:null,subtotal:mkCell()};
+    const rec=bldMap[bld];
+    if(lvl){
+      if(!rec.levels[lvl])rec.levels[lvl]=Object.assign({level:lvl},mkCell());
+      bump(rec.levels[lvl],st);
+    } else {
+      if(!rec.unassigned)rec.unassigned=Object.assign(mkCell(),{testDist:{}});
+      bump(rec.unassigned,st);
+      const tn=(c&&(c.testName||c.name))||'—';
+      rec.unassigned.testDist[tn]=(rec.unassigned.testDist[tn]||0)+1;
+    }
+    bump(rec.subtotal,st);
+  });
+  const buildings=Object.keys(bldMap).sort((a,b)=>_bldSortKey(a)-_bldSortKey(b)).map(name=>{
+    const rec=bldMap[name];
+    const levels=Object.values(rec.levels).sort((a,b)=>{
+      const ka=_levelSortKey(a.level),kb=_levelSortKey(b.level);
+      if(ka[0]!==kb[0])return ka[0]-kb[0];
+      return ka[1]-kb[1];
+    });
+    let unassigned=null;
+    if(rec.unassigned){
+      const dist=Object.entries(rec.unassigned.testDist)
+        .sort((a,b)=>b[1]-a[1])
+        .map(([test,count])=>({test,label:_shortTestLabel(test),count}));
+      unassigned=Object.assign({},rec.unassigned,{testDist:dist});
+    }
+    return{name,levels,unassigned,subtotal:rec.subtotal};
+  });
+  const grandTotal=mkCell();
+  buildings.forEach(b=>{
+    ['new','active','reviewed','approved','resolved','total'].forEach(k=>{grandTotal[k]+=b.subtotal[k];});
+  });
+  return{buildings,grandTotal,latestWeek:latest};
+}
+/* PR-A4-LEVEL-BREAKDOWN end */
 function _weekYearCmp(a,b){
   // Returns -1, 0, 1 for a<b, a==b, a>b on (year, week) tuples.
   if(a.year!==b.year)return a.year<b.year?-1:1;
@@ -16375,6 +16485,94 @@ async function exportPPTX(){
   }
   /* WEEKLY-SLIDE end */
 
+  /* PR-A4-LEVEL-BREAKDOWN start: dedicated Level Breakdown slide
+     inserted after the Weekly Coordination Summary (which carries
+     the Clash Test Breakdown section). Grouped by building × level
+     with subtotals + grand total. Reuses buildLevelBreakdown so the
+     PPTX and PDF surfaces render the exact same rows — single source
+     of truth. CUP_L30_NN and CUB_* variants collapse via
+     _normaliseLevel; empty-level clashes appear as "Unassigned"
+     nested under the derived building. */
+  {
+    const lb=buildLevelBreakdown();
+    const slide_l=pptx.addSlide();
+    addBrandChrome(slide_l);
+    addBrandTitle(slide_l,'Level Breakdown',
+      'Per-building × per-level clash counts at '+((lb.latestWeek&&('Wk '+lb.latestWeek.week+'/'+String(lb.latestWeek.year||'').slice(-2)))||'latest')+'  │  Generated '+todayStr+'  │  Prepared by '+userIdent);
+    if(!lb.buildings.length){
+      slide_l.addText('No clashes with level data at the latest platform week.',
+        {x:0.4,y:3.2,w:12.55,h:0.30,fontSize:12,fontFace:'Arial',color:EX_GREYTEXT,italic:true,align:'center'});
+    } else {
+      const SC_NEW='FF0000',SC_ACT='FF8000',SC_REV='00AEEF',SC_APR='00B050',SC_RES='FFC000';
+      const hCell=(t,col,align)=>({text:t,options:{color:col||'FFFFFF',fill:{color:'0F1824'},fontFace:'Arial',fontSize:9,bold:false,align:align||'center',valign:'middle',charSpacing:0.5}});
+      const rows=[[
+        Object.assign(hCell('Level'),{options:Object.assign({},hCell('Level').options,{align:'left'})}),
+        hCell('New',SC_NEW),hCell('Active',SC_ACT),hCell('Reviewed',SC_REV),
+        hCell('Approved',SC_APR),hCell('Resolved',SC_RES),hCell('Total')
+      ]];
+      const td=(v,col,fillCol,opts)=>({text:String(v),options:Object.assign({color:col||'0F172A',fill:{color:fillCol||'FFFFFF'},fontFace:'Arial',fontSize:9,align:'center',valign:'middle'},opts||{})});
+      const bldHeaderRow=(name)=>[
+        {text:name,options:{color:'FFFFFF',fill:{color:'0F1824'},fontFace:'Arial',fontSize:10,bold:true,align:'left',valign:'middle',charSpacing:1}},
+        td('','FFFFFF','0F1824'),td('','FFFFFF','0F1824'),td('','FFFFFF','0F1824'),
+        td('','FFFFFF','0F1824'),td('','FFFFFF','0F1824'),td('','FFFFFF','0F1824')
+      ];
+      const lvlRow=(r,zebra)=>[
+        td(r.level,'0F172A',zebra,{align:'left',fontFace:'Consolas',fontSize:9,bold:false,indentLevel:1}),
+        td(r.new,SC_NEW,zebra,{bold:(r.new>0)}),
+        td(r.active,SC_ACT,zebra),
+        td(r.reviewed,SC_REV,zebra),
+        td(r.approved,SC_APR,zebra),
+        td(r.resolved,SC_RES,zebra),
+        td(r.total,'0F172A',zebra,{bold:true})
+      ];
+      const unaRow=(u,zebra)=>{
+        const dist=(u.testDist||[]).map(d=>d.label+' '+d.count).join(' · ');
+        const label=dist?'Unassigned  —  '+dist:'Unassigned';
+        return[
+          td(label,'64748B',zebra,{align:'left',italic:true}),
+          td(u.new,SC_NEW,zebra,{bold:(u.new>0)}),
+          td(u.active,SC_ACT,zebra),
+          td(u.reviewed,SC_REV,zebra),
+          td(u.approved,SC_APR,zebra),
+          td(u.resolved,SC_RES,zebra),
+          td(u.total,'0F172A',zebra,{bold:true})
+        ];
+      };
+      const subtotalRow=(name,s)=>[
+        td(name+' subtotal','0F172A','F1F5F9',{align:'left',bold:true}),
+        td(s.new,'0F172A','F1F5F9',{bold:true}),
+        td(s.active,'0F172A','F1F5F9',{bold:true}),
+        td(s.reviewed,'0F172A','F1F5F9',{bold:true}),
+        td(s.approved,'0F172A','F1F5F9',{bold:true}),
+        td(s.resolved,'0F172A','F1F5F9',{bold:true}),
+        td(s.total,'0F172A','F1F5F9',{bold:true})
+      ];
+      const grandRow=(g)=>[
+        td('GRAND TOTAL','FFFFFF','0F1824',{align:'left',bold:true,charSpacing:1}),
+        td(g.new,'FFFFFF','0F1824',{bold:true}),
+        td(g.active,'FFFFFF','0F1824',{bold:true}),
+        td(g.reviewed,'FFFFFF','0F1824',{bold:true}),
+        td(g.approved,'FFFFFF','0F1824',{bold:true}),
+        td(g.resolved,'FFFFFF','0F1824',{bold:true}),
+        td(g.total,'FFFFFF','0F1824',{bold:true})
+      ];
+      lb.buildings.forEach(b=>{
+        rows.push(bldHeaderRow(b.name));
+        b.levels.forEach((lv,i)=>{rows.push(lvlRow(lv,i%2===0?'FFFFFF':'F8FAFC'));});
+        if(b.unassigned)rows.push(unaRow(b.unassigned,b.levels.length%2===0?'FFFFFF':'F8FAFC'));
+        rows.push(subtotalRow(b.name,b.subtotal));
+      });
+      rows.push(grandRow(lb.grandTotal));
+      slide_l.addTable(rows,{
+        x:0.4,y:1.30,w:12.55,
+        colW:[4.55,1.4,1.4,1.4,1.4,1.4,1.0],
+        rowH:0.22,
+        border:{type:'solid',color:'E2E8F0',pt:0.5}
+      });
+    }
+  }
+  /* PR-A4-LEVEL-BREAKDOWN end */
+
   // ── Slide 5: Active Critical Clashes ─────────────────────────────────────
   const activeCrit=cl.filter(c=>c.status==='Active'&&c.priority==='Critical').slice().sort((a,b)=>{
     const da=parseDMY(a.date),db=parseDMY(b.date);
@@ -16863,6 +17061,34 @@ tbody td{padding:4px 7px;border-bottom:.5px solid #F0F0F0;vertical-align:middle;
   <h2>Clash Test Breakdown</h2>
   <table><thead><tr><th>Test Name</th><th style="color:#FF8888">New</th><th style="color:#FFBB66">Active</th><th style="color:#66CCFF">Reviewed</th><th style="color:#66EE99">Approved</th><th style="color:#FFEE88">Resolved</th><th>Maturity</th></tr></thead>
   <tbody>${/* PR-A3-EXPORT-PLATFORM-WEEKS: test-breakdown rows reconstructed at latest platform week (was wd.tests frozen aggregate) */_reportTests.map(t=>{const tot=t.new+t.active+t.reviewed+t.resolved+t.approved;const r=tot>0?Math.round((t.resolved+t.approved)/tot*100):t.rate||0;const rc=r>=70?'#83BD00':r>=40?'#0085CA':'#BE3A34';return`<tr><td style="font-weight:600">${esc(t.name)}</td><td style="color:#FF0000;font-weight:600;text-align:center">${t.new}</td><td style="color:#FF8000;text-align:center">${t.active}</td><td style="color:#00AEEF;text-align:center">${t.reviewed}</td><td style="color:#00B050;text-align:center">${t.approved}</td><td style="color:#FFC000;text-align:center">${t.resolved}</td><td><span style="font-weight:700;color:${rc}">${r}%</span></td></tr>`;}).join('')}</tbody></table>
+
+  ${/* PR-A4-LEVEL-BREAKDOWN start: per-building × per-normalised-level
+       breakdown. CUP_L30_NN and CUB_* variants collapse via
+       _normaliseLevel; empty-level clashes bucket into an "Unassigned"
+       row nested under the building derived from clashBuildingGroup. */
+    (()=>{
+      const lb=buildLevelBreakdown();
+      if(!lb.buildings.length)return '<h2>Level Breakdown</h2><p style="color:#64748B;padding:10px">No clashes with level data at the latest platform week.</p>';
+      const bHead=(name)=>`<tr><td colspan="7" style="background:#0F1824;color:#FFFFFF;font-weight:700;padding:8px 10px;letter-spacing:1px;font-size:11px">${esc(name)}</td></tr>`;
+      const lRow=(r)=>`<tr><td style="padding-left:22px;font-family:monospace;font-size:10.5px;color:#0F172A">${esc(r.level)}</td><td style="color:#FF0000;font-weight:600;text-align:center">${r.new}</td><td style="color:#FF8000;text-align:center">${r.active}</td><td style="color:#00AEEF;text-align:center">${r.reviewed}</td><td style="color:#00B050;text-align:center">${r.approved}</td><td style="color:#FFC000;text-align:center">${r.resolved}</td><td style="font-weight:700;text-align:center">${r.total}</td></tr>`;
+      const uRow=(u)=>{
+        const dist=(u.testDist||[]).map(d=>esc(d.label)+' '+d.count).join(' · ');
+        const sub=dist?`<div style="color:#94A3B8;font-size:9px;margin-top:2px;font-weight:400">${dist}</div>`:'';
+        return `<tr><td style="padding-left:22px;color:#64748B;font-style:italic">Unassigned${sub}</td><td style="color:#FF0000;font-weight:600;text-align:center">${u.new}</td><td style="color:#FF8000;text-align:center">${u.active}</td><td style="color:#00AEEF;text-align:center">${u.reviewed}</td><td style="color:#00B050;text-align:center">${u.approved}</td><td style="color:#FFC000;text-align:center">${u.resolved}</td><td style="font-weight:700;text-align:center">${u.total}</td></tr>`;
+      };
+      const sRow=(name,s)=>`<tr style="background:#F1F5F9"><td style="padding-left:12px;font-weight:700;color:#0F172A">${esc(name)} subtotal</td><td style="text-align:center;font-weight:700">${s.new}</td><td style="text-align:center;font-weight:700">${s.active}</td><td style="text-align:center;font-weight:700">${s.reviewed}</td><td style="text-align:center;font-weight:700">${s.approved}</td><td style="text-align:center;font-weight:700">${s.resolved}</td><td style="text-align:center;font-weight:800">${s.total}</td></tr>`;
+      const gRow=(g)=>`<tr style="background:#0F1824;color:#FFFFFF"><td style="padding:8px 10px;font-weight:800;letter-spacing:1px;font-size:11px">GRAND TOTAL</td><td style="text-align:center;font-weight:800">${g.new}</td><td style="text-align:center;font-weight:800">${g.active}</td><td style="text-align:center;font-weight:800">${g.reviewed}</td><td style="text-align:center;font-weight:800">${g.approved}</td><td style="text-align:center;font-weight:800">${g.resolved}</td><td style="text-align:center;font-weight:800">${g.total}</td></tr>`;
+      const body=lb.buildings.map(b=>{
+        const rows=[bHead(b.name),...b.levels.map(lRow)];
+        if(b.unassigned)rows.push(uRow(b.unassigned));
+        rows.push(sRow(b.name,b.subtotal));
+        return rows.join('');
+      }).join('')+gRow(lb.grandTotal);
+      return `
+  <h2>Level Breakdown</h2>
+  <table><thead><tr><th>Level</th><th style="color:#FF8888">New</th><th style="color:#FFBB66">Active</th><th style="color:#66CCFF">Reviewed</th><th style="color:#66EE99">Approved</th><th style="color:#FFEE88">Resolved</th><th>Total</th></tr></thead>
+  <tbody>${body}</tbody></table>`;
+    })()/* PR-A4-LEVEL-BREAKDOWN end */}
 
   <!-- Page break for print -->
   <div class="page-break"></div>
