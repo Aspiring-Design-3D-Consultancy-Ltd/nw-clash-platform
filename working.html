@@ -1335,7 +1335,22 @@ function nav(v){
   if(strip)strip.style.display='none';
   updSB();updSS();
   document.getElementById('va').innerHTML='<div class="fia">'+rv(v)+'</div>';
-  if(v==='dashboard')initCharts();
+  /* PR-48-TESTBREAK-INITIAL-RENDER start: wire buildTestBreakdown()
+     into the initial dashboard nav so the PR-A2 reconstruction fires
+     on first paint. Prior to this, rDash's inline template at L5221
+     pre-populated #test-breakdown-body from wd.tests (the frozen
+     regenWeeklyFromRegister clock-1 aggregate) and nothing overwrote
+     it until the user changed a filter, toggled trend view, or moved
+     the chart-range slider — all of which called
+     initCharts();buildTestBreakdown();. That mismatch meant the
+     reconstruction only ran after user interaction, so newly-imported
+     tests (e.g. Exyte CM_v_08_AMHS added after S.weekly[last] was
+     frozen) never appeared in the default dashboard view. Matches
+     the existing pattern at updateChartRange (L5292),
+     setDashScope (L5596), setDashBuilding (L5616): initCharts +
+     buildTestBreakdown called together. */
+  if(v==='dashboard'){initCharts();buildTestBreakdown();}
+  /* PR-48-TESTBREAK-INITIAL-RENDER end */
   if(v==='heatmap')initHeatmap();
   if(v==='register')setTimeout(filterReg,0);
 }
