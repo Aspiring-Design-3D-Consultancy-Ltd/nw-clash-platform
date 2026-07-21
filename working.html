@@ -1468,6 +1468,41 @@ function _weekYearNow(){
   const d=new Date();
   return{week:isoWeekNum(d),year:isoWeekYear(d)};
 }
+/* PR-A-PLATFORM-WEEKS start: derive the sorted list of ISO (year, week)
+   tuples where the platform has real data. Used by the chart display
+   path to filter out phantom pre-platform buckets that
+   regenWeeklyFromRegister currently creates by bucketing on c.date
+   (Navisworks detection clock 1). Source of truth: firstSeenWeekDate
+   distribution across S.clashes (populated on new-insert since PR-01).
+   Also includes any week that carries an action-clock statusHistory
+   entry — rare, but a coordinator can Approve/Resolve during a week
+   when no XML was imported. _labelForPlatformWeek looks up the human-
+   readable label from S.weekly by (year, week) match and falls back to
+   a constructed "Wk N — DD Mmm YYYY" from the ISO monday when no
+   matching S.weekly entry exists. */
+function _platformWeeks(){
+  const set=new Set();
+  (S.clashes||[]).forEach(c=>{
+    const iso=_weekYearFromISO(c.firstSeenWeekDate);
+    if(iso)set.add(iso.year+'-'+iso.week);
+  });
+  (S.clashes||[]).forEach(c=>{
+    (c.statusHistory||[]).forEach(h=>{
+      if(typeof h.week==='number'&&typeof h.year==='number')set.add(h.year+'-'+h.week);
+    });
+  });
+  const arr=[...set].map(s=>{const p=s.split('-');return{year:+p[0],week:+p[1]};});
+  arr.sort((a,b)=>_weekYearCmp(a,b));
+  return arr;
+}
+function _labelForPlatformWeek(py,pw){
+  const s=(S.weekly||[]).find(w=>w.week===pw&&(w.year||0)===py);
+  if(s&&s.label)return s.label;
+  const monday=isoWeekMonday(py,pw);
+  const dmy=monday.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'});
+  return 'Wk '+pw+' — '+dmy;
+}
+/* PR-A-PLATFORM-WEEKS end */
 function _weekYearCmp(a,b){
   // Returns -1, 0, 1 for a<b, a==b, a>b on (year, week) tuples.
   if(a.year!==b.year)return a.year<b.year?-1:1;
@@ -1933,20 +1968,19 @@ function _rqdaMigrate(){
 }
 /* REVIEW-QUEUE-DELTA-ANALYSIS-MIGRATE end */
 
+/* PR-A-ALWAYS-RECONSTRUCT start: previously scopedWds returned S.weekly
+   unchanged when scope='all' AND bldGroup='all' — but S.weekly is built
+   by regenWeeklyFromRegister which buckets clashes by c.date
+   (Navisworks clock 1), producing phantom pre-platform buckets and
+   wrong cumulative counts. Always call statusCountsAt so the chart
+   displays honest reconstruction from statusHistory (post-PR-02/03
+   clean data) regardless of scope. Follow-up PRs (PR-A2/A3) will bring
+   PDF and PPTX exports through the same path; until then those callers
+   may still receive the pre-fix shortcut behaviour if they bypass
+   scopedWds. The prior comment about "zero regression risk" for the
+   scope=all shortcut was the mask over the phantom-week bug — the
+   shortcut IS the bug. */
 function scopedWds(wds,scope,bldGroup){
-  // Returns a scope-aware copy of wds (the per-week chart data array).
-  // For scope='all' AND bldGroup='all' (or undefined), returns wds unchanged
-  //   — uses the frozen aggregates, preserving exact existing behaviour with
-  //   zero regression risk.
-  // Otherwise, reconstructs per-week counts from per-clash statusHistory so
-  //   the Lifecycle, Open-vs-Closed, and Weekly-mode test breakdown charts
-  //   show exactly the in-scope subset at each point in time.
-  // BUILDING-FILTER: bldGroup is optional and backward-compatible. Existing
-  //   callers (PPTX export, Weekly Report) that omit it get unchanged
-  //   behaviour. Only the dashboard chart wiring passes a value.
-  const noScope=(!scope||scope==='all');
-  const noBld=(!bldGroup||bldGroup==='all');
-  if(noScope&&noBld)return wds||[];
   return (wds||[]).map(w=>{
     const cnt=statusCountsAt(w.week,w.year,scope,bldGroup);
     // Carry through any other fields (tests, etc.) untouched; only override
@@ -1958,6 +1992,7 @@ function scopedWds(wds,scope,bldGroup){
     });
   });
 }
+/* PR-A-ALWAYS-RECONSTRUCT end */
 function testCountsAt(testName,week,year,scope){
   // Per-test status counts at (week, year), filtered by scope. Returns same
   // shape as the entries in w.tests so it's a drop-in replacement in the
@@ -5112,14 +5147,28 @@ function rDash(){
                2026-W28) filter correctly. Previously used raw w.week which
                produced an impossible "41 → 28" range and rendered every
                chart empty. -->
-          <select id="chart-from" class="fsel" onchange="updateChartRange()">
-            ${(S.weekly||[]).map((w,i)=>`<option value="${(w.year||0)*100+w.week}"${i===0?' selected':''}>${esc(w.label)}</option>`).join('')}
-          </select>
-          <span style="font-size:10px;color:rgba(255,255,255,.55)">to</span>
-          <select id="chart-to" class="fsel" onchange="updateChartRange()">
-            ${(S.weekly||[]).map((w,i,arr)=>`<option value="${(w.year||0)*100+w.week}"${i===arr.length-1?' selected':''}>${esc(w.label)}</option>`).join('')}
-          </select>
-          <button id="chart-range-label" onclick="resetChartRange()" title="Reset to full range" style="cursor:pointer;font-size:10px;font-weight:700;color:#fff;background:rgba(255,255,255,.12);padding:3px 9px;border-radius:10px;border:1px solid rgba(255,255,255,.2);font-family:Arial,sans-serif">All ${(S.weekly||[]).length} weeks</button>
+          <!-- PR-A-RANGE-DROPDOWN start: source the from/to dropdowns and
+               the "All N weeks" reset button from _platformWeeks() so users
+               only see real platform-tracked weeks. Previously enumerated
+               S.weekly which included the phantom pre-platform buckets
+               produced by regenWeeklyFromRegister's c.date bucketing.
+               _labelForPlatformWeek looks up the human-readable label from
+               S.weekly by (year, week) match, with a constructed fallback
+               when no matching S.weekly entry exists. Fallback: when
+               _platformWeeks() is empty (fresh install / backfill not yet
+               run) drop back to S.weekly options — symmetrical with the
+               fallback in getDisplayWds and resetChartRange. Otherwise
+               dropdowns render zero options and resetChartRange's fallback
+               sets a value the select can't accept → NaN downstream. -->
+          ${(() => {
+            const _pw=_platformWeeks();
+            const _src=_pw.length?_pw.map(w=>({year:w.year,week:w.week,label:_labelForPlatformWeek(w.year,w.week)})):(S.weekly||[]).map(w=>({year:w.year||0,week:w.week,label:w.label||('Wk '+w.week)}));
+            const _from=_src.map((w,i)=>`<option value="${w.year*100+w.week}"${i===0?' selected':''}>${esc(w.label)}</option>`).join('');
+            const _to=_src.map((w,i,arr)=>`<option value="${w.year*100+w.week}"${i===arr.length-1?' selected':''}>${esc(w.label)}</option>`).join('');
+            const _lbl=(_pw.length||(S.weekly||[]).length);
+            return `<select id="chart-from" class="fsel" onchange="updateChartRange()">${_from}</select><span style="font-size:10px;color:rgba(255,255,255,.55);margin:0 4px">to</span><select id="chart-to" class="fsel" onchange="updateChartRange()">${_to}</select><button id="chart-range-label" onclick="resetChartRange()" title="Reset to full range" style="cursor:pointer;font-size:10px;font-weight:700;color:#fff;background:rgba(255,255,255,.12);padding:3px 9px;border-radius:10px;border:1px solid rgba(255,255,255,.2);font-family:Arial,sans-serif;margin-left:4px">All ${_lbl} weeks</button>`;
+          })()}
+          <!-- PR-A-RANGE-DROPDOWN end -->
         </div>
       </div>
       <span class="pf-hint">${scopeHint}</span>
@@ -5215,7 +5264,15 @@ function kpi(){/* dead — preserved as no-op for safety; can be removed entirel
    integers; display code converts back to raw week numbers via `% 100`. */
 let _chartFrom=0,_chartTo=999999; // year*100+week ordinals; 0..999999 = all
 function updateChartRange(){
-  const wds=S.weekly||[];
+  /* PR-A-RANGE-DROPDOWN start: "All N weeks" label now compares against
+     _platformWeeks().length (real platform coverage) rather than
+     S.weekly.length (includes phantom pre-platform buckets). Prevents
+     the label reading "Weeks 23-29 (7 weeks)" at full range when the
+     user's expectation is "All 7 weeks". Falls back to S.weekly.length
+     when _platformWeeks() is empty — same fallback shape as the
+     dropdown source above. */
+  const _platformCount=_platformWeeks().length;
+  const platformCount=_platformCount||(S.weekly||[]).length;
   const fromEl=document.getElementById('chart-from');
   const toEl=document.getElementById('chart-to');
   if(!fromEl||!toEl)return;
@@ -5228,33 +5285,61 @@ function updateChartRange(){
     const wkCount=dispWds.length;
     // Display raw week numbers in the label (strip the year*100 prefix).
     const fromW=_chartFrom%100, toW=_chartTo%100;
-    lbl.textContent=wkCount===wds.length?'All '+wds.length+' weeks':'Weeks '+fromW+'\u2013'+toW+' ('+wkCount+' week'+(wkCount>1?'s':'')+')';
+    lbl.textContent=wkCount===platformCount?'All '+platformCount+' weeks':'Weeks '+fromW+'\u2013'+toW+' ('+wkCount+' week'+(wkCount>1?'s':'')+')';
   }
+  /* PR-A-RANGE-DROPDOWN end */
   Object.values(S.charts).forEach(c=>{try{c&&c.destroy();}catch(e){}});S.charts={};
   initCharts();buildTestBreakdown();
 }
+/* PR-A-DISPLAY-FILTER start: filter S.weekly to platform-tracked weeks
+   only (derived from firstSeenWeekDate via _platformWeeks). Chart-period
+   slider still works within that filter. Result: chart x-axis defaults
+   to weeks where the platform has real data, not the phantom
+   pre-platform buckets that regenWeeklyFromRegister currently produces
+   from c.date bucketing. Fallback: if _platformWeeks() is empty (fresh
+   install, no firstSeenWeekDate anywhere), return all wds within slider
+   range for backward compatibility. */
 function getDisplayWds(){
   const wds=S.weekly||[];
+  const platform=_platformWeeks();
+  const platformSet=new Set(platform.map(p=>p.year+'-'+p.week));
+  const usePlatformFilter=platformSet.size>0;
   return wds.filter(w=>{
     const ord=(w.year||0)*100+w.week;
-    return ord>=_chartFrom&&ord<=_chartTo;
+    if(ord<_chartFrom||ord>_chartTo)return false;
+    if(usePlatformFilter&&!platformSet.has((w.year||0)+'-'+w.week))return false;
+    return true;
   });
 }
+/* PR-A-DISPLAY-FILTER end */
 /* CHART-PERIOD-YEAR-AWARE: reset button handler \u2014 collapses filter back to
    full range and re-renders. Wired to the "All N weeks" label which was
    previously a static <span>; users tried to click it as a reset and
    nothing happened. Now it's a real button. */
+/* PR-A-RESET-PLATFORM start: reset chart range to platform-tracked week
+   bounds (from firstSeenWeekDate) rather than S.weekly bounds. Prevents
+   the "All 30 weeks" label from including phantom pre-platform weeks
+   when the user hits the reset button. Falls back to S.weekly bounds
+   when _platformWeeks() is empty (fresh install), preserving prior
+   behaviour for pre-firstSeen data. */
 function resetChartRange(){
-  const wds=S.weekly||[];
-  if(!wds.length){_chartFrom=0;_chartTo=999999;return;}
-  _chartFrom=(wds[0].year||0)*100+wds[0].week;
-  _chartTo=(wds[wds.length-1].year||0)*100+wds[wds.length-1].week;
+  const platform=_platformWeeks();
+  if(!platform.length){
+    const wds=S.weekly||[];
+    if(!wds.length){_chartFrom=0;_chartTo=999999;return;}
+    _chartFrom=(wds[0].year||0)*100+wds[0].week;
+    _chartTo=(wds[wds.length-1].year||0)*100+wds[wds.length-1].week;
+  } else {
+    _chartFrom=platform[0].year*100+platform[0].week;
+    _chartTo=platform[platform.length-1].year*100+platform[platform.length-1].week;
+  }
   const fromEl=document.getElementById('chart-from');
   const toEl=document.getElementById('chart-to');
   if(fromEl)fromEl.value=String(_chartFrom);
   if(toEl)toEl.value=String(_chartTo);
   updateChartRange();
 }
+/* PR-A-RESET-PLATFORM end */
 /* CHART-PERIOD-YEAR-AWARE end */
 /* CHART-XAXIS-YEAR-LABEL start: when a chart's dataset spans multiple ISO
    years (e.g. 2025-W41 → 2026-W28), plain "Wk 41, Wk 42, ..." x-axis
@@ -5278,9 +5363,15 @@ function _wkLabelFor(w, wds){
 /* CHART-XAXIS-YEAR-LABEL end */
 function initCharts(){
   const allWds=S.weekly||[];if(!allWds.length)return;
-  const wds=getDisplayWds(); // slider-filtered weeks
+  const wds=getDisplayWds(); // slider-filtered weeks (platform-filtered)
   const wd=wds[wds.length-1]||{critical:0,high:0,medium:0,low:0};
-  const rangeLabel=wds.length===allWds.length?'All '+allWds.length+' weeks':'Last '+wds.length+' wk'+(wds.length>1?'s':'');
+  /* PR-A-RANGE-DROPDOWN: same fix as updateChartRange — compare
+     against platform-week count so "All 7 weeks" reads correctly at
+     full range instead of "Last 7 wks". Fallback to S.weekly.length
+     matches the dropdown source when platform is empty. */
+  const _pwc=_platformWeeks().length;
+  const _platformCount=_pwc||allWds.length;
+  const rangeLabel=wds.length===_platformCount?'All '+_platformCount+' weeks':'Last '+wds.length+' wk'+(wds.length>1?'s':'');
   // Update card titles
   const svt=document.getElementById('ch-sv-title');
   /* SEV-CHART-FIX: title no longer carries the range label, severity = current state */
@@ -5335,8 +5426,13 @@ function buildTrendChart(){
      consistent when the user moves the chart-period slider. */
   const _trt=document.getElementById('ch-tr-title');
   if(_trt){
-    const _allWds=S.weekly||[];
-    const _rangeLabel=wds.length===_allWds.length?'All '+_allWds.length+' weeks':'Last '+wds.length+' wk'+(wds.length>1?'s':'');
+    /* PR-A-RANGE-DROPDOWN: same fix as initCharts — compare against
+       platform-week count so the Open-vs-Closed title reads "All 7
+       weeks" at full range. Fallback to S.weekly.length matches the
+       dropdown source when platform is empty. */
+    const _pwc=_platformWeeks().length;
+    const _platformCount=_pwc||(S.weekly||[]).length;
+    const _rangeLabel=wds.length===_platformCount?'All '+_platformCount+' weeks':'Last '+wds.length+' wk'+(wds.length>1?'s':'');
     const _sc=S.dashScope==='exyte'?'Exyte':S.dashScope==='muratec'?'Muratec':'';
     const _bl=(S.dashBuilding&&S.dashBuilding!=='all')?S.dashBuilding:'';
     let _filterLbl='';
