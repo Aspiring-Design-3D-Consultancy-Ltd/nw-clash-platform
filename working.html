@@ -5511,38 +5511,58 @@ function buildTestBreakdown(){
       <span style="font-size:9px;color:#94A3B8;margin-left:6px">+ maturity % progress bar</span>
     </div>`;
   } else {
-    // Current week view
+    // Current week view — reconstructed at the latest platform week
     if(title)title.textContent='Clash test breakdown';
-    const wds2=getDisplayWds();const wd=wds2[wds2.length-1]||{tests:[]};
-    /* SCOPE-FILTER start: when scope is active, recompute per-test counts from
-       SCOPED current clashes so the table is consistent with the status cards
-       and severity chart. Tests with zero in-scope clashes are hidden. The
-       weekly-mode branch above intentionally still shows all clashes — we don't
-       have per-clash status history to filter historical weeks accurately.
-       BUILDING-FILTER: when S.dashBuilding is set, apply the same filter so
-       the test list shrinks to tests with clashes in that building. Tests
-       like "AMHS-E-MECH vs AMHS-E-STRUCT" then only appear if they have at
-       least one clash in the selected building. */
+    /* PR-A2-TESTBREAK-LATEST-WEEK start: both bounds (cohort filter +
+       statusHistory walk cutoff) move to the latest platform week on
+       every render (not on import). Previously read wd.tests — the
+       frozen aggregate that regenWeeklyFromRegister builds by c.date
+       (clock 1) bucketing — which didn't advance past whatever week
+       that snapshot represented, so the table showed a snapshot as
+       of some historical week even after fresh imports landed.
+       Cohort = every register clash that passes scope + building
+       filters. Per-test counts derived via clashExistsAt +
+       clashStatusAt at the latest platform week — same reconstruction
+       primitives statusCountsAt uses, so sums are guaranteed
+       consistent with the KPI tiles. testCountsAt would be a natural
+       call but it doesn't accept a bldGroup arg; we inline the walk
+       to preserve the building filter without new helper surface.
+       Fallback: _weekYearNow() (clock 3 wall clock) when
+       _platformWeeks() is empty. Guarantees post-merge:
+         - sum(row) == count of clashes existing at latest platform
+           week, which equals register total (every clash's
+           firstSeenWeekTag <= latest by construction post-PR-01/A)
+         - row count == distinct testName count in scope+bld cohort */
     const _scope=S.dashScope||'all';
     const _bld=S.dashBuilding||'all';
-    let testRows;
-    if(_scope==='all'&&_bld==='all'){
-      testRows=wd.tests||[];
-    }else{
-      const tMap={};
-      let _src=scopedClashes(_scope);
-      if(_bld!=='all')_src=_src.filter(c=>clashBuildingGroup(c)===_bld);
-      _src.forEach(c=>{
-        const n=c.testName||c.name||'Untitled test';
-        if(!tMap[n])tMap[n]={name:n,new:0,active:0,reviewed:0,resolved:0,approved:0,critical:0,high:0,medium:0,low:0,rate:0};
-        const t=tMap[n];
-        if(c.status==='New')t.new++;else if(c.status==='Active')t.active++;
-        else if(c.status==='Reviewed')t.reviewed++;else if(c.status==='Approved')t.approved++;
-        else if(c.status==='Resolved')t.resolved++;
-      });
-      testRows=Object.values(tMap);
-    }
-    /* SCOPE-FILTER end */
+    const _pw=_platformWeeks();
+    const _latest=_pw.length?_pw[_pw.length-1]:_weekYearNow();
+    const _cohort=(S.clashes||[]).filter(c=>{
+      if(_scope!=='all'&&!clashOwners(c).has(_scope))return false;
+      if(_bld!=='all'&&clashBuildingGroup(c)!==_bld)return false;
+      return true;
+    });
+    const _testAgg={};
+    _cohort.forEach(c=>{
+      if(!clashExistsAt(c,_latest.week,_latest.year))return;
+      const st=clashStatusAt(c,_latest.week,_latest.year);
+      if(!st)return;
+      const n=c.testName||c.name||'Untitled test';
+      if(!_testAgg[n])_testAgg[n]={name:n,new:0,active:0,reviewed:0,approved:0,resolved:0,critical:0,rate:0};
+      const t=_testAgg[n];
+      if(st==='New')t.new++;
+      else if(st==='Active')t.active++;
+      else if(st==='Reviewed')t.reviewed++;
+      else if(st==='Approved')t.approved++;
+      else if(st==='Resolved')t.resolved++;
+      if(c.priority==='Critical')t.critical++;
+    });
+    Object.values(_testAgg).forEach(t=>{
+      const tot=t.new+t.active+t.reviewed+t.approved+t.resolved;
+      t.rate=tot>0?Math.round((t.resolved+t.approved)/tot*100):0;
+    });
+    const testRows=Object.values(_testAgg);
+    /* PR-A2-TESTBREAK-LATEST-WEEK end */
     body.innerHTML=`<div class="twrap"><table><thead><tr><th>Test</th><th style="color:#FF0000">New</th><th style="color:#FF8000">Active</th><th style="color:#00AEEF">Reviewed</th><th style="color:#00B050">Approved</th><th style="color:#FFC000">Resolved</th><th>Maturity</th></tr></thead>
     <tbody>${testRows.map(t=>{const tot=t.new+t.active+t.reviewed+t.resolved+t.approved;const r=tot>0?Math.round((t.resolved+t.approved)/tot*100):t.rate||0;const rc=r>=70?'#83BD00':r>=40?'#0085CA':'#BE3A34';return`<tr><td style="font-weight:600">${esc(t.name)}</td><td style="color:#FF0000;font-weight:600;text-align:center">${t.new}</td><td style="color:#FF8000;font-weight:600;text-align:center">${t.active}</td><td style="color:#00AEEF;text-align:center">${t.reviewed}</td><td style="color:#00B050;text-align:center">${t.approved}</td><td style="color:#FFC000;text-align:center">${t.resolved}</td><td><div class="prow"><div class="pbar"><div class="pf" style="width:${r}%;background:${rc}"></div></div><span style="font-size:10px;font-weight:700;color:${rc};min-width:30px">${r}%</span></div></td></tr>`;}).join('')}</tbody></table></div>`;
   }
@@ -9766,6 +9786,22 @@ function importToRegister(mode){
   /* WEEKLY-SNAP-CONDITIONAL-IMPORT: pass _batchMaxD so regen anchors to the
      batch's historical week (if older than today) instead of today. */
   regenWeeklyFromRegister(_batchMaxD);
+  /* PR-A2-CHART-TO-AUTO-ADVANCE start: on successful weekly import,
+     advance _chartTo to the newest platform week so the dashboard's
+     chart-range slider automatically includes the fresh import the
+     next time the user views the dashboard. _chartFrom is deliberately
+     not touched — the user's left-edge selection is preserved per
+     brief. Import-time state mutation only; the actual re-render
+     happens on the next rDash render via getDisplayWds + the range
+     dropdowns which source from _platformWeeks(). */
+  try{
+    const _pwPostImport=_platformWeeks();
+    if(_pwPostImport.length){
+      const _lastPw=_pwPostImport[_pwPostImport.length-1];
+      _chartTo=_lastPw.year*100+_lastPw.week;
+    }
+  }catch(e){console.warn('PR-A2 _chartTo advance:',e);}
+  /* PR-A2-CHART-TO-AUTO-ADVANCE end */
   // Record this import event on the current week's snapshot so the data manager can
   // surface multiple clash test runs within the same week. Each entry: {date, count, added, updated}
   // where date = latest detection date in this import batch (DD/MM/YY), count = clashes in this XML.
