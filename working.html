@@ -7260,7 +7260,22 @@ function bgetItem(el){
    general-purpose helper used elsewhere. */
 function bgetElementId(el){
   if(!el)return{id:'',src:''};
-  const order=['Element ID','GUID','元素 ID','Entity Handle'];
+  /* PR-A5-JAPANESE-ATTR start: Muratec/Exyte partner offices with
+     Japanese Navisworks installs export the Element ID attribute as
+     要素ID (yōso-ID, "Element ID" in Japanese). W31 incident showed
+     Exyte_MEP files carrying '要素ID' → 'GUID' on obj[0]/obj[1] —
+     bgetElementId returned '' for the A side, allIdsPresent went
+     false, findCrossTestDuplicates fell to its coord tier, and 21
+     legitimate clashes were false-flagged as cross-test dupes and
+     silently discarded when the user clicked "Skip duplicates".
+     Both spellings inserted (with and without the space) since
+     Muratec exports have been observed either way; positioned right
+     after GUID so Japanese-authored Muratec files hit the ID tier
+     early. The pre-existing '元素 ID' (yuánsù ID, Chinese) is
+     preserved verbatim — different language, different characters,
+     legitimate legacy entry. */
+  const order=['Element ID','GUID','要素ID','要素 ID','元素 ID','Entity Handle'];
+  /* PR-A5-JAPANESE-ATTR end */
   for(const name of order){
     const v=bgatr(el,name);
     if(v)return{id:v,src:name};
@@ -8959,7 +8974,32 @@ function showImportPanel(){
    is skipped (uid equality check). Pure function, no S mutation. */
 function findCrossTestDuplicates(candidates, existing, opts){
   opts = opts || {};
-  var tolMm = (typeof opts.tolMm === 'number') ? opts.tolMm : 5;
+  /* PR-A5-CROSSTEST-STRICT start: tighten the coord-tier fallback.
+     Prior behaviour matched cand vs existing at 5mm Euclidean across
+     ALL testNames whenever any of the 4 identity IDs was empty
+     (asymmetric obj[0]/obj[1] attribute types — 'Element ID'→'GUID',
+     '要素ID'→'GUID', or empty→'GUID'). In dense projects (Muratec
+     AMHS, 2,562 clashes across FAB_L20-L40 + CUP_L30 at ~metre
+     spacing) that produced heavy false positives: the W31 incident
+     silently dropped 142 legitimate clashes (0/104 for 02_CR, 0/21
+     for MEP, 0/12 for SPM, 0/6 for CM) because they got coord-
+     matched to unrelated existing register entries and the user
+     clicked "Skip duplicates" on the modal.
+
+     Two guardrails, mirroring PAIR-KEY-COORD-TIER at L9486 which
+     has already been blessed for the same auto-merge case:
+       (a) require .nwc source-model match on BOTH sides (case-
+           insensitive, leaf-normalised) before considering coord
+       (b) tighten tolerance from 5mm to 1mm
+     Together these keep the coord tier alive for the legitimate
+     case (same physical clash re-imported with sub-mm coordinate
+     drift from source model republish) while rejecting the false-
+     positive case (unrelated clashes that happen to be nearby in
+     3D space across different disciplines/scopes).
+
+     ID-tier match is unchanged — strict ID pair equality with
+     allIdsPresent guard. */
+  var COORD_TOL_MM = (typeof opts.tolMm === 'number') ? opts.tolMm : 1;
   function idA(c){ if(c&&c.eA&&c.eA.id!=null) return String(c.eA.id).trim(); if(c&&c.elementIdA!=null) return String(c.elementIdA).trim(); return ''; }
   function idB(c){ if(c&&c.eB&&c.eB.id!=null) return String(c.eB.id).trim(); if(c&&c.elementIdB!=null) return String(c.elementIdB).trim(); return ''; }
   function num(v){ return (typeof v==='number' && isFinite(v)) ? v : null; }
@@ -8967,6 +9007,19 @@ function findCrossTestDuplicates(candidates, existing, opts){
   function idPairMatches(a,b){ var ca=idA(a),cb=idB(a),xa=idA(b),xb=idB(b); return (ca===xa&&cb===xb)||(ca===xb&&cb===xa); }
   function dist(a,b){ var ax=num(a.x),ay=num(a.y),az=num(a.z),bx=num(b.x),by=num(b.y),bz=num(b.z); if(ax==null||ay==null||az==null||bx==null||by==null||bz==null) return null; var dx=ax-bx,dy=ay-by,dz=az-bz; return Math.sqrt(dx*dx+dy*dy+dz*dz); }
   function uidNum(c){ if(!c||!c.uid) return Infinity; var m=/CLX-(\d+)/.exec(c.uid); return m?parseInt(m[1],10):Infinity; }
+  function srcOf(c, side){
+    if(!c) return '';
+    var raw = side==='A'
+      ? ((c.eA&&c.eA.source)!=null ? c.eA.source : (c.sourceA!=null ? c.sourceA : ''))
+      : ((c.eB&&c.eB.source)!=null ? c.eB.source : (c.sourceB!=null ? c.sourceB : ''));
+    return String(raw||'').toLowerCase().replace(/\\/g,'/').replace(/^.*\//,'').trim();
+  }
+  function srcsMatch(a,b){
+    var aa=srcOf(a,'A'), ba=srcOf(b,'A');
+    var ab=srcOf(a,'B'), bb=srcOf(b,'B');
+    if(!aa || !ba || !ab || !bb) return false;
+    return (aa===ba && ab===bb) || (aa===bb && ab===ba);
+  }
   var matches=[];
   for(var i=0;i<candidates.length;i++){
     var cand=candidates[i]; if(!cand||!cand.testName) continue;
@@ -8979,14 +9032,17 @@ function findCrossTestDuplicates(candidates, existing, opts){
         if(idPairMatches(cand,ex)) hits.push({exist:ex,matchType:'id',distMm:null});
         continue;
       }
+      // Coord-tier guardrails: source-model match on both sides + ≤1mm.
+      if(!srcsMatch(cand,ex)) continue;
       var d=dist(cand,ex);
-      if(d!=null && d<=tolMm) hits.push({exist:ex,matchType:'coord',distMm:d});
+      if(d!=null && d<=COORD_TOL_MM) hits.push({exist:ex,matchType:'coord',distMm:d});
     }
     if(!hits.length) continue;
     hits.sort(function(a,b){ return uidNum(a.exist)-uidNum(b.exist); });
     matches.push({cand:cand,exist:hits[0].exist,matchType:hits[0].matchType,distMm:hits[0].distMm});
   }
   return matches;
+  /* PR-A5-CROSSTEST-STRICT end */
 }
 function _xtBreakdown(matches){
   var byTest={};
@@ -9015,13 +9071,42 @@ function _showCrossTestDupeModal(matches, mode){
         +'<table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:6px"><thead><tr style="background:#F1F5F9"><th style="padding:5px 8px;text-align:left">New clash</th><th style="padding:5px 8px;text-align:left">Match</th><th style="padding:5px 8px;text-align:left">Existing record</th></tr></thead><tbody>'+sample+'</tbody></table>'
         +'<div style="margin-top:14px;padding:10px;background:#FEF3C7;border-left:3px solid #F59E0B;font-size:11px;color:#78350F">If you skip duplicates, the existing clash record is kept and its status is updated from the new XML if it has changed. User fields (notes, assignedTo, priority) are not touched.</div>'
       +'</div>'
-      +'<div style="padding:14px 22px;border-top:1px solid #E5E7EB;display:flex;justify-content:flex-end;gap:8px">'
+      +'<div style="padding:14px 22px;border-top:1px solid #E5E7EB;display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap">'
         +'<button onclick="document.getElementById(&apos;'+id+'&apos;).remove();window._xtPendingMatches=null;" style="background:#fff;border:1px solid #CBD5E1;color:#1E293B;padding:8px 16px;border-radius:6px;font-size:12px;cursor:pointer">Cancel import</button>'
+        /* PR-A5-CROSSTEST-STRICT: "Keep all" bypass. When the detector
+           still over-fires (edge cases the strict source+1mm guard
+           doesn't catch) the user can import every candidate without
+           editing code. Post-import DEDUP-QUEUE-DETECT still runs and
+           any real dupes surface in the Dedup Queue for confirmation
+           — this is NOT a silent bypass. */
+        +'<button onclick="_xtResolveKeepAll(&apos;'+id+'&apos;,&apos;'+esc(mode||'append')+'&apos;)" style="background:#fff;border:1px solid #F59E0B;color:#B45309;padding:8px 16px;border-radius:6px;font-size:12px;font-weight:500;cursor:pointer" title="Import every candidate; any real dupes will still surface in the Dedup Queue after import">Keep all — don\'t treat as duplicates</button>'
         +'<button onclick="_xtResolveSkip(&apos;'+id+'&apos;,&apos;'+esc(mode||'append')+'&apos;)" style="background:#006BA6;border:0;color:#fff;padding:8px 16px;border-radius:6px;font-size:12px;font-weight:500;cursor:pointer">Skip duplicates, import the rest</button>'
       +'</div></div></div>';
   var wrap=document.createElement('div'); wrap.innerHTML=html; document.body.appendChild(wrap.firstChild);
   window._xtPendingMatches = matches;
+  /* PR-A5-CROSSTEST-STRICT: log modal state so batch numbers are
+     recoverable from console history after the fact — the W31
+     incident had no artefact of which candidates were flagged. */
+  try{
+    var _byMatchType={id:0,coord:0};
+    matches.forEach(function(m){ _byMatchType[m.matchType]=(_byMatchType[m.matchType]||0)+1; });
+    console.warn('[XTEST-DUP-MODAL] '+matches.length+' candidates flagged as cross-test duplicates (id-tier: '+_byMatchType.id+', coord-tier ≤1mm: '+_byMatchType.coord+'). See window._xtPendingMatches for detail.');
+  }catch(e){}
 }
+/* PR-A5-CROSSTEST-STRICT start: "Keep all" resolver — bypass the
+   cross-test filter but keep every legit safety layer downstream
+   (weekly-delta, dedup-queue, review-queue). Mirrors _xtResolveSkip's
+   contract: dismisses the modal, sets _skipCrossTestDupes so the
+   re-entry doesn't re-fire the check, re-invokes importToRegister
+   with the ORIGINAL unfiltered _bcfC. */
+function _xtResolveKeepAll(modalId, mode){
+  var el = document.getElementById(modalId); if(el) el.remove();
+  window._xtPendingMatches = null;
+  window._skipCrossTestDupes = true;
+  try{ console.warn('[XTEST-DUP-MODAL] User chose "Keep all" — importing every candidate; post-import DEDUP-QUEUE-DETECT will surface any real dupes.'); }catch(e){}
+  importToRegister(mode);
+}
+/* PR-A5-CROSSTEST-STRICT end */
 function _xtResolveSkip(modalId, mode){
   var matches = window._xtPendingMatches || [];
   // Merge status from each dropped new-clash into the surviving existing one.
@@ -9254,6 +9339,21 @@ function _showImgCountMismatchModal(clashCount,declaredImages,missingByFile,mode
 
 function importToRegister(mode){
   if(!_bcfC.length){alert('Parse XML first.');return;}
+  /* PR-A5-IMPORT-SUMMARY start: snapshot per-file counts from _bcfC
+     BEFORE XTEST-DUP-IMPORT can filter it via the modal's "Skip"
+     branch. Post-loop the delta between this and perFile's
+     added+updated+unchanged tallies == the count silently dropped
+     by cross-test dedup. Also stash testName for the log line so
+     summary reads "Exyte_MEP_v_08_AMHS.xml: 21 in XML..." not just
+     the filename. */
+  const _importPreBcf={};
+  (_bcfC||[]).forEach(c=>{
+    const k=c.sourceFile||'pasted';
+    if(!_importPreBcf[k])_importPreBcf[k]={count:0,testNames:new Set()};
+    _importPreBcf[k].count++;
+    if(c.tn)_importPreBcf[k].testNames.add(c.tn);
+  });
+  /* PR-A5-IMPORT-SUMMARY end */
   /* WEEKLY-SNAP-CONDITIONAL-IMPORT start: derive the anchor from the batch's
      latest <createddate>. Used downstream for: (a) the auto-freeze boundary
      in the append branch below; (b) the regenWeeklyFromRegister call further
@@ -9719,6 +9819,42 @@ function importToRegister(mode){
     /* WEEKLY-SNAPSHOT-RECORD: newly-created UID goes into batchUids. */
     _batchUids.add(uid);
   });
+
+  /* PR-A5-IMPORT-SUMMARY start: emit per-file summary line so the
+     import result is fully inspectable from the console. Read AFTER
+     the merge loop so perFile has final tallies. skippedByCrossTest
+     = pre-loop parsed count − (added+updated+unchanged). Non-zero
+     values here point directly at the XTEST-DUP-IMPORT "Skip"
+     branch — the exact site that silently discarded 142 W31 clashes
+     before this PR. */
+  let _importAnyDropped=false;
+  try{
+    Object.keys(_importPreBcf).forEach(fname=>{
+      const pre=_importPreBcf[fname];
+      const pf=perFile[fname]||{added:0,updated:0,unchanged:0,count:0};
+      const parsed=pre.count||0;
+      const addedN=pf.added||0;
+      const matched=(pf.updated||0)+(pf.unchanged||0);
+      const skipped=parsed-addedN-matched;
+      if(skipped>0)_importAnyDropped=true;
+      const testList=[...pre.testNames].join(', ')||'(unknown test)';
+      console.log('[Import summary] '+fname+' ('+testList+'): '+parsed+' in XML, '+addedN+' added, '+matched+' matched to existing, '+skipped+' flagged as cross-test dupes');
+    });
+    if(_importAnyDropped){
+      console.warn('[Import summary] One or more files had clashes dropped by the cross-test dupe filter. Review Dedup Queue and confirm before publishing reports.');
+      // Non-blocking on-screen banner (dashboard/topbar toast) so the
+      // condition surfaces even when the user isn't looking at devtools.
+      // Fires on next tick to avoid stacking with the import-success toast.
+      setTimeout(()=>{
+        try{
+          if(typeof showToast==='function'){
+            showToast('⚠ Some clashes were flagged as cross-test dupes and skipped — check console [Import summary] before publishing reports.',10000);
+          }
+        }catch(e){}
+      },300);
+    }
+  }catch(e){try{console.warn('[Import summary] failed:',e);}catch(_){}}
+  /* PR-A5-IMPORT-SUMMARY end */
 
   sv('clashes',S.clashes);
   /* WEEKLY-DELTA-DETECT start: per-testName scoping split into two
@@ -13839,7 +13975,69 @@ function rData(){
     <div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#374151;margin-bottom:5px">Severity</div>
     <div class="fg4" style="grid-template-columns:repeat(4,1fr)"><div class="fg"><label>Critical</label><input class="fi" type="number" id="wcr"></div><div class="fg"><label>High</label><input class="fi" type="number" id="whi"></div><div class="fg"><label>Medium</label><input class="fi" type="number" id="wme"></div><div class="fg"><label>Low</label><input class="fi" type="number" id="wlo"></div></div>
     <div style="display:flex;justify-content:flex-end;margin-top:4px"><button class="btn p" onclick="saveW()">Save week →</button></div>
-  </div></div></div>`;}
+  </div></div></div>
+  ${/* PR-A5-WEEK-RESET start: per-weekTag batch reset panel. Data Manager
+       previously offered only Settings → Clear All Data (wipes 2,562+
+       clashes). W31 incident needed a way to remove only the 14 partial
+       clashes tagged week-260727 without touching the other 8 weeks —
+       this panel provides that surgical reset.
+       Renders one row per distinct weekTag present in S.clashes with
+       a count column and per-row Reset button. Handler _resetWeeklyBatch
+       filters S.clashes + drops the matching S.weekly entry (if any).
+       Never touches firstSeenWeekTag on any clash — that's per-clash
+       history, not per-batch metadata. Empty state shown when the
+       register has no weekTag-stamped clashes. */
+     _rDataWeekResetPanel()}`;}
+function _rDataWeekResetPanel(){
+  const cl=S.clashes||[];
+  const byTag={};
+  cl.forEach(c=>{
+    const tag=(c&&c.weekTag)||null;
+    if(!tag)return;
+    if(!byTag[tag])byTag[tag]={count:0,earliestDate:null};
+    byTag[tag].count++;
+    const d=c.weekDate||c.firstSeenWeekDate;
+    if(d && (!byTag[tag].earliestDate||d<byTag[tag].earliestDate))byTag[tag].earliestDate=d;
+  });
+  const untaggedCount=cl.filter(c=>!(c&&c.weekTag)).length;
+  const tags=Object.keys(byTag).sort();
+  const header=`<div class="card" style="margin-top:12px;border-left:3px solid #F59E0B"><div class="ch"><span class="ct">🗓 Reset a specific weekly batch</span></div><div class="cb"><div style="font-size:11px;color:#64748B;margin-bottom:10px;line-height:1.5">Surgical removal of a single weekly import (identified by <code>weekTag</code>). Use this to correct a botched import without wiping the whole register — after reset, re-import the fixed XMLs for that week. Untagged clashes (paste imports, pre-weekly records) are shown for reference and cannot be reset here; use Settings → Selective Reset for those.</div>`;
+  if(!tags.length){
+    return header + `<div style="font-size:11px;color:#94A3B8;padding:12px 8px;text-align:center;background:#F8FAFC;border-radius:5px;font-style:italic">No weekly-tagged clashes in the register. Batches acquire a weekTag when imported from a <code>week-YYMMDD</code> folder via the Batch Import folder picker.${untaggedCount>0?' <br><strong>'+untaggedCount+' untagged clash'+(untaggedCount===1?'':'es')+'</strong> present.':''}</div></div></div>`;
+  }
+  const rows=tags.map(tag=>{
+    const info=byTag[tag];
+    const dateNice=info.earliestDate?` — <span style="color:#64748B">${esc(info.earliestDate)}</span>`:'';
+    return `<tr><td style="font-family:monospace;font-size:11px;color:#0F172A;font-weight:600">${esc(tag)}${dateNice}</td><td style="text-align:center;font-weight:700;color:#DC2626">${info.count.toLocaleString()}</td><td style="text-align:right"><button class="btn sm" style="color:#B45309;border-color:#F59E0B;background:#FFFBEB" onclick="_resetWeeklyBatch(&apos;${esc(tag).replace(/'/g,'&#39;')}&apos;)" title="Remove all ${info.count} clashes with this weekTag from the register">↺ Reset this batch</button></td></tr>`;
+  }).join('');
+  const untaggedRow=untaggedCount>0?`<tr style="background:#F8FAFC;color:#94A3B8;font-style:italic"><td>(untagged — paste / pre-weekly / manual)</td><td style="text-align:center">${untaggedCount.toLocaleString()}</td><td style="text-align:right;font-size:9px;color:#94A3B8">Use Settings → Selective Reset</td></tr>`:'';
+  return header + `<div class="twrap"><table><thead><tr><th>weekTag</th><th style="text-align:center">Clashes</th><th></th></tr></thead><tbody>${rows}${untaggedRow}</tbody></table></div></div></div>`;
+}
+function _resetWeeklyBatch(weekTag){
+  if(!weekTag)return;
+  const cl=S.clashes||[];
+  const removedCount=cl.filter(c=>c&&c.weekTag===weekTag).length;
+  if(!removedCount){alert('No clashes tagged '+weekTag+' in the register.');return;}
+  if(!confirm('Remove all '+removedCount+' clashes tagged '+weekTag+' from the register?\\n\\nThis cannot be undone. firstSeenWeekTag on other clashes is preserved.'))return;
+  const kept=cl.filter(c=>!(c&&c.weekTag===weekTag));
+  S.clashes=kept;
+  sv('clashes',S.clashes);
+  // Drop matching S.weekly entry (if any). Resolve the tag → (year, week)
+  // via _parseWeekDate + _weekYearFromISO so the ISO week matches what
+  // regenWeeklyFromRegister produced.
+  try{
+    const iso=(typeof _parseWeekDate==='function')?_parseWeekDate(weekTag):null;
+    const yw=(iso && typeof _weekYearFromISO==='function')?_weekYearFromISO(iso):null;
+    if(yw){
+      S.weekly=(S.weekly||[]).filter(w=>!(w && w.week===yw.week && (w.year||0)===yw.year));
+      sv('weekly',S.weekly);
+    }
+  }catch(e){try{console.warn('PR-A5-WEEK-RESET: failed to drop S.weekly entry for '+weekTag+':',e);}catch(_){}}
+  // Bounce a summary + rerender.
+  if(typeof showToast==='function')showToast('↺ Removed '+removedCount+' clashes tagged '+weekTag+'. Re-import when ready.',6000);
+  if(typeof nav==='function')nav('data');
+}
+/* PR-A5-WEEK-RESET end */
 function gv(id){return document.getElementById(id)?.value||'';}
 function gn(id){return parseInt(document.getElementById(id)?.value)||0;}
 function showWF(idx){
