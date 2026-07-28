@@ -4568,6 +4568,15 @@ function clashBuilding(c){
    truth for the dashboard's building dimension; modify here, not at call
    sites. */
 function clashBuildingGroup(c){
+  /* PR-A6-BUILDING-SCOPED-TESTNAME: prefer c.buildingScope when it
+     was stamped at parse time from the folder segment (unambiguous
+     source of building identity). Falls through to the existing
+     level-based + metadata-based inference for legacy clashes that
+     predate PR-A6, so the register keeps working during the reset-
+     and-reimport transition Shane is planning. */
+  if(c && (c.buildingScope==='FAB' || c.buildingScope==='CUP' || c.buildingScope==='BSGS')){
+    return c.buildingScope;
+  }
   let b=clashBuilding(c);
   if(b==='Other'){
     // Fall back to test/source metadata before giving up. Catches new
@@ -7989,6 +7998,27 @@ function _parseWeekDate(weekTag){
   return `${year}-${String(mm).padStart(2,'0')}-${String(dd).padStart(2,'0')}`;
 }
 /* WEEKLY-IMPORT-CAPTURE end */
+/* PR-A6-BUILDING-SCOPED-TESTNAME start: extract building scope (FAB /
+   CUP) from the archive folder segment of a webkitRelativePath. Muratec
+   weekly exports live under week-YYMMDD/<YYMMDD BLDG SCOPE Clash test>/
+   test.xml — parts[1] is the archive folder that encodes both partner
+   (AMHS vs Exyte) and building (FAB / CUP / CUB→CUP). Same-testName
+   XMLs across FAB and CUP folders must NOT collapse in Test Breakdown
+   — the display testName gets the "(FAB)" or "(CUP)" suffix and every
+   clash carries buildingScope for downstream scoping. Returns null
+   when the path shape is too short or no known token appears; parser
+   callers keep the raw testName (no suffix) in that case. */
+function _extractBuildingScope(fullPath){
+  if(!fullPath)return null;
+  const parts=String(fullPath).split(/[\/\\]/);
+  if(parts.length<3)return null;
+  const folder=parts[1]||'';
+  const m=folder.match(/\b(FAB|CUP|CUB|BSGS)\b/i);
+  if(!m)return null;
+  const tok=m[1].toUpperCase();
+  return tok==='CUB'?'CUP':tok;
+}
+/* PR-A6-BUILDING-SCOPED-TESTNAME end */
 /* IMG-COUNT-CHECK start: batch-level image count set by loadNwImages when
    images are queued for the current XML batch. Read by the pre-merge
    sanity check (_importToRegisterChecked) that compares parsed clash
@@ -8452,11 +8482,24 @@ function batchLoad(files){
     const f=files[idx];
     const r=new FileReader();
     r.onload=ev=>{
-      _batchResults[f.name]=ev.target.result;
-      /* SOURCEFILE-FULLPATH: parallel map keyed by the same leaf filename
-         but valued with the webkitRelativePath so batchParse can stamp
-         c.sourceFilePath alongside c.sourceFile. */
-      _batchFilePaths[f.name]=f.webkitRelativePath||f.name;
+      /* PR-A6-BUILDING-SCOPED-TESTNAME: key both maps by the FULL
+         webkitRelativePath (fallback to leaf when unavailable) instead
+         of the leaf filename. W31 incident: 29 XMLs across 4 sub-
+         folders (CUP AMHS / CUP Exyte / FAB AMHS / FAB Exyte) share
+         many leaf names (03_GAS_v_08_AMHS.xml, Exyte CSA_v_08_AMHS.xml,
+         …). Under leaf-keying the second-read file's content silently
+         overwrote the first — Object.entries(_batchResults) in
+         batchParse only saw one entry per leaf, so FAB's XMLs were
+         entirely lost. Path-keying makes every real file a distinct
+         entry. Downstream sourceFile stays as the leaf (extracted at
+         parser push) so existing register clashes don't get a schema
+         shift; sourceFilePath continues to carry the full path. */
+      const _key=f.webkitRelativePath||f.name;
+      _batchResults[_key]=ev.target.result;
+      /* SOURCEFILE-FULLPATH: parallel map keyed by the same path as
+         _batchResults so batchParse can look up the file path when
+         stamping c.sourceFilePath / _extractBuildingScope reads. */
+      _batchFilePaths[_key]=f.webkitRelativePath||f.name;
       done++;
       const pct=Math.round((done/files.length)*100);
       if(bar)bar.style.width=pct+'%';
@@ -8496,7 +8539,12 @@ function batchParse(files,errors,readCount){
   (files||[]).forEach(f=>{
     if(f && f.name && f.lastModified){
       const d=new Date(f.lastModified);
-      _fileMtimeMap[f.name]=String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+String(d.getFullYear()).slice(2);
+      /* PR-A6-BUILDING-SCOPED-TESTNAME: key by the same path used in
+         _batchResults so same-leaf files across subfolders don't
+         collide (their mtimes may differ across the CUP/FAB
+         subfolders even when their leaf names match). */
+      const _key=f.webkitRelativePath||f.name;
+      _fileMtimeMap[_key]=String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+String(d.getFullYear()).slice(2);
     }
   });
   /* FILE-MTIME-AS-DATE end */
@@ -8512,7 +8560,17 @@ function batchParse(files,errors,readCount){
     if(!batches.length){filesSkipped++;return;}
     filesParsed++;
     batches.forEach(batch=>{
-      const tn=batch.getAttribute('name')||fname.replace(/\.xml$/i,'');
+      /* PR-A6-BUILDING-SCOPED-TESTNAME: raw XML testName (kept on
+         c.rawTestName for debugging / cross-batch matching); display
+         testName picks up a "(FAB)" or "(CUP)" suffix so Test
+         Breakdown, PDF report, and PPTX all show separate rows for
+         same-testName XMLs across FAB and CUP folders. Falls through
+         with no suffix when _extractBuildingScope returns null
+         (single-file paste, legacy folder shape without a week
+         wrapper) — no schema shift, no false attribution. */
+      const _rawTn=(batch.getAttribute('name')||fname.replace(/.*[\\/]/,'').replace(/\.xml$/i,''));
+      const _bldScope=_extractBuildingScope((_batchFilePaths&&_batchFilePaths[fname])||fname);
+      const tn=_bldScope?(_rawTn+' ('+_bldScope+')'):_rawTn;
       testsFound++;
       // clashtest may not carry units attr — inherit from parent batchtest/exchange
       const units=batch.getAttribute('units')||batch.closest('batchtest')?.getAttribute('units')||batch.closest('exchange')?.getAttribute('units')||'m';
@@ -8605,7 +8663,14 @@ function batchParse(files,errors,readCount){
              IMG-COUNT-CHECK-MODAL per-file breakdown, the DUP-FILES-FIX
              perFile bucket, and the imports[] Data Manager attribution
              all see one consistent semantic. */
-          nwSt,depMm,tn,sourceFile:fname,
+          /* PR-A6-BUILDING-SCOPED-TESTNAME: sourceFile stays as the
+             LEAF (post batchLoad's path-keyed map change) so existing
+             register clashes and downstream perFile / IMG-COUNT logic
+             don't schema-shift. sourceFilePath continues to carry the
+             full path. rawTestName + buildingScope carry the pre-
+             suffix testName and its resolved scope for reconstruction
+             and diagnostics. */
+          nwSt,depMm,tn,rawTestName:_rawTn,buildingScope:_bldScope,sourceFile:String(fname).replace(/.*[\\/]/,''),
           /* BATCH-IMPORT-FOLDER-CAPTURE start: parser 1 (batchParse) —
              stamp sourceFolder + sourceFilePath from the webkitRelativePath
              stashed in _batchFilePaths at bloadf/bdrop-folder time. Bare
@@ -8654,7 +8719,13 @@ function batchParse(files,errors,readCount){
   if(chipWrap&&chips){
     chipWrap.style.display='';
     if(chipsLabel)chipsLabel.textContent=`${filesParsed} XML files loaded · ${testsFound} tests · ${_bcfC.length.toLocaleString()} total clashes${filesSkipped?` · ${filesSkipped} files skipped (no clash data)`:''}`;
-    chips.innerHTML=Object.keys(_batchResults).map(fname=>`<span style="font-size:9px;font-family:monospace;padding:2px 7px;background:#F0F7FF;border:.5px solid #BFDBFE;border-radius:3px;color:#1D4ED8">${esc(fname.replace(/\.xml$/i,''))}</span>`).join('');
+    /* PR-A6-BUILDING-SCOPED-TESTNAME: derive display label from the
+       PATH by extracting the leaf (post path-keyed maps) so the chip
+       stays visually identical to the pre-A6 render. */
+    chips.innerHTML=Object.keys(_batchResults).map(fname=>{
+      const _leaf=String(fname).replace(/.*[\\/]/,'').replace(/\.xml$/i,'');
+      return `<span style="font-size:9px;font-family:monospace;padding:2px 7px;background:#F0F7FF;border:.5px solid #BFDBFE;border-radius:3px;color:#1D4ED8">${esc(_leaf)}</span>`;
+    }).join('');
   }
 
   if(!_bcfC.length){bmsg(`No clashes found in ${filesParsed} files`,'#EA580C');return;}
@@ -8846,7 +8917,14 @@ function bparse(){
      picker / paste path — so single-file semantics don't regress. */
   const _srcPath=(Array.isArray(_bcfFilePaths)&&_bcfFilePaths[0])||_srcFile;
   batches.forEach(batch=>{
-    const tn=batch.getAttribute('name')||'Unnamed Test';
+    /* PR-A6-BUILDING-SCOPED-TESTNAME: parser 2 mirror of parser 1's
+       raw/display split. bparse serves single-file pastes AND single-
+       file folder picks; when _srcPath resolves a building token via
+       _extractBuildingScope the suffix fires, otherwise raw testName
+       falls through unchanged (paste imports never get a suffix). */
+    const _rawTn=batch.getAttribute('name')||'Unnamed Test';
+    const _bldScope=_extractBuildingScope(_srcPath);
+    const tn=_bldScope?(_rawTn+' ('+_bldScope+')'):_rawTn;
     // clashtest may not carry units attr — inherit from parent batchtest/exchange
     const units=batch.getAttribute('units')||batch.closest('batchtest')?.getAttribute('units')||batch.closest('exchange')?.getAttribute('units')||'m';
     const mult=units==='mm'?1:1000;
@@ -8920,7 +8998,7 @@ function bparse(){
          it to the folder helper is enough. Dual-parser discipline
          (CLAUDE.md) — any change here needs the matching change at parser
          1's push site. */
-      _bcfC.push({idx:_bcfC.length+1,nwName:r.getAttribute('name')||('Clash '+(i+1)),nwSt,depMm,tn,/* SOURCEFILE-PROPAGATE */ sourceFile:_srcFile,/* SOURCEFILE-FULLPATH */ sourceFilePath:_srcPath,
+      _bcfC.push({idx:_bcfC.length+1,nwName:r.getAttribute('name')||('Clash '+(i+1)),nwSt,depMm,tn,/* PR-A6-BUILDING-SCOPED-TESTNAME */ rawTestName:_rawTn,buildingScope:_bldScope,/* SOURCEFILE-PROPAGATE */ sourceFile:_srcFile,/* SOURCEFILE-FULLPATH */ sourceFilePath:_srcPath,
         sourceFolder:_extractSourceFolder(_srcPath),
         /* BATCH-IMPORT-FOLDER-CAPTURE end */
         /* WEEKLY-IMPORT-CAPTURE start: parser 2 mirror of parser 1's
@@ -9348,10 +9426,16 @@ function importToRegister(mode){
      the filename. */
   const _importPreBcf={};
   (_bcfC||[]).forEach(c=>{
-    const k=c.sourceFile||'pasted';
-    if(!_importPreBcf[k])_importPreBcf[k]={count:0,testNames:new Set()};
+    /* PR-A6-BUILDING-SCOPED-TESTNAME: key snapshot by sourceFilePath
+       so same-leaf files across subfolders each get their own
+       summary line — same rationale as _bumpPF above. Track raw
+       testName + buildingScope so the log line surfaces both. */
+    const k=c.sourceFilePath||c.sourceFile||'pasted';
+    if(!_importPreBcf[k])_importPreBcf[k]={count:0,testNames:new Set(),rawNames:new Set(),scopes:new Set()};
     _importPreBcf[k].count++;
     if(c.tn)_importPreBcf[k].testNames.add(c.tn);
+    if(c.rawTestName)_importPreBcf[k].rawNames.add(c.rawTestName);
+    if(c.buildingScope)_importPreBcf[k].scopes.add(c.buildingScope);
   });
   /* PR-A5-IMPORT-SUMMARY end */
   /* WEEKLY-SNAP-CONDITIONAL-IMPORT start: derive the anchor from the batch's
@@ -9528,7 +9612,12 @@ function importToRegister(mode){
      'pasted' for single-file picker/drop/paste. Bumped in each merge-loop branch
      below; consumed by the import-event IIFE further down. */
   const perFile={};
-  function _bumpPF(c,which){const k=c.sourceFile||'pasted';if(!perFile[k])perFile[k]={count:0,added:0,updated:0,unchanged:0};perFile[k].count++;perFile[k][which]++;}
+  /* PR-A6-BUILDING-SCOPED-TESTNAME: key perFile by sourceFilePath so
+     the tracker stays 1-entry-per-real-file when a batch contains
+     same-leaf XMLs across CUP + FAB subfolders. Falls back to
+     sourceFile (leaf) then 'pasted' for legacy paste-imports and
+     clashes without either — same order the pre-A6 code relied on. */
+  function _bumpPF(c,which){const k=c.sourceFilePath||c.sourceFile||'pasted';if(!perFile[k])perFile[k]={count:0,added:0,updated:0,unchanged:0};perFile[k].count++;perFile[k][which]++;}
   /* DUP-FILES-FIX end */
 
   /* PAIR-ID-COMPOSITE-FALLBACK-USE start: build a one-shot pairKey() lookup
@@ -9744,6 +9833,15 @@ function importToRegister(mode){
       name:`${uid} \u2014 ${c.nwName}`,
       nwOrig:c.nwName,
       testName,
+      /* PR-A6-BUILDING-SCOPED-TESTNAME: persist the pre-suffix raw
+         testName (for cross-batch identity / debugging) and the
+         resolved building scope. clashBuildingGroup and downstream
+         building-aware reads prefer c.buildingScope over sourceFile-
+         Path-based inference. null when the folder shape didn't
+         yield a token (paste imports, single-file picks without a
+         week wrapper). */
+      rawTestName:(c.rawTestName!==undefined?c.rawTestName:testName),
+      buildingScope:(c.buildingScope!==undefined?c.buildingScope:null),
       disciplineA:c.dA,
       disciplineB:c.dB,
       elementA:c.eA.item||c.eA.layer||'Unknown',
@@ -9837,8 +9935,15 @@ function importToRegister(mode){
       const matched=(pf.updated||0)+(pf.unchanged||0);
       const skipped=parsed-addedN-matched;
       if(skipped>0)_importAnyDropped=true;
-      const testList=[...pre.testNames].join(', ')||'(unknown test)';
-      console.log('[Import summary] '+fname+' ('+testList+'): '+parsed+' in XML, '+addedN+' added, '+matched+' matched to existing, '+skipped+' flagged as cross-test dupes');
+      /* PR-A6-BUILDING-SCOPED-TESTNAME: enrich the log line with the
+         resolved building scope + raw testName so operators can
+         verify at-a-glance that CUP vs FAB same-leaf files each land
+         with the expected suffix. Falls through to display-testName
+         when raw isn't set (paste imports pre-A6). */
+      const scopeList=[...pre.scopes].join(', ');
+      const rawList=[...pre.rawNames].join(', ')||[...pre.testNames].join(', ')||'(unknown test)';
+      const scopeSfx=scopeList?(' ['+scopeList+']'):'';
+      console.log('[Import summary] '+fname+' ('+rawList+scopeSfx+'): '+parsed+' in XML, '+addedN+' added, '+matched+' matched to existing, '+skipped+' flagged as cross-test dupes');
     });
     if(_importAnyDropped){
       console.warn('[Import summary] One or more files had clashes dropped by the cross-test dupe filter. Review Dedup Queue and confirm before publishing reports.');
