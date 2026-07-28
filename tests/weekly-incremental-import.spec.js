@@ -271,7 +271,9 @@ test.describe('WEEKLY-SNAPSHOT-RECORD — imports[] entry carries the batch-leve
     const imp = imports[imports.length - 1];
     expect(imp.weekTag).toBe('week-260601');
     expect(imp.weekDate).toBe('2026-06-01');
-    expect(imp.testsIncluded).toEqual(['03_GAS']);
+    // PR-A6-BUILDING-SCOPED-TESTNAME: archive folder contains 'FAB',
+    // so the display testName picks up the '(FAB)' suffix.
+    expect(imp.testsIncluded).toEqual(['03_GAS (FAB)']);
     expect(Array.isArray(imp.clashUidsPresent)).toBe(true);
     expect(imp.clashUidsPresent).toHaveLength(3);
     expect(imp.added).toBe(3);
@@ -305,9 +307,12 @@ test.describe('WEEKLY-SNAPSHOT-RECORD — imports[] entry carries the batch-leve
     // same batch-level testsIncluded set.
     const testsSeen = new Set();
     imports.forEach(i => (i.testsIncluded || []).forEach(t => testsSeen.add(t)));
-    expect([...testsSeen].sort()).toEqual(['03_GAS', '04_CHEM', '05_WWT']);
+    // PR-A6-BUILDING-SCOPED-TESTNAME: '260601 FAB AMHS v 7' folder
+    // resolves to buildingScope='FAB' — every display testName here
+    // picks up the '(FAB)' suffix.
+    expect([...testsSeen].sort()).toEqual(['03_GAS (FAB)', '04_CHEM (FAB)', '05_WWT (FAB)']);
     imports.forEach(i => {
-      expect(i.testsIncluded).toEqual(['03_GAS', '04_CHEM', '05_WWT']);
+      expect(i.testsIncluded).toEqual(['03_GAS (FAB)', '04_CHEM (FAB)', '05_WWT (FAB)']);
       expect(i.weekTag).toBe('week-260601');
     });
     expect(state.clashes).toHaveLength(4);
@@ -394,7 +399,8 @@ test.describe('WEEKLY-DELTA-DETECT — per-testName scoping against prior snapsh
       // Status must NOT be auto-flipped to Resolved — user drives that
       // decision from the Review Queue.
       expect(c.status).not.toBe('Resolved');
-      expect(['03_GAS', '04_CHEM', '05_WWT']).toContain(c.testName);
+      // PR-A6-BUILDING-SCOPED-TESTNAME: '260608 FAB' → '(FAB)' suffix.
+      expect(['03_GAS (FAB)', '04_CHEM (FAB)', '05_WWT (FAB)']).toContain(c.testName);
     }
 
     // Weekly imports[] entry from week 2 records clashUidsPresent = 12 total
@@ -461,7 +467,8 @@ test.describe('WEEKLY-DELTA-DETECT — per-testName scoping against prior snapsh
     });
 
     // 05_WWT clashes must NOT be flagged as pendingReview.
-    const wwtClashes = week2.clashes.filter(c => c.testName === '05_WWT');
+    // PR-A6-BUILDING-SCOPED-TESTNAME: fixture folders contain 'FAB' → suffixed testNames.
+    const wwtClashes = week2.clashes.filter(c => c.testName === '05_WWT (FAB)');
     expect(wwtClashes).toHaveLength(2);
     wwtClashes.forEach(c => {
       expect(c.pendingReview).not.toBe(true);
@@ -469,7 +476,7 @@ test.describe('WEEKLY-DELTA-DETECT — per-testName scoping against prior snapsh
 
     // 04_CHEM lost C2 — that MUST be flagged.
     const chemDisappeared = week2.clashes.filter(c =>
-      c.testName === '04_CHEM' && c.pendingReview === true
+      c.testName === '04_CHEM (FAB)' && c.pendingReview === true
     );
     expect(chemDisappeared).toHaveLength(1);
   });
@@ -664,8 +671,9 @@ test.describe('WEEKLY-DELTA-DETECT — baseline rule (Case A: register has NO pr
       }],
     });
     // No 03_GAS clash may be flagged — first-time testName.
+    // PR-A6-BUILDING-SCOPED-TESTNAME: '260601 FAB' → '(FAB)' suffix.
     const gasFlagged = state.clashes.filter(c =>
-      c.testName === '03_GAS' && c.pendingReview === true
+      c.testName === '03_GAS (FAB)' && c.pendingReview === true
     );
     expect(gasFlagged).toHaveLength(0);
     // The UNRELATED_TEST clash was untouched (not in this batch's tests).
@@ -675,17 +683,21 @@ test.describe('WEEKLY-DELTA-DETECT — baseline rule (Case A: register has NO pr
 
   test('legacy migration compat: same-testName register clashes WITHOUT a prior snapshot still get delta-detected (Case B fallback)', async ({ page }) => {
     // A user upgrading from pre-WEEKLY-SNAPSHOT-RECORD has register
-    // clashes for testName '03_GAS' but no nw:weekly imports[] entry
-    // yet. Their first weekly import for 03_GAS drops a clash: that
-    // legacy clash must still surface in the Review Queue. This is
-    // Case B with the "register-minus-matched" fallback — snapshot
+    // clashes for testName '03_GAS (FAB)' but no nw:weekly imports[]
+    // entry yet. Their first weekly import for 03_GAS drops a clash:
+    // that legacy clash must still surface in the Review Queue. This
+    // is Case B with the "register-minus-matched" fallback — snapshot
     // was never laid.
+    // PR-A6-BUILDING-SCOPED-TESTNAME: seed with '(FAB)' suffix to
+    // match the display testName the batch produces (folder is
+    // '260601 FAB'). Legacy pre-A6 clashes without a suffix are
+    // covered by the user's planned reset+reimport workflow.
     await bootstrap(page);
     await page.evaluate(() => {
       S.clashes = [
         {
           uid: 'CLX-001', name: 'CLX-001 legacy-C1', nwOrig: 'C1',
-          testName: '03_GAS',
+          testName: '03_GAS (FAB)',
           status: 'Active', priority: 'High',
           disciplineA: 'GAS', disciplineB: 'Structural',
           elementA: 'Item-A-C1', elementB: 'Item-B-C1',
@@ -697,7 +709,7 @@ test.describe('WEEKLY-DELTA-DETECT — baseline rule (Case A: register has NO pr
         },
         {
           uid: 'CLX-002', name: 'CLX-002 legacy-C2', nwOrig: 'C2',
-          testName: '03_GAS',
+          testName: '03_GAS (FAB)',
           status: 'Active', priority: 'High',
           disciplineA: 'GAS', disciplineB: 'Structural',
           elementA: 'Item-A-C2', elementB: 'Item-B-C2',
@@ -782,15 +794,16 @@ test.describe('WEEKLY-DELTA-DETECT — baseline rule (Case A: register has NO pr
     const dedupQueue = await page.evaluate(() => S.dedupQueue || []);
     // Any pair in the queue must reference clashes from PERSISTING_TEST
     // — the NEW_TEST clashes are baseline and must NOT participate.
+    // PR-A6-BUILDING-SCOPED-TESTNAME: '260601 FAB' → '(FAB)' suffix.
     dedupQueue.forEach(pair => {
       const a = state.clashes.find(c => c.uid === pair.a);
       const b = state.clashes.find(c => c.uid === pair.b);
       expect(a && b).toBeTruthy();
-      expect(a.testName).toBe('PERSISTING_TEST');
-      expect(b.testName).toBe('PERSISTING_TEST');
+      expect(a.testName).toBe('PERSISTING_TEST (FAB)');
+      expect(b.testName).toBe('PERSISTING_TEST (FAB)');
     });
     // Sanity: NEW_TEST clashes exist in the register but no dedup entries mention them.
-    const newTestUids = new Set(state.clashes.filter(c => c.testName === 'NEW_TEST').map(c => c.uid));
+    const newTestUids = new Set(state.clashes.filter(c => c.testName === 'NEW_TEST (FAB)').map(c => c.uid));
     expect(newTestUids.size).toBe(2);
     dedupQueue.forEach(pair => {
       expect(newTestUids.has(pair.a)).toBe(false);
@@ -842,14 +855,15 @@ test.describe('WEEKLY-DELTA-DETECT — baseline rule (Case A: register has NO pr
       ],
     });
     // PERSISTING: C2 disappeared, must be flagged.
+    // PR-A6-BUILDING-SCOPED-TESTNAME: '260601 FAB' → '(FAB)' suffix.
     const persistingDisappeared = state.clashes.filter(c =>
-      c.testName === 'PERSISTING' && c.pendingReview === true
+      c.testName === 'PERSISTING (FAB)' && c.pendingReview === true
     );
     expect(persistingDisappeared).toHaveLength(1);
     expect(persistingDisappeared[0].nwOrig).toBe('C2');
     // FIRST_TIME: no clash flagged.
     const firstTimeFlagged = state.clashes.filter(c =>
-      c.testName === 'FIRST_TIME' && c.pendingReview === true
+      c.testName === 'FIRST_TIME (FAB)' && c.pendingReview === true
     );
     expect(firstTimeFlagged).toHaveLength(0);
   });
