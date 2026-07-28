@@ -8417,11 +8417,36 @@ async function importFolderPick(inputEl){
            once the loop finishes (see XTEST-DUP-BATCH-AUDIT below). */
         window._skipCrossTestDupes = true;
         /* XTEST-DUP-BATCH-SKIP end */
-        /* IMG-COUNT-CHECK: route the folder-import loop through the
-           image-count guard so multi-test folders get the same
-           Cancel/Continue treatment as single-file imports. */
-        _importToRegisterChecked('append');
+        /* PR-A9-FOLDER-BATCH-IMG-SKIP start: bypass the interactive
+           IMG-COUNT-CHECK-MODAL inside the folder-batch loop for the
+           same reason the cross-test-dupe modal is skipped just above
+           (XTEST-DUP-BATCH-SKIP). _importToRegisterChecked shows a
+           blocking modal + returns without importing when clashes are
+           missing nwImageRef; the loop doesn't await the click and
+           proceeds after the 150ms setTimeout below. When the next
+           file ALSO triggers the modal, _showImgCountMismatchModal's
+           existing.remove() at L9368 orphans the first modal's
+           unclicked Cancel/Continue buttons — that first test's
+           clashes are never added and there is no error, log, or
+           toast. Root cause: this call site was cargo-culted from
+           the single-file bloadf path where the modal works fine
+           because there is no loop to race against.
+
+           The user already confirmed intent for the WHOLE batch via
+           importFolderPick's upfront confirm("All will be appended…
+           Proceed?") at the top of this function, so the per-test
+           modal is redundant here. Direct importToRegister('append')
+           preserves every other guardrail (PAIR-ID-MERGE,
+           XTEST-DUP-IMPORT, PR-A5-IMPORT-SUMMARY logging) and imports
+           the parsed clashes unconditionally. Missing-viewpoint
+           tracking / metadata is unchanged — only the blocking modal
+           inside this loop is skipped. Single-file bloadf path still
+           uses _importToRegisterChecked (see the two "Append to
+           Register" / "Replace Register" onclick handlers around
+           L7885-7891). */
+        importToRegister('append');
         completedCount++;
+        /* PR-A9-FOLDER-BATCH-IMG-SKIP end */
       }
 
       // Tiny yield so the UI/toast can repaint between iterations.
