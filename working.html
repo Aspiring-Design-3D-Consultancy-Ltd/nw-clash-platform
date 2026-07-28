@@ -9148,7 +9148,18 @@ function _xtResolveSkip(modalId, mode){
    from Settings -> Data Management. Pair dedup by {min(uid),max(uid)} so each
    collision appears once. */
 function auditRegisterForCrossTestDuplicates(){
-  var raw = findCrossTestDuplicates(S.clashes||[], S.clashes||[], {tolMm:5});
+  /* PR-A7-AUDIT-XTEST-TOLERANCE start: caller was overriding PR-A5's
+     1mm default with an explicit tolMm:5, which reinstates the exact
+     false-positive class PR-A5 tightened out — dense clashes across
+     different testNames get flagged and, when the user clicks "Merge
+     and delete older" in the audit modal, genuinely distinct records
+     collapse. The audit auto-runs ~700ms after every batch import
+     (XTEST-DUP-BATCH-AUDIT), so leaving the override in place turns
+     PR-A5's fix into a batch-import-only guard while the post-batch
+     audit path stays broken. Region 1 of 2 (see companion at
+     XTEST-DUP-IMPORT). */
+  var raw = findCrossTestDuplicates(S.clashes||[], S.clashes||[], {tolMm:1});
+  /* PR-A7-AUDIT-XTEST-TOLERANCE end */
   function uidNum(u){ var m=/CLX-(\d+)/.exec(u||''); return m?parseInt(m[1],10):Infinity; }
   var seen={}, pairs=[];
   raw.forEach(function(m){
@@ -9420,7 +9431,14 @@ function importToRegister(mode){
      merge into the survivors) or cancels. Replace mode never matches because
      S.clashes was cleared above. */
   if(!window._skipCrossTestDupes){
-    var _xtMatches = findCrossTestDuplicates(_bcfC, S.clashes||[], {tolMm:5});
+    /* PR-A7-AUDIT-XTEST-TOLERANCE start: same override as the audit
+       caller — the XTEST-DUP-IMPORT pre-loop gate was passing tolMm:5
+       explicitly, which defeated PR-A5's default and re-produced the
+       W31 false-positive class (dense same-source clashes across
+       different testNames flagged as cross-test dupes, then dropped
+       when the user clicks "Skip duplicates"). Region 2 of 2. */
+    var _xtMatches = findCrossTestDuplicates(_bcfC, S.clashes||[], {tolMm:1});
+    /* PR-A7-AUDIT-XTEST-TOLERANCE end */
     if(_xtMatches.length){ _showCrossTestDupeModal(_xtMatches, mode); return; }
   }
   window._skipCrossTestDupes = false;
