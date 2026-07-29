@@ -16303,7 +16303,21 @@ function pairIdBackfill(){
       if(r.error)errors.push(f.name+' — '+r.error);
       xmlRowsCache=xmlRowsCache.concat(r.rows);
     }
-    fileCount.textContent=`${files.length} file${files.length===1?'':'s'} selected · ${xmlRowsCache.length} clashes parsed`+(errors.length?` · ${errors.length} error${errors.length===1?'':'s'}`:'');
+    /* PR-A14-BF-SKIPPED-PERSIST start: preserve the "(K skipped)"
+       suffix in the FINAL fileCount label. Pre-A14 the transient
+       "parsing… (K skipped)" message got overwritten here by a final
+       message that dropped the skipped count. Two consequences:
+         (a) UX regression — the user loses visibility of how many
+             files the filter dropped
+         (b) test race in pair-id-backfill:260 — its waitForFunction
+             matched /files selected/, which caught either message
+             depending on browser scheduling. When the final message
+             arrived first, "(3 skipped)" was gone and the assertion
+             failed with ~40% reproduction rate. Preserving the
+             suffix makes the assertion deterministic and gives the
+             user the count in the final state. */
+    fileCount.textContent=`${files.length} file${files.length===1?'':'s'} selected · ${xmlRowsCache.length} clashes parsed`+(skipped?` (${skipped} skipped)`:'')+(errors.length?` · ${errors.length} error${errors.length===1?'':'s'}`:'');
+    /* PR-A14-BF-SKIPPED-PERSIST end */
     dryRun=_bfDryRun(xmlRowsCache);
     // Render per-test table.
     const rows=[...dryRun.perTest.values()].sort((a,b)=>(b.matched)-(a.matched));
@@ -16506,6 +16520,22 @@ async function _executeSelectiveReset(cats,modalId){
        are self-healing anyway once the user closes the interfering
        tab and retries. */
     if(_mode==='full'){try{localStorage.setItem('nw:pendingIdbWipe','1');}catch(e){}}
+    /* PR-A14-SR-FAILURE-ALERT start: distinguish "wipe deferred by
+       3s race" (soft — reload + retry on next launch is the design)
+       from "wipe rejected for a real reason" (hard — the synthetic
+       throw the test simulates, a blocked-by-another-connection
+       timeout, or a verify miss). Pre-A14 the catch swallowed every
+       error into a console.warn and then unconditionally fired the
+       success alert + reload — the user got a plausible "reset
+       complete" toast while the data actually persisted. Matches the
+       factoryReset failure-alert pattern (~L15817): explicit alert
+       + return without reload so the user knows the action didn't
+       land and can fix the blocking tab before retrying. The
+       distinguishing signal is the "deferred to next launch" phrase
+       — that's the 3s race message the existing SELECTIVE-RESET-
+       IDB-NONBLOCKING marker legitimately treats as "soft". Every
+       other error message routes through the hard-failure branch. */
+    let _srFailMsg=null;
     try{
       await Promise.race([
         _wipeIdbWithVerify(_mode,_stores),
@@ -16513,8 +16543,19 @@ async function _executeSelectiveReset(cats,modalId){
       ]);
       if(_mode==='full'){try{localStorage.removeItem('nw:pendingIdbWipe');}catch(e){}}
     }catch(e){
-      console.warn('selective reset IDB wipe deferred:',e.message);
+      const _msg=(e&&e.message)||String(e);
+      if(/deferred to next launch/.test(_msg)){
+        console.warn('selective reset IDB wipe deferred:',_msg);
+      } else {
+        _srFailMsg=_msg;
+        try{console.warn('selective reset IDB wipe FAILED:',_msg);}catch(_){}
+      }
     }
+    if(_srFailMsg){
+      alert('Selective reset FAILED — IndexedDB wipe could not be verified.\n\n'+_srFailMsg+'\n\nLikely cause: another browser tab has working.html open, holding the shared IndexedDB connection.\n\nClose all other tabs with this file, then try again. If that doesn\'t help, open DevTools > Application > IndexedDB and delete NWClashImages manually before reloading.');
+      return;
+    }
+    /* PR-A14-SR-FAILURE-ALERT end */
     /* SELECTIVE-RESET-IDB-NONBLOCKING end */
   }
   alert('Selective reset complete. The page will reload.');
