@@ -17742,7 +17742,20 @@ Penetration: ${xe(c.penetration)} | Detected: ${xe(c.date)}</Description>
              Shows the same data Shane needs to diagnose why an image isn't
              rendering for a particular clash. */
           const ref=c.nwImageRef||'';
-          const tn=c.testName||'';
+          /* PR-A11-IMAGE-KEY-RAWTESTNAME start: IMG-DIAG label was still
+             keying its composite-key lookup off c.testName after
+             PR-A11 fixed the four resolver functions. That meant a
+             PR-A6-renamed test whose image WAS resolving via the
+             fixed getNwImageB64 would render with an amber
+             "⚠ Missing: […]" warning here — a false miss because
+             the diagnostic block computed its own key from the
+             scoped display name. Same c.rawTestName||c.testName
+             fallback as the four resolvers; tooltip wording is
+             untouched (non-goal). Region 5 of 5 in the marker
+             family (see PR-A11 regions 1-4 in hasNwImage /
+             getNwImageB64 / _posClashCount / getNwImageB64Sync). */
+          const tn=c.rawTestName||c.testName||'';
+          /* PR-A11-IMAGE-KEY-RAWTESTNAME end */
           if(!_nwImgCount){
             return `<span style="font-size:9px;font-weight:600;color:#94A3B8" title="No images loaded. Use 'Load NWC Images' to upload a zip.">📐 Schematic · no images loaded</span>`;
           }
