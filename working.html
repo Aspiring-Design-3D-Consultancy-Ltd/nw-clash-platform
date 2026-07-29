@@ -8270,6 +8270,56 @@ async function importFolderPick(inputEl){
   const all=[...inputEl.files];
   if(!all.length)return;
 
+  /* PR-A13-FOLDER-PICK-SUMMARY start: surface CUP/FAB file-count
+     breakdown immediately after the pick, before any parsing runs.
+     Matches PR-A6's building-scope convention (folder segment [1]
+     encodes FAB / CUP / CUB) — Muratec weekly exports live under
+     week-YYMMDD/<YYMMDD BLDG SCOPE Clash test>/test.xml, so a
+     substring match against every file's webkitRelativePath
+     reliably counts per-scope contribution regardless of which
+     subfolder(s) the user actually picked.
+
+     Warn (amber, extended duration) when EITHER count is zero — the
+     failure mode the brief targets is a user picking only a single
+     CUP or FAB subfolder instead of the full week wrapper, then
+     importing what looks like a complete batch. Warning gets the
+     user's attention before parsing burns time and clashes get
+     dropped downstream. Non-blocking: import can still proceed
+     against the gates below (the shape / week-wrapper / archive
+     warns still run). */
+  let _fabCount=0, _cupCount=0;
+  all.forEach(f=>{
+    const p=(f&&f.webkitRelativePath)||(f&&f.name)||'';
+    if(/FAB/i.test(p))_fabCount++;
+    if(/CUP/i.test(p))_cupCount++;
+  });
+  {
+    const _isWarn=(_fabCount===0||_cupCount===0);
+    const _msg='Picked: '+all.length+' file'+(all.length===1?'':'s')+
+      ' — CUP: '+_cupCount+', FAB: '+_fabCount+
+      (_isWarn?(_cupCount===0&&_fabCount===0
+        ?' — no CUP/FAB files detected (wrong folder?)'
+        :(_cupCount===0
+          ?' — no CUP files detected (only FAB subfolder picked?)'
+          :' — no FAB files detected (only CUP subfolder picked?)')):'');
+    const _prior=document.getElementById('pr-a13-pick-summary');
+    if(_prior)_prior.remove();
+    const t=document.createElement('div');
+    t.id='pr-a13-pick-summary';
+    t.setAttribute('data-warn',_isWarn?'1':'0');
+    t.textContent=(_isWarn?'⚠ ':'')+_msg;
+    t.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);'+
+      'background:'+(_isWarn?'#B45309':'#0F1824')+';color:#fff;'+
+      'padding:8px 18px;border-radius:6px;font-size:12px;font-family:Arial,sans-serif;'+
+      'z-index:9999;pointer-events:none;opacity:1;transition:opacity .4s;'+
+      'box-shadow:0 6px 20px rgba(0,0,0,.25)';
+    document.body.appendChild(t);
+    const _dur=_isWarn?9000:3500;
+    setTimeout(()=>{t.style.opacity='0';setTimeout(()=>t.remove(),400);},_dur);
+    if(_isWarn){try{console.warn('[PR-A13-FOLDER-PICK-SUMMARY] '+_msg);}catch(e){}}
+  }
+  /* PR-A13-FOLDER-PICK-SUMMARY end */
+
   /* BATCH-IMPORT-PICK-VALIDATION: gate — inspect the first file's
      webkitRelativePath. Minimum viable layouts:
        3-seg Exyte (with week wrapper): week-YYMMDD/archive/XML
