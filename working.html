@@ -4284,7 +4284,18 @@ function refreshModalImage(){
 function hasNwImage(c){
   if(!_nwImgCount)return false;
   const ref=c.nwImageRef||'';
-  const tn=c.testName||'';
+  /* PR-A11-IMAGE-KEY-RAWTESTNAME start: images are stored under the
+     raw XML testName (importFolderPick passes baseName — the pre-
+     scope value — to loadNwImages), so lookups must read
+     c.rawTestName to hit that key. Post-PR-A6 c.testName carries a
+     "(FAB)" / "(CUP)" suffix that never appears in the image store,
+     so keying by c.testName misses 100% of images on any renamed
+     test. Backwards compat: pre-A6 clashes have no rawTestName —
+     fall back to c.testName so their images still resolve. Region
+     1 of 4 (see companions in getNwImageB64, _posClashCount,
+     getNwImageB64Sync). */
+  const tn=c.rawTestName||c.testName||'';
+  /* PR-A11-IMAGE-KEY-RAWTESTNAME end */
   if(ref&&tn&&_nwImages.has(tn+'::'+ref))return true;
   // Positional fallback (mirrors getNwImageB64Sync)
   if(tn&&typeof c.testIdx==='number'&&_nwImgByTest[tn]){
@@ -4344,7 +4355,11 @@ async function getNwImageB64(c){
      "pretend to match" fallback that returned arbitrary images. Misses now
      correctly return null so the SVG plan placeholder renders instead. */
   const ref=c.nwImageRef||'';
-  const tn=c.testName||'';
+  /* PR-A11-IMAGE-KEY-RAWTESTNAME start: read raw testName so
+     post-PR-A6 display suffix "(FAB)" / "(CUP)" doesn't defeat the
+     composite key. Fallback preserves pre-A6 lookups. Region 2 of 4. */
+  const tn=c.rawTestName||c.testName||'';
+  /* PR-A11-IMAGE-KEY-RAWTESTNAME end */
   if(ref&&tn){
     const key=tn+'::'+ref;
     if(_nwImages.has(key)){
@@ -4383,10 +4398,16 @@ function _posClashCount(testName){
   const len=(S.clashes||[]).length;
   if(_posClashCountCache===null||_posClashCountCacheLen!==len){
     _posClashCountCache={};
+    /* PR-A11-IMAGE-KEY-RAWTESTNAME start: bucket by raw testName so
+       the positional fallback in getNwImageB64 / getNwImageB64Sync /
+       hasNwImage compares against a per-baseName count (matches
+       loadNwImages's per-baseName image count). Pre-A6 clashes fall
+       back to c.testName. Region 3 of 4. */
     (S.clashes||[]).forEach(c=>{
-      const t=c.testName||'';
+      const t=c.rawTestName||c.testName||'';
       _posClashCountCache[t]=(_posClashCountCache[t]||0)+1;
     });
+    /* PR-A11-IMAGE-KEY-RAWTESTNAME end */
     _posClashCountCacheLen=len;
   }
   return _posClashCountCache[testName]||0;
@@ -4493,7 +4514,10 @@ function getNwImageB64Sync(c){
   /* IMG-FIX start: same composite-key lookup as the async version, drops the
      unsafe positional fallback. */
   const ref=c.nwImageRef||'';
-  const tn=c.testName||'';
+  /* PR-A11-IMAGE-KEY-RAWTESTNAME start: raw testName lookup, mirrors
+     the async twin above. Region 4 of 4. */
+  const tn=c.rawTestName||c.testName||'';
+  /* PR-A11-IMAGE-KEY-RAWTESTNAME end */
   if(ref&&tn){
     const key=tn+'::'+ref;
     if(_nwImages.has(key)){
