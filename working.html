@@ -389,7 +389,8 @@ tbody td:last-child{border-right:none;}
 <script>
 let _crApproveUids=[];
 let _crApproveCancelCb=null;
-function _crApproveOpen(uids,cancelCb){
+let _crApproveSource=null;
+function _crApproveOpen(uids,cancelCb,source){
   /* APPROVE-ACTION-CLASH-REGISTER-CONFIRM-MODAL: defensive re-entry guard.
      The modal is position:fixed;inset:0 with a full-viewport backdrop so
      in practice a second _crApproveOpen call is unreachable via clicks —
@@ -404,6 +405,17 @@ function _crApproveOpen(uids,cancelCb){
   }
   _crApproveUids=Array.isArray(uids)?uids.slice():[];
   _crApproveCancelCb=typeof cancelCb==='function'?cancelCb:null;
+  /* CR-APPROVE-SOURCE-FIX start: the modal is a single shared surface used
+     by three call sites — Clash Register per-row dropdown (2-arg call),
+     Clash Register bulk-bar (2-arg call), and ReviewQueueBulkDelta B3
+     bulk-apply (3-arg call, passes 'ReviewQueueBulkDelta'). Previously this
+     3rd argument was silently dropped because the function signature only
+     declared two parameters — every Confirm click hard-coded 'ClashRegister'
+     downstream in _crApproveConfirm(), mis-tagging ReviewQueueBulkDelta
+     approvals in the audit trail. Default to 'ClashRegister' so the two
+     existing 2-arg call sites are byte-for-byte unchanged. */
+  _crApproveSource=source||'ClashRegister';
+  /* CR-APPROVE-SOURCE-FIX end */
   const n=_crApproveUids.length;
   const t=document.getElementById('cr-approve-title');
   const b=document.getElementById('cr-approve-body');
@@ -432,20 +444,25 @@ function _crApproveCancel(){
   const cb=_crApproveCancelCb;
   _crApproveCancelCb=null;
   _crApproveUids=[];
+  _crApproveSource=null;
   if(typeof cb==='function'){try{cb();}catch(_){}}
 }
 function _crApproveConfirm(){
   const uids=_crApproveUids.slice();
   const m=document.getElementById('cr-approve-modal');
   if(m)m.style.display='none';
+  const src=_crApproveSource||'ClashRegister';
   _crApproveCancelCb=null;
   _crApproveUids=[];
+  _crApproveSource=null;
   if(!uids.length)return;
-  // Handler now accepts the source parameter directly (default
-  // 'ReviewQueue' preserves the Review Queue call-site's historical
-  // behaviour); pass 'ClashRegister' so the audit trail identifies
-  // this surface without any post-call rewriting.
-  const n=_markClashesAsApproved(uids,'ClashRegister');
+  /* CR-APPROVE-SOURCE-FIX start: was hard-coded to 'ClashRegister' —
+     now uses whatever source _crApproveOpen recorded so
+     ReviewQueueBulkDelta B3 bulk-approvals are tagged correctly while
+     the two Clash Register call sites (which pass no 3rd arg) keep
+     their historical 'ClashRegister' tag. */
+  const n=_markClashesAsApproved(uids,src);
+  /* CR-APPROVE-SOURCE-FIX end */
   if(n){
     if(typeof showToast==='function')showToast(`✓ ${n} clash${n===1?'':'es'} approved`);
     if(typeof _selClashes!=='undefined'&&_selClashes.clear){_selClashes.clear();}
