@@ -5,15 +5,23 @@ currently listed in docs/ROLE_INDEX.md, along with a proposed workflow sequence.
 
 ## Roles
 
-### 1. QA Investigator
+### 1. Project Analyst
+
+- Purpose: Perform pre-investigation architectural analysis of a reported issue or requested change, identifying affected systems, dependencies, and risks before diagnostic or implementation work begins.
+- Expected Inputs: A reported issue, feature request, or area of concern; CLAUDE.md; AI_DISCOVERY_LOG.md.
+- Expected Outputs: An investigation plan identifying affected systems, cross-system dependencies, and applicable risks/golden rules.
+- Hands off from: (Start of workflow — no preceding role)
+- Hands off to: QA Investigator
+
+### 2. QA Investigator
 
 - Purpose: Investigate and validate quality issues (e.g. bugs, regressions, unexpected behavior) within the project.
-- Expected Inputs: A reported issue, symptom, or area of concern to investigate.
+- Expected Inputs: Investigation plan from Project Analyst identifying affected systems, dependencies, and risks.
 - Expected Outputs: Findings/report on the investigated issue, including root cause and evidence.
-- Hands off from: (Start of workflow — no preceding role)
+- Hands off from: Project Analyst
 - Hands off to: Developer / Fix Investigator
 
-### 2. Developer / Fix Investigator
+### 3. Developer / Fix Investigator
 
 - Purpose: Investigate the root cause identified by QA and develop/implement a fix.
 - Expected Inputs: QA Investigator's findings/report on the issue.
@@ -21,7 +29,7 @@ currently listed in docs/ROLE_INDEX.md, along with a proposed workflow sequence.
 - Hands off from: QA Investigator
 - Hands off to: Release Engineer
 
-### 3. Release Engineer
+### 4. Release Engineer
 
 - Purpose: Package, verify, and release the fix/change into the appropriate environment.
 - Expected Inputs: Verified fix/code change from Test Engineer.
@@ -29,7 +37,7 @@ currently listed in docs/ROLE_INDEX.md, along with a proposed workflow sequence.
 - Hands off from: Test Engineer
 - Hands off to: (End of workflow — no succeeding role)
 
-### 4. Test Engineer
+### 5. Test Engineer
 
 - Purpose: Provide independent verification of fixes and changes before release.
 - Expected Inputs: Implemented fix/code change from Developer / Fix Investigator.
@@ -39,9 +47,10 @@ currently listed in docs/ROLE_INDEX.md, along with a proposed workflow sequence.
 
 ## Proposed Workflow Sequence
 
-1. QA Investigator
-2. Developer / Fix Investigator
-3. Test Engineer
-4. Release Engineer
+1. Project Analyst
+2. QA Investigator
+3. Developer / Fix Investigator
+4. Test Engineer
+5. Release Engineer
 
 

@@ -2,17 +2,21 @@
 
 ## Defined Roles
 
-1. QA Investigator
+1. Project Analyst
+   Status: Defined
+
+2. QA Investigator
    Status: Complete
 
-2. Developer / Fix Investigator
+3. Developer / Fix Investigator
    Status: Defined
 
-3. Release Engineer
+4. Release Engineer
    Status: Defined
 
-4. Test Engineer
+5. Test Engineer
    Status: Defined
+
 
 ## Notes
 
