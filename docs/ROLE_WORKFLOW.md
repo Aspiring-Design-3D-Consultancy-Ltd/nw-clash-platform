@@ -27,23 +27,23 @@ currently listed in docs/ROLE_INDEX.md, along with a proposed workflow sequence.
 - Expected Inputs: QA Investigator's findings/report on the issue.
 - Expected Outputs: Implemented fix/code change addressing the issue.
 - Hands off from: QA Investigator
-- Hands off to: Release Engineer
+- Hands off to: Test Engineer
 
-### 4. Release Engineer
-
-- Purpose: Package, verify, and release the fix/change into the appropriate environment.
-- Expected Inputs: Verified fix/code change from Test Engineer.
-- Expected Outputs: Released/deployed change.
-- Hands off from: Test Engineer
-- Hands off to: (End of workflow — no succeeding role)
-
-### 5. Test Engineer
+### 4. Test Engineer
 
 - Purpose: Provide independent verification of fixes and changes before release.
 - Expected Inputs: Implemented fix/code change from Developer / Fix Investigator.
 - Expected Outputs: Verification report and regression summary confirming the fix is safe to release.
 - Hands off from: Developer / Fix Investigator
 - Hands off to: Release Engineer (on successful verification); back to Developer / Fix Investigator (if verification fails or regressions are found)
+
+### 5. Release Engineer
+
+- Purpose: Package, verify, and release the fix/change into the appropriate environment.
+- Expected Inputs: Verified fix/code change from Test Engineer.
+- Expected Outputs: Released/deployed change.
+- Hands off from: Test Engineer
+- Hands off to: (End of workflow — no succeeding role, on approval); back to Developer / Fix Investigator (on a No-Go decision, if critical issues remain unresolved)
 
 ## Proposed Workflow Sequence
 
@@ -52,5 +52,3 @@ currently listed in docs/ROLE_INDEX.md, along with a proposed workflow sequence.
 3. Developer / Fix Investigator
 4. Test Engineer
 5. Release Engineer
-
-
