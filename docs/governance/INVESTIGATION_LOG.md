@@ -1,74 +1,3 @@
-# Investigation Log
-
-## Purpose
-
-Maintain a historical record of investigations conducted through the governance workflow.
-
-This log records:
-
-- Investigation date
-- Issue summary
-- Findings
-- Outcome
-- Resolution status
-
-Investigations should be recorded even when no production fix is required.
-
----
-
-# INV-001: ReviewQueueBulkDelta Source Tagging
-
-Date:
-
-2026
-
-Status:
-
-Closed
-
-Roles Completed:
-
-- Repository Steward
-- Project Analyst
-- Architect
-- QA Investigation
-- Developer Review
-- Release Validation
-
-Summary:
-
-Investigation initiated to verify ReviewQueueBulkDelta source attribution and review queue behaviour.
-
-Areas Reviewed:
-
-- Review queue processing
-- Source tagging
-- Bucket isolation
-- pendingReview handling
-
-Findings:
-
-- source='ReviewQueueBulkDelta' behaved correctly.
-- Bucket isolation behaved correctly.
-- pendingReview was cleared correctly.
-- No production defect identified.
-
-Test Coverage:
-
-Added:
-
-tests/review-queue-bulk-delta-approve-source.spec.js
-
-Outcome:
-
-No production fix required.
-
-Resolution:
-
-Closed.
-
----
-
 # INV-002: closeApp() Whitelist Drift
 
 Date:
@@ -77,19 +6,20 @@ Date:
 
 Status:
 
-Open
+Confirmed
 
 Roles Completed:
 
-- Environment Steward
-- Project Analyst
-- Architect
+- Environment Steward ✅
+- Project Analyst ✅
+- Architect ✅
+- QA Investigator ✅
+- Developer ✅
 
 Pending:
 
-- QA Investigator
-- Implementation Review
-- Release Assessment
+- Implementation Manager
+- Release Manager
 
 Summary:
 
@@ -103,6 +33,8 @@ Areas Reviewed:
 - Delta Analysis configuration
 - Grid state
 - Assignee roster
+- Migration gate flags
+- Audit history
 
 Findings To Date:
 
@@ -121,9 +53,70 @@ Architect:
 - Assessed severity as high.
 - Identified hidden coupling and whitelist maintenance risk.
 
+QA Investigator:
+
+- Independently verified whitelist contents.
+- Independently verified persisted key inventory.
+- Confirmed 18 active persisted keys are absent from validKeys.
+- Confirmed closeApp() removes all non-whitelisted nw:* keys.
+- Confirmed the issue through static analysis and independent verification paths.
+- Identified zero automated regression coverage for closeApp() whitelist behaviour.
+
+Confirmed Missing Keys:
+
+- assigneeRoster
+- gridActiveB
+- levels
+- dedupQueue
+- reviewQueueBanners
+- reviewQueueNoDateBanner
+- reviewQueueScopeFixed
+- reviewQueueDateGuardFixed
+- dedupInitialScan
+- designedConditionPatterns
+- designedConditionPatternsV2Seeded
+- republishToleranceMm
+- reviewQueueDeltaAnalysisMigrated
+- dedupActionHistory
+- dedupIncidentLog:20260713:v1
+- dedupRetroCleanup:v1
+- dqShowSkipped
+- pendingIdbWipe
+
+Developer Assessment:
+
+- Independently confirmed QA findings.
+- Confirmed issue scope is confined to closeApp().
+- Identified working.html as the primary implementation target.
+- Identified absence of automated regression coverage.
+- Produced implementation assessment and risk review.
+- Noted alignment with previously resolved persistence-scope issue addressed in commit 1e28df4.
+
+Impact:
+
+Potential loss of:
+
+- User-authored configuration
+- Dedup Queue state
+- Review Queue state
+- Grid state
+- Migration state
+- Audit history
+
+Notably:
+
+- dedupActionHistory
+- dedupIncidentLog:20260713:v1
+
+are currently removed by closeApp() despite equivalent protection existing in Selective Reset workflows.
+
 Current Status:
 
-Independent QA verification is still required.
+Issue confirmed.
+
+No implementation approved.
+
+No production changes made.
 
 Production Changes:
 
@@ -131,19 +124,4 @@ None.
 
 Resolution:
 
-Pending.
-
----
-
-# Investigation Recording Rules
-
-All future investigations should:
-
-1. Record participating roles.
-2. Record evidence sources.
-3. Record findings.
-4. Record outcome.
-5. Record release decision.
-6. Record whether a production fix was required.
-
-The investigation log serves as a permanent repository memory independent of AI chat history.
+Pending Implementation Review and Release Assessment.
