@@ -23,7 +23,7 @@ v1
 
 Notes:
 
-The governance framework has been validated through execution of a real-world investigation and remediation workflow using INV-002 (closeApp() Whitelist Drift).
+The governance framework has been validated through execution of real-world investigation and remediation workflows using INV-002 (closeApp() Whitelist Drift) and R1 (Data Resurrection After Reset).
 
 ---
 
@@ -39,13 +39,14 @@ Repository Health:
 - Governance framework committed and pushed
 - Project memory established in repository
 - No known governance gaps requiring immediate action
+- R1 governance documentation prepared pending commit
 
 Current Working Tree:
 
-Pending commit of INV-002 remediation:
+Pending commit of R1 remediation:
 
 - working.html
-- tests/close-app-scope-fix.spec.js
+- tests/r1-data-resurrection.spec.js
 
 ---
 
@@ -83,7 +84,7 @@ Repository Steward Review:
 
 Release Approval:
 
-⏳ Pending
+✅ Approved
 
 Regression Protection:
 
@@ -93,6 +94,51 @@ Files Affected:
 
 - working.html
 - tests/close-app-scope-fix.spec.js
+
+---
+
+### R1
+
+Title:
+
+Data Resurrection After Reset
+
+Status:
+
+Resolved
+
+Summary:
+
+`clearAll()` and `_executeSelectiveReset()` previously removed persisted `nw:*` keys from localStorage without updating the corresponding in-memory `S.*` fields.
+
+Investigation confirmed that subsequent code paths that re-persisted `S.*` state could write stale data back into storage, causing previously cleared data to reappear.
+
+The approved remediation synchronizes in-memory state with persisted-state removal during both `clearAll()` and `_executeSelectiveReset()`, ensuring deleted data cannot be resurrected by later persistence operations.
+
+Implementation Status:
+
+✅ Completed
+
+QA Retest:
+
+✅ Passed
+
+Repository Steward Review:
+
+✅ Approved With Observations
+
+Release Approval:
+
+⏳ Conditional - Pending Documentation Commit (DEC-007)
+
+Regression Protection:
+
+✅ Added
+
+Files Affected:
+
+- working.html
+- tests/r1-data-resurrection.spec.js
 
 ---
 
@@ -159,24 +205,41 @@ Recent Validation:
 
 ### INV-002 Regression Coverage
 
-New Test:
+Test:
 
 - tests/close-app-scope-fix.spec.js
-
-Coverage:
-
-- Previously affected persisted keys survive closeApp()
-- Existing persisted keys survive closeApp()
-- Defunct keys are removed
-- Confirm-cancel behaviour
-- Future unknown-key protection
 
 Results:
 
 - close-app-scope-fix.spec.js → 3/3 Passed
 - Combined persistence validation suite → 12/12 Passed
 
-QA Retest Outcome:
+Outcome:
+
+PASS
+
+---
+
+### R1 Regression Coverage
+
+Test:
+
+- tests/r1-data-resurrection.spec.js
+
+Coverage:
+
+- clearAll() in-memory synchronization
+- clearAll() resurrection-vector prevention
+- Selective reset memory synchronization
+- Selective reset resurrection-vector prevention
+- Category symmetry validation
+
+Results:
+
+- r1-data-resurrection.spec.js → 10/10 Passed
+- Combined persistence validation suite → 22/22 Passed
+
+Outcome:
 
 PASS
 
@@ -184,23 +247,24 @@ PASS
 
 ## Current Priority
 
-Complete final release workflow for INV-002.
+Satisfy DEC-007 by committing governance documentation updates for R1, then complete final release workflow.
 
 Remaining Actions:
 
-1. Release Manager final approval
-2. Commit implementation
-3. Push implementation
-4. Update investigation status to fully closed
+1. Commit governance documentation updates
+2. Obtain final Release Manager approval
+3. Commit implementation
+4. Push implementation
+5. Mark R1 fully closed
 
 ---
 
 ## Next Planned Activity
 
-INV-002 Final Release Approval
+R1 Final Release Approval
 
 Following completion:
 
 - Commit and push remediation
-- Mark INV-002 closed
+- Mark R1 closed
 - Select next investigation or enhancement work item

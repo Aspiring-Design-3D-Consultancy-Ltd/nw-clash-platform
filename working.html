@@ -837,6 +837,14 @@ let S={clashes:[],weekly:[],view:'dashboard',fst:'',pin:null,managers:[],project
     levels:[{code:'ZZ',name:'All levels'},{code:'B02',name:'Basement 2'},{code:'B01',name:'Basement 1'},{code:'G00',name:'Ground Floor'},{code:'L01',name:'Level 01'},{code:'L02',name:'Level 02'},{code:'L03',name:'Level 03'},{code:'L04',name:'Level 04'},{code:'L05',name:'Level 05'},{code:'RF',name:'Roof'}]
   }
 };
+/* R1-DATA-RESURRECTION-FIX start: pristine deep-clone of the factory-
+   default S.iso captured before anything can mutate it. Used
+   exclusively by _executeSelectiveReset() to reset S.iso in memory
+   when nw:iso is wiped, so in-memory state stays synchronized with
+   the persisted state during a reset (see clearAll/
+   _executeSelectiveReset further down for the rest of this fix). */
+const _RESET_DEFAULT_ISO=JSON.parse(JSON.stringify(S.iso));
+/* R1-DATA-RESURRECTION-FIX end */
 let _uid=0;function nuid(){return 'CLX-'+(++_uid).toString().padStart(3,'0');}
 
 
@@ -15934,6 +15942,25 @@ async function clearAll(){
   try{
     CLEAR_ALL_WIPE_KEYS.forEach(k=>{try{localStorage.removeItem('nw:'+k);}catch(e){}});
   }catch(e){console.warn('clearAll localStorage wipe:',e);}
+  /* R1-DATA-RESURRECTION-FIX start: clear the corresponding in-memory
+     S.* fields in the same breath as the persisted keys above. Root
+     cause of the resurrection defect was that clearAll() only ever
+     wrote to localStorage — it never touched S.clashes/S.weekly/
+     S.dedupQueue/S.reviewQueueBanners/S.reviewQueueNoDateBanner, so
+     any code path that ran between the wipe and the reload (or a
+     reload that never completes, e.g. the IDB wipe throwing before
+     the alert/reload lines below) still saw the old in-memory arrays/
+     objects. If that stale state was ever re-persisted
+     (sv('clashes',S.clashes) via a render/nav call, a retry, or a
+     test harness that doesn't reload), the wiped data came back from
+     memory. Clearing S.* here keeps memory and storage symmetric at
+     every step of the wipe. */
+  S.clashes=[];
+  S.weekly=[];
+  S.dedupQueue=[];
+  S.reviewQueueBanners={};
+  S.reviewQueueNoDateBanner=false;
+  /* R1-DATA-RESURRECTION-FIX end */
   try{
     sv('clashes',[]);
     sv('weekly',[]);
@@ -16521,6 +16548,41 @@ async function _executeSelectiveReset(cats,modalId){
   // 3) localStorage wipes. Use removeItem on the prefixed key directly so
   //    we don't depend on any sv()/rv() wrapper that might re-create.
   lsKill.forEach(k=>{try{localStorage.removeItem('nw:'+k);}catch(e){}});
+  /* R1-DATA-RESURRECTION-FIX start: mirror every removed persisted key onto its
+     corresponding in-memory S.* field, in the same tick as the
+     removeItem loop above. Root cause: this function only ever wrote to
+     localStorage — S.clashes/S.weekly/S.dedupQueue/S.reviewQueueBanners/
+     S.levels/S.grid/S.gridActiveB/S.levelCodeMode/S.assigneeRoster/
+     S.managers/S.projectManager/S.viewers/S.apiKey/S.projName/S.iso/
+     S.pin kept whatever value they held pre-reset. Any later code path
+     that re-persists S.* verbatim (sv('clashes',S.clashes) inside nav/
+     render plumbing, a retry, or a test harness that doesn't reload)
+     wrote the "wiped" data straight back to localStorage, resurrecting
+     it. Resetting S.* here — using the same defaults initAuth() would
+     hydrate on a fresh load with no persisted key — keeps memory and
+     storage symmetric for the rest of this tick and every one after it.
+     S.grid must be cleared before S.gridActiveB is recomputed, since
+     _pickDefaultGridBuilding() reads S.grid. */
+  if(lsKill.has('clashes'))S.clashes=[];
+  if(lsKill.has('weekly'))S.weekly=[];
+  if(lsKill.has('week'))S.projWeek=null;
+  if(lsKill.has('dedupQueue'))S.dedupQueue=[];
+  if(lsKill.has('reviewQueueBanners'))S.reviewQueueBanners={};
+  if(lsKill.has('levels'))S.levels={FAB:[],CUP:[],BSGS:[]};
+  if(lsKill.has('grid'))S.grid={};
+  if(lsKill.has('gridActiveB'))S.gridActiveB=_pickDefaultGridBuilding();
+  if(lsKill.has('levelCodeMode'))S.levelCodeMode='literal';
+  if(lsKill.has('assigneeRoster'))S.assigneeRoster=[];
+  if(lsKill.has('bcfCoordUnits'))S.bcfCoordUnits='auto';
+  if(lsKill.has('bcfGroupKeys'))S.bcfGroupKeys=defaultGroupKeys();
+  if(lsKill.has('managers'))S.managers=[];
+  if(lsKill.has('projectManager'))S.projectManager=null;
+  if(lsKill.has('viewers'))S.viewers=[];
+  if(lsKill.has('apikey'))S.apiKey='';
+  if(lsKill.has('proj'))S.projName='My Project';
+  if(lsKill.has('iso'))S.iso=JSON.parse(JSON.stringify(_RESET_DEFAULT_ISO));
+  if(lsKill.has('pin'))S.pin=null;
+  /* R1-DATA-RESURRECTION-FIX end */
   // 4) Persist empty arrays for clashes/weekly so launch()'s demo-data
   //    fallback (lines ~953/~1007) sees Array.isArray(true) and skips
   //    installing the 104-clash demo dataset on next reload.

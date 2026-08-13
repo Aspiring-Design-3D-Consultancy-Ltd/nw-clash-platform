@@ -74,27 +74,6 @@ Affected areas included:
 - Migration Flags
 - Audit History
 
-Confirmed affected keys:
-
-- assigneeRoster
-- gridActiveB
-- levels
-- dedupQueue
-- reviewQueueBanners
-- reviewQueueNoDateBanner
-- reviewQueueScopeFixed
-- reviewQueueDateGuardFixed
-- dedupInitialScan
-- designedConditionPatterns
-- designedConditionPatternsV2Seeded
-- republishToleranceMm
-- reviewQueueDeltaAnalysisMigrated
-- dedupActionHistory
-- dedupIncidentLog:20260713:v1
-- dedupRetroCleanup:v1
-- dqShowSkipped
-- pendingIdbWipe
-
 Root Cause:
 
 The allow-list model required every persisted key to be manually maintained within `closeApp()`.
@@ -106,12 +85,6 @@ The result was silent deletion of valid application state.
 Approved Remediation:
 
 The allow-list model was replaced with an explicit removal-list model (`DEFUNCT_KEYS`).
-
-The new implementation:
-
-- Preserves active persisted keys by default
-- Removes only confirmed legacy/orphaned keys
-- Mirrors the previously approved `CLEAR-ALL-DATA-SCOPE-FIX` remediation pattern
 
 Implementation Status:
 
@@ -131,14 +104,6 @@ Added:
 
 - tests/close-app-scope-fix.spec.js
 
-Coverage includes:
-
-- Preservation of all 18 previously affected keys
-- Preservation of existing persisted keys
-- Removal of legacy/orphaned keys
-- Confirm-cancel behaviour
-- Future unknown-key survival behaviour
-
 Validation Results:
 
 - close-app-scope-fix.spec.js → 3 / 3 Passed
@@ -149,6 +114,104 @@ Outcome:
 The defect has been resolved and verified.
 
 Future persisted keys now survive `closeApp()` by default, eliminating the original whitelist-drift failure mode.
+
+---
+
+## KI-002
+
+Title:
+
+Data Resurrection After Reset
+
+Status:
+
+Resolved
+
+Severity:
+
+High
+
+Related Investigation:
+
+- R1
+
+Summary:
+
+`clearAll()` and `_executeSelectiveReset()` removed persisted `nw:*` localStorage keys but left corresponding in-memory `S.*` state intact.
+
+Subsequent persistence operations could therefore write stale values back into localStorage, causing deleted data to reappear after the reset operation had completed.
+
+Affected Areas:
+
+- Clash Register
+- Weekly Snapshots
+- Dedup Queue
+- Review Queue
+- Levels
+- Grids
+- Settings
+- ISO Configuration
+- Admin PIN
+
+Root Cause:
+
+The reset workflows only removed persisted state.
+
+In-memory state remained populated, creating divergence between application memory and localStorage.
+
+Any subsequent persistence operation that saved `S.*` back to storage could unintentionally resurrect previously deleted data.
+
+Approved Remediation:
+
+Synchronize in-memory state with persisted-state deletion during reset operations.
+
+Implementation includes:
+
+- Factory-default `_RESET_DEFAULT_ISO`
+- Memory synchronization in `clearAll()`
+- Memory synchronization in `_executeSelectiveReset()`
+- Category-aware selective reset handling
+
+Implementation Status:
+
+✅ Completed
+
+QA Retest Status:
+
+✅ PASS
+
+Repository Steward Review:
+
+✅ Approved With Observations
+
+Release Manager Status:
+
+✅ Conditional Approval Granted
+
+Regression Protection:
+
+Added:
+
+- tests/r1-data-resurrection.spec.js
+
+Coverage includes:
+
+- clearAll() memory synchronization
+- clearAll() resurrection prevention
+- Selective reset memory synchronization
+- Selective reset resurrection prevention
+- Category symmetry validation
+
+Validation Results:
+
+- r1-data-resurrection.spec.js → 10 / 10 Passed
+- Combined persistence validation suite → 22 / 22 Passed
+
+Outcome:
+
+The defect has been resolved and verified.
+
+Previously cleared data can no longer be unintentionally resurrected through subsequent persistence operations.
 
 ---
 
@@ -240,6 +303,7 @@ None currently recorded.
 Resolved Issues:
 
 - KI-001 — closeApp() Whitelist Drift ✅
+- KI-002 — Data Resurrection After Reset ✅
 
 Monitoring Items:
 

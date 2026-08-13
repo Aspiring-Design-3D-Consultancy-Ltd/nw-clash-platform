@@ -227,7 +227,135 @@ Awaiting final release sign-off and commit/push.
 Production Changes:
 
 Not yet committed at time of record update.
+
 Working tree contains:
 
 - working.html
 - tests/close-app-scope-fix.spec.js
+
+---
+
+# R1: Data Resurrection After Reset
+
+Date:
+
+2026
+
+Status:
+
+Resolved - Release Approval Conditional Pending Documentation Commit
+
+Roles Completed:
+
+- Developer ✅
+- QA Retest ✅
+- Repository Steward Review ✅
+- Release Manager ✅
+
+Pending:
+
+- Governance Documentation Commit
+- Final Release Approval
+- Commit and Push
+
+Summary:
+
+A data-integrity defect was identified affecting both `clearAll()` and `_executeSelectiveReset()`.
+
+The application removed persisted `nw:*` localStorage keys during reset operations but failed to update the corresponding in-memory `S.*` state values. This allowed stale in-memory data to remain present after a reset.
+
+Subsequent code paths that persisted the current in-memory state could write the previously-cleared values back into localStorage, effectively resurrecting data that the user had intentionally removed.
+
+Areas Reviewed:
+
+- localStorage persistence
+- clearAll()
+- _executeSelectiveReset()
+- Application state synchronization
+- Dedup Queue
+- Review Queue
+- Levels and Grids
+- Settings
+- ISO Configuration
+- Admin PIN
+
+QA Investigation Findings:
+
+Independent verification confirmed:
+
+- Persisted storage and in-memory state could diverge after reset operations.
+- `clearAll()` removed storage keys but left several `S.*` fields populated.
+- `_executeSelectiveReset()` exhibited the same behaviour across multiple reset categories.
+- Subsequent persistence operations could restore deleted values.
+- No regression coverage existed for this specific resurrection failure mode.
+
+Developer Assessment:
+
+- Independently confirmed findings.
+- Identified state divergence as the root cause.
+- Confirmed implementation scope was limited to reset workflows.
+- Identified working.html as the implementation target.
+- Produced remediation and risk assessment.
+
+Developer Implementation:
+
+Implemented approved memory-synchronization remediation.
+
+Changes:
+
+working.html
+
+- Added `_RESET_DEFAULT_ISO` factory-default clone.
+- Updated `clearAll()` to synchronize in-memory state with reset operations.
+- Updated `_executeSelectiveReset()` to synchronize in-memory state with category-specific resets.
+- Preserved existing reset semantics while eliminating stale-state resurrection.
+
+Affected state categories:
+
+- clashes
+- weekly
+- dedupQueue
+- reviewQueueBanners
+- reviewQueueNoDateBanner
+- levels
+- grid
+- gridActiveB
+- assigneeRoster
+- projectManager
+- managers
+- viewers
+- apiKey
+- projName
+- iso
+- pin
+
+Regression Coverage Added:
+
+tests/r1-data-resurrection.spec.js
+
+Coverage includes:
+
+- clearAll() memory synchronization
+- clearAll() resurrection prevention
+- Selective reset memory synchronization
+- Selective reset resurrection prevention
+- Category symmetry validation
+- Scope-protection verification
+
+QA Retest:
+
+Result:
+
+PASS
+
+Verification:
+
+- Original resurrection defect resolved.
+- Memory and persistence remain synchronized after reset operations.
+- Deleted values do not reappear following subsequent persistence actions.
+- New regression suite passes.
+- Adjacent persistence suites continue to pass.
+
+Validation Results:
+
+tests/r1-data
