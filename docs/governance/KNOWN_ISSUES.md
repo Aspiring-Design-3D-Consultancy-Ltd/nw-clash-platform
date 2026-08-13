@@ -2,148 +2,254 @@
 
 ## Purpose
 
-This document tracks known issues, discoveries, risks, and investigation targets.
+Track confirmed defects, active investigations, monitoring items, and resolved issues.
 
-Items should be classified as:
+This document provides a consolidated view of project risks and known problem areas.
 
-- Under Investigation
-- Confirmed
-- Resolved
-- Monitoring
-
-No issue should be considered resolved until validated through the project governance workflow.
+The repository remains the authoritative source of project status.
 
 ---
 
-# Under Investigation
+# Status Definitions
 
-## KI-001: closeApp() Whitelist Drift
+## Under Investigation
 
-Status: Under Investigation
+Issue has been identified and is currently being investigated.
 
-Source:
+Evidence collection and verification are in progress.
 
-- Environment Steward
-- Project Analyst
-- Architect
+## Confirmed
+
+Issue has been verified and reproduced.
+
+Implementation has not yet been completed.
+
+## Monitoring
+
+No active defect is confirmed.
+
+Area requires ongoing observation due to complexity, historical issues, or elevated regression risk.
+
+## Resolved
+
+Issue has been remediated and verified.
+
+Regression protection has been implemented where appropriate.
+
+---
+
+# Resolved Issues
+
+## KI-001
+
+Title:
+
+closeApp() Whitelist Drift
+
+Status:
+
+Resolved
+
+Severity:
+
+High
+
+Related Investigation:
+
+- INV-002
 
 Summary:
 
-The application maintains a hardcoded `validKeys` whitelist within `closeApp()`.
+The application previously used a hardcoded `validKeys` allow-list within `closeApp()`.
 
-Analysis identified multiple persisted keys that do not appear to be included within the whitelist.
+Investigation confirmed that 18 actively-used persisted `nw:*` keys were absent from the allow-list and were being unintentionally deleted whenever a user performed a normal application close operation.
 
-Potentially affected areas include:
+Affected areas included:
 
 - Dedup Queue
 - Review Queue
 - Delta Analysis
 - Assignee Roster
 - Grid State
+- Migration Flags
+- Audit History
 
-Potential Impact:
+Confirmed affected keys:
 
-- Loss of persisted state
-- Loss of user configuration
-- Re-triggering of one-time migrations
-- Loss of workflow history
+- assigneeRoster
+- gridActiveB
+- levels
+- dedupQueue
+- reviewQueueBanners
+- reviewQueueNoDateBanner
+- reviewQueueScopeFixed
+- reviewQueueDateGuardFixed
+- dedupInitialScan
+- designedConditionPatterns
+- designedConditionPatternsV2Seeded
+- republishToleranceMm
+- reviewQueueDeltaAnalysisMigrated
+- dedupActionHistory
+- dedupIncidentLog:20260713:v1
+- dedupRetroCleanup:v1
+- dqShowSkipped
+- pendingIdbWipe
 
-Current Status:
+Root Cause:
 
-- Issue identified
-- Architectural risk assessed
-- Independent QA verification pending
+The allow-list model required every persisted key to be manually maintained within `closeApp()`.
 
-Approved Fix:
+As application features evolved, persisted keys were added elsewhere in the codebase but not added to the allow-list.
 
-None
+The result was silent deletion of valid application state.
+
+Approved Remediation:
+
+The allow-list model was replaced with an explicit removal-list model (`DEFUNCT_KEYS`).
+
+The new implementation:
+
+- Preserves active persisted keys by default
+- Removes only confirmed legacy/orphaned keys
+- Mirrors the previously approved `CLEAR-ALL-DATA-SCOPE-FIX` remediation pattern
 
 Implementation Status:
 
-Not Started
+✅ Completed
 
----
+QA Retest Status:
 
-# Confirmed
+✅ PASS
 
-None currently recorded.
+Repository Steward Review:
+
+✅ Approved With Observations
+
+Regression Protection:
+
+Added:
+
+- tests/close-app-scope-fix.spec.js
+
+Coverage includes:
+
+- Preservation of all 18 previously affected keys
+- Preservation of existing persisted keys
+- Removal of legacy/orphaned keys
+- Confirm-cancel behaviour
+- Future unknown-key survival behaviour
+
+Validation Results:
+
+- close-app-scope-fix.spec.js → 3 / 3 Passed
+- Combined persistence validation suite → 12 / 12 Passed
+
+Outcome:
+
+The defect has been resolved and verified.
+
+Future persisted keys now survive `closeApp()` by default, eliminating the original whitelist-drift failure mode.
 
 ---
 
 # Monitoring
 
-## MI-001: Migration Complexity
+## MI-001
 
-Status: Monitoring
+Title:
 
-Summary:
+Migration Complexity
 
-Application contains multiple one-time migration mechanisms including:
+Status:
+
+Monitoring
+
+Description:
+
+Several one-time migration flags remain part of the application's persistence model.
+
+Examples include:
 
 - reviewQueueScopeFixed
 - reviewQueueDateGuardFixed
 - dedupInitialScan
 - reviewQueueDeltaAnalysisMigrated
+- dedupRetroCleanup:v1
 
-Risk:
+While functioning correctly, migration behaviour remains an area of elevated regression risk due to the complexity of historical state transitions.
 
-Future changes may introduce migration-related regressions.
+Potential Risks:
 
-Current Action:
+- Re-running migrations unexpectedly
+- Migration ordering issues
+- State corruption during version transitions
+- Future persistence refactoring impacts
 
-Monitor during future investigations.
+Recommended Action:
 
----
-
-## MI-002: Test Timing Sensitivity
-
-Status: Monitoring
-
-Summary:
-
-Certain migration and initialization routines execute on delayed timers.
-
-Examples include:
-
-- Delta Analysis migration timers
-- Pattern seeding operations
-
-Risk:
-
-Potential test flakiness and timing-related failures.
-
-Current Action:
-
-Monitor during QA investigations.
+Continue monitoring during future persistence-related investigations and test development.
 
 ---
 
-# Resolved
+## MI-002
 
-## RI-001: ReviewQueueBulkDelta Source Tagging
+Title:
 
-Status: Resolved
+Test Timing Sensitivity
 
-Summary:
+Status:
 
-Investigation confirmed correct behaviour for:
+Monitoring
 
-- source = ReviewQueueBulkDelta
-- bucket isolation
-- pendingReview cleanup
+Description:
 
-Regression Test:
+Certain Playwright tests continue to exhibit timing-related behaviour associated with:
 
-tests/review-queue-bulk-delta-approve-source.spec.js
+- Delayed startup tasks
+- Migration execution timers
+- IndexedDB initialization
+- Persistence synchronization
+- Asynchronous UI initialization
 
-Resolution:
+Potential Risks:
 
-No production fix required.
+- Test flakiness
+- Intermittent failures
+- False-positive regression reports
 
-Outcome:
+Recommended Action:
 
-Regression test added and committed.
+Continue monitoring and improve test stability when future investigations involve startup sequencing or persistence workflows.
 
-Validation Status:
+---
 
-Passed
+# Confirmed Issues
+
+None currently recorded.
+
+---
+
+# Under Investigation
+
+None currently recorded.
+
+---
+
+# Summary
+
+Resolved Issues:
+
+- KI-001 — closeApp() Whitelist Drift ✅
+
+Monitoring Items:
+
+- MI-001 — Migration Complexity
+- MI-002 — Test Timing Sensitivity
+
+Confirmed Issues:
+
+- None
+
+Active Investigations:
+
+- None

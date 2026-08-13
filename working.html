@@ -16580,6 +16580,35 @@ async function _executeSelectiveReset(cats,modalId){
 }
 /* SELECTIVE-RESET end */
 
+/* CLOSEAPP-DATA-SCOPE-FIX start (INV-002): the previous implementation
+   used an explicit ALLOW list (validKeys) diffed against every persisted
+   nw:* key — a broad-brush destroyer whose failure mode is silent data
+   loss whenever a new nw:* key shipped by a feature was never added to
+   the list. QA Investigator + Developer independently confirmed 18 live
+   persisted keys (Dedup Queue, Review Queue, Delta Analysis config,
+   grid/level state, assignee roster, migration gate flags, audit log
+   entries) were being deleted on every Close click despite having no
+   relationship to "old defunct data" (docs/governance/INVESTIGATION_LOG.md,
+   INV-002).
+   Fix mirrors CLEAR-ALL-DATA-SCOPE-FIX (commit 1e28df4): flip to an
+   explicit REMOVE list. Anything not named survives by construction, so
+   forgetting to list a key becomes a safe failure (data survives,
+   recoverable) instead of a destructive one (data silently wiped,
+   unrecoverable) — closing off the whitelist-drift failure mode
+   permanently rather than just backfilling today's known keys.
+   DEFUNCT_KEYS are the only nw:* keys actually superseded/obsolete:
+     grpZTol                                — superseded by grpRadius
+                                               (GROUP-RADIUS-3D); the
+                                               single grpRadius now
+                                               applies in 3D for XY and Z
+     managerPin/managerName/managerEmail,
+     viewerPin/viewerName/viewerEmail       — legacy single-manager/
+                                               viewer fields, migrated
+                                               into managers[]/
+                                               projectManager on load
+                                               (see initAuth legacy
+                                               migration block)
+   Regression: tests/close-app-scope-fix.spec.js */
 function closeApp(){
   if(!confirm('Close the platform?\n\nThe current state will be saved and any old defunct data will be cleaned from local storage.'))return;
   // 1) Save current state fresh for all live data keys
@@ -16596,22 +16625,17 @@ function closeApp(){
     if(S.projectManager)sv('projectManager',S.projectManager);
     if(S.apiKey)sv('apikey',S.apiKey);
   }catch(e){}
-  // 2) Remove any orphaned nw: localStorage keys not in the valid set
-  /* GROUP-RADIUS-3D: grpZTol removed from whitelist — old saved values are
-     now orphan keys and will be swept on next logout cleanup. The single
-     grpRadius now applies in 3D for both XY and Z. */
-  /* GRID-SYSTEM: grid (the configured grid object) and grpUseGridCell
-     (the modal checkbox preference) added to the whitelist. */
-  const validKeys=new Set(['apikey','bcfCoordUnits','bcfGroupKeys','clashes','cnLocType','cnLocVal','dataVersion','grid','grpRadius','grpUseGridCell','grpUseSpatial','iso','levelCodeMode','managers','pin','proj','projectManager','viewers','week','weekly']);
+  // 2) Remove only known-defunct/superseded nw: localStorage keys —
+  //    everything else survives by construction (see CLOSEAPP-DATA-
+  //    SCOPE-FIX above).
+  const DEFUNCT_KEYS=['grpZTol','managerPin','managerName','managerEmail','viewerPin','viewerName','viewerEmail'];
   let removed=0;
   try{
-    const toRemove=[];
-    for(let i=0;i<localStorage.length;i++){
-      const k=localStorage.key(i);
-      if(k&&k.startsWith('nw:')&&!validKeys.has(k.slice(3)))toRemove.push(k);
-    }
-    toRemove.forEach(k=>{localStorage.removeItem(k);removed++;});
+    DEFUNCT_KEYS.forEach(k=>{
+      if(localStorage.getItem('nw:'+k)!==null){localStorage.removeItem('nw:'+k);removed++;}
+    });
   }catch(e){}
+  /* CLOSEAPP-DATA-SCOPE-FIX end */
   // 3) Attempt to close the window; if browser blocks it, replace body with a closed-state splash
   window.close();
   setTimeout(()=>{
