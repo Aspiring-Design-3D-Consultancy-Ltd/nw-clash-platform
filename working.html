@@ -7545,7 +7545,15 @@ function scanForDedupCandidates(batchUids,baselineTestNames){
      drop if a.elementA !== b.elementA
      drop if a.elementB !== b.elementB
    sourceA/sourceB already matched via bucket key at detect time;
-   testName same. No need to re-check here. */
+   testName same. No need to re-check here.
+
+   INV-003: the filtered queue is persisted via a direct, throwing
+   localStorage.setItem call (same pattern as _rqdaMigrateSeedPatternsV2)
+   BEFORE the one-shot gate is set, and both happen inside the same
+   try block. This guarantees the gate can never be set unless the
+   filtered queue write actually succeeded — closing the gate/data
+   divergence window that previously existed when sv() (which
+   swallows its own write errors) was used for the queue write. */
 function _migrateDedupQueueV1(){
   try{
     if(localStorage.getItem('nw:dedupRetroCleanup:v1')==='true')return;
@@ -7555,7 +7563,7 @@ function _migrateDedupQueueV1(){
     }
     const byId=new Map((S.clashes||[]).map(c=>[c.uid,c]));
     const before=S.dedupQueue.length;
-    S.dedupQueue=S.dedupQueue.filter(p=>{
+    const filtered=S.dedupQueue.filter(p=>{
       const a=byId.get(p.a), b=byId.get(p.b);
       if(!a||!b)return false;
       if(a.weekTag && b.weekTag && a.weekTag===b.weekTag)return false;
@@ -7563,8 +7571,22 @@ function _migrateDedupQueueV1(){
       if(a.elementB!==b.elementB)return false;
       return true;
     });
+    /* INV-003 GATE/DATA DIVERGENCE FIX: persist the filtered queue with
+       a direct, throwing localStorage.setItem — mirroring the safe
+       pattern in _rqdaMigrateSeedPatternsV2() — instead of the sv()
+       helper, which swallows write errors internally. sv() previously
+       let a QuotaExceededError on this (potentially large) payload
+       pass silently, after which the gate below was still set
+       unconditionally, permanently marking the one-shot migration as
+       complete even though nw:dedupQueue in storage was never
+       actually updated. By calling localStorage.setItem directly
+       inside this try block, a failed write now propagates to the
+       outer catch, so neither S.dedupQueue nor the gate are updated —
+       the migration safely retries on the next load instead of
+       diverging from storage forever. */
+    localStorage.setItem('nw:dedupQueue',JSON.stringify(filtered));
+    S.dedupQueue=filtered;
     const after=S.dedupQueue.length;
-    sv('dedupQueue',S.dedupQueue);
     localStorage.setItem('nw:dedupRetroCleanup:v1','true');
     console.log('[DEDUP-RETRO-v1] cleaned',before-after,'stale pairs; kept',after);
   }catch(e){
