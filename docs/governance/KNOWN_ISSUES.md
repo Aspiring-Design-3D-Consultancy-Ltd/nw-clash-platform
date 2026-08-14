@@ -297,6 +297,80 @@ Both review-queue one-shot migrations now safely retry on the next load instead 
 
 ---
 
+## KI-004
+
+Title:
+
+Residual Migration Gate / Persistence Divergence (Dedup Initial Scan + Review Queue Delta Analysis Migration)
+
+Status:
+
+Resolved (implemented, QA-verified — awaiting commit/push authorization)
+
+Severity:
+
+High (`dedupInitialScan`) / Medium (`reviewQueueDeltaAnalysisMigrated`)
+
+Related Investigation:
+
+- INV-006
+
+Summary:
+
+`dedupInitialScan` (`DEDUP-QUEUE-DETECT` one-shot wrapper calling `scanForDedupCandidates()`) and `reviewQueueDeltaAnalysisMigrated` (`_rqdaMigrate()` calling `_rqdaReclassifyAll()`) both persist their underlying data via `sv()`, which swallows write errors internally, before unconditionally setting their respective one-shot gate flags. A failed underlying write leaves storage unchanged while the gate is still permanently set, diverging the gate from the data — the same failure mode previously remediated under INV-003 and INV-005.
+
+Root Cause:
+
+Identical to KI-003: `sv()` swallows write errors internally, so a failed persistence write does not prevent the subsequent unconditional gate-flag write.
+
+Architectural Note:
+
+Unlike INV-003/INV-005, the underlying persistence calls in both locations live inside shared functions (`scanForDedupCandidates()`, `_rqdaReclassifyAll()`) that are also called from several non-gate contexts. Remediation therefore used Option C: a dedicated, throwing persistence step scoped only to the two one-shot gate wrappers, leaving `sv()`, `scanForDedupCandidates()`, and `_rqdaReclassifyAll()` (and all their other call sites) untouched.
+
+Approved Remediation:
+
+Added a direct, throwing `localStorage.setItem` write of the wrapper's own result (`nw:dedupQueue` / `nw:clashes`) inside the same try block as each gate write, so a failed write prevents the gate from ever being set. The `reviewQueueDeltaAnalysisMigrated` write is additionally guarded by `if(n>0)` to preserve `_rqdaReclassifyAll()`'s own conditional-write semantics exactly.
+
+Implementation Status:
+
+✅ Completed
+
+QA Retest Status:
+
+✅ PASS
+
+Repository Steward Review:
+
+✅ Approved With Observations
+
+Release Manager Status:
+
+✅ Conditional Approval (pending commit/push authorization)
+
+Regression Protection:
+
+Added:
+
+- tests/inv006-asym.spec.js
+
+Coverage includes:
+
+- dedupInitialScan gate/persistence asymmetric-failure path
+- dedupInitialScan gate/persistence success path
+- reviewQueueDeltaAnalysisMigrated gate/persistence asymmetric-failure path
+- reviewQueueDeltaAnalysisMigrated gate/persistence success path
+
+Validation Results:
+
+- inv006-asym.spec.js → 4 / 4 Passed
+- Combined targeted validation (inv006-asym, inv003-asym, inv005-asym, dedup-scope-and-signature, dedup-audit-log, review-queue-bulk-delta-approve-source, review-queue-date-guard-fix, review-queue-scope, weekly-incremental-import) → 69 / 69 Passed
+
+Outcome:
+
+The defect has been resolved and verified. Both `dedupInitialScan` and `reviewQueueDeltaAnalysisMigrated` now safely retry on the next load instead of permanently diverging when a persistence write fails. Repository code changes are complete and QA-verified but not yet committed — awaiting human commit/push authorization per DEC-009.
+
+---
+
 # Monitoring
 
 ## MI-001
@@ -315,11 +389,11 @@ Several one-time migration flags remain part of the application's persistence mo
 
 Examples include:
 
-- reviewQueueScopeFixed
-- reviewQueueDateGuardFixed
-- dedupInitialScan
-- reviewQueueDeltaAnalysisMigrated
-- dedupRetroCleanup:v1
+- reviewQueueScopeFixed (verified defect-free — remediated under INV-005)
+- reviewQueueDateGuardFixed (verified defect-free — remediated under INV-005)
+- dedupInitialScan (remediated under INV-006 — see KI-004; commit/push pending)
+- reviewQueueDeltaAnalysisMigrated (remediated under INV-006 — see KI-004; commit/push pending)
+- dedupRetroCleanup:v1 (verified defect-free — remediated under INV-003)
 
 While functioning correctly, migration behaviour remains an area of elevated regression risk due to the complexity of historical state transitions.
 
@@ -332,7 +406,7 @@ Potential Risks:
 
 Recommended Action:
 
-Continue monitoring during future persistence-related investigations and test development.
+INV-006's gate/persistence divergence defect in dedupInitialScan and reviewQueueDeltaAnalysisMigrated (KI-004) has been remediated, QA-verified, and is awaiting commit/push authorization. All five tracked one-shot migration flags will be verified defect-free once INV-006 is committed and closed. Continue monitoring during future persistence-related investigations and test development.
 
 ---
 
@@ -387,6 +461,7 @@ Resolved Issues:
 - KI-001 — closeApp() Whitelist Drift ✅
 - KI-002 — Data Resurrection After Reset ✅
 - KI-003 — Migration Gate / Persistence Write Divergence (Review Queue Migrations) ✅
+- KI-004 — Residual Migration Gate / Persistence Divergence (Dedup Initial Scan + Review Queue Delta Analysis Migration) ✅ (implemented, QA-verified — commit/push authorization pending)
 
 Monitoring Items:
 
@@ -399,4 +474,4 @@ Confirmed Issues:
 
 Active Investigations:
 
-- None
+- INV-006 — Residual Migration Gate / Persistence Divergence Risk Assessment (implemented, QA-verified — awaiting commit/push authorization)

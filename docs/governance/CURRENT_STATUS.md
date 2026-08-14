@@ -194,6 +194,65 @@ Release Commit:
 
 ---
 
+### INV-006
+
+Title:
+
+Residual Migration Gate / Persistence Divergence Risk Assessment
+
+Status:
+
+Implemented — Awaiting Human Decision (Commit / Push Authorization)
+
+Summary:
+
+Opened from MI-001 to determine whether `dedupInitialScan` and `reviewQueueDeltaAnalysisMigrated` — the two remaining one-shot migration flags not yet individually verified — contain the same gate/persistence-write divergence defect remediated under INV-003 and INV-005.
+
+Findings:
+
+Both locations were confirmed to contain the identical defect class. `dedupInitialScan`'s wrapper and `reviewQueueDeltaAnalysisMigrated`'s `_rqdaMigrate()` both persist underlying data via `sv()` (which swallows write errors) before unconditionally setting their one-shot gate flags. Unlike INV-003/INV-005, the vulnerable writes live inside shared functions (`scanForDedupCandidates()`, `_rqdaReclassifyAll()`) also used in non-gate contexts, so remediation required a scope-safe approach rather than a literal copy of the INV-003/INV-005 pattern.
+
+Human Decision:
+
+Option C selected — dedicated, throwing persistence step scoped only to the two one-shot wrapper functions, leaving shared helpers (`sv()`, `scanForDedupCandidates()`, `_rqdaReclassifyAll()`) untouched.
+
+The approved remediation added a direct, throwing `localStorage.setItem` write of the wrapper's own result (`nw:dedupQueue` / `nw:clashes`) inside the same try block as each gate write, so a failed write prevents the gate from ever being set and each one-shot operation safely retries on the next load.
+
+Tracked as:
+
+KI-004 (Known Issues)
+
+Implementation Status:
+
+✅ Completed
+
+QA Retest:
+
+✅ Passed (4/4 new; 69/69 combined targeted validation)
+
+Repository Steward Review:
+
+✅ Approved With Observations
+
+Release Manager Review:
+
+✅ Conditional Approval (pending commit/push authorization)
+
+Regression Protection:
+
+✅ Added
+
+Files Affected:
+
+- working.html
+- tests/inv006-asym.spec.js (new)
+
+Release Commit:
+
+None yet — implementation complete and QA-verified in the working tree, awaiting human commit/push authorization per DEC-009.
+
+---
+
 ## Known Issues
 
 ### Confirmed
@@ -214,13 +273,13 @@ Description:
 
 Multiple one-time migration flags remain a long-term regression risk area:
 
-- reviewQueueScopeFixed
-- reviewQueueDateGuardFixed
-- dedupInitialScan
-- reviewQueueDeltaAnalysisMigrated
-- dedupRetroCleanup:v1
+- reviewQueueScopeFixed (verified defect-free — INV-005)
+- reviewQueueDateGuardFixed (verified defect-free — INV-005)
+- dedupInitialScan (remediated — INV-006 / KI-004, commit/push pending)
+- reviewQueueDeltaAnalysisMigrated (remediated — INV-006 / KI-004, commit/push pending)
+- dedupRetroCleanup:v1 (verified defect-free — INV-003)
 
-Continue monitoring for future migration-related regressions.
+Continue monitoring for future migration-related regressions. INV-006 remediation is complete and QA-verified, pending commit/push authorization.
 
 ---
 
@@ -321,16 +380,50 @@ PASS
 
 ---
 
+### INV-006 Regression Coverage
+
+Test:
+
+- tests/inv006-asym.spec.js
+
+Coverage:
+
+- dedupInitialScan gate/persistence asymmetric-failure path
+- dedupInitialScan gate/persistence success path
+- reviewQueueDeltaAnalysisMigrated gate/persistence asymmetric-failure path
+- reviewQueueDeltaAnalysisMigrated gate/persistence success path
+
+Results:
+
+- inv006-asym.spec.js → 4/4 Passed
+- Combined targeted validation suite (inv006-asym, inv003-asym, inv005-asym, dedup-scope-and-signature, dedup-audit-log, review-queue-bulk-delta-approve-source, review-queue-date-guard-fix, review-queue-scope, weekly-incremental-import) → 69/69 Passed
+
+Outcome:
+
+PASS
+
+Note: a full repository-wide suite run surfaced 22 pre-existing intermittent failures unrelated to this change (`approve-action-*`, `img-count-check`, `selective-reset-idb-reliability`, `frozen-week-and-chart-year`, etc.). These were independently reproduced on the unmodified pre-INV-006 baseline via `git stash`, confirming pre-existing MI-002 (Test Timing Sensitivity) flakiness rather than a regression from this change.
+
+---
+
 ## Current Priority
 
-INV-002, R1, and INV-005 are all closed and released. No open remediation work is outstanding.
+INV-002, R1, and INV-005 are all closed and released. INV-006 is implemented and QA-verified (KI-004), stopped at the commit/push human decision gate.
 
 Remaining Actions:
 
 None outstanding for INV-002, R1, or INV-005.
 
+INV-006 requires human authorization to commit and push:
+
+- working.html
+- tests/inv006-asym.spec.js
+- docs/governance/CURRENT_STATUS.md
+- docs/governance/INVESTIGATION_LOG.md
+- docs/governance/KNOWN_ISSUES.md
+
 ---
 
 ## Next Planned Activity
 
-Select next investigation or enhancement work item.
+Await human authorization to commit and push the INV-006 remediation. Once authorized, close INV-006 (Final Release Approval) and select the next investigation or enhancement work item.

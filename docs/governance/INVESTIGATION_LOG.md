@@ -600,4 +600,242 @@ Files committed:
 - working.html
 - tests/inv005-asym.spec.js
 
+---
+
+# INV-006: Residual Migration Gate / Persistence Divergence Risk Assessment
+
+Date:
+
+2026
+
+Status:
+
+Implemented — Awaiting Human Decision (Commit / Push Authorization)
+
+Source:
+
+MI-001 Monitoring Item
+
+Roles Completed:
+
+- Project Analyst ✅
+- Architect ✅
+- QA Investigator ✅
+- Developer Assessment ✅
+- Implementation Manager ✅
+- Developer Implementation ✅
+- QA Retest ✅
+- Repository Steward Review ✅
+- Release Manager ✅
+
+Roles Pending:
+
+- Final Release Approval (blocked — human decision gate: commit/push authorization)
+
+Summary:
+
+MI-001 (Migration Complexity) identified `dedupInitialScan` and `reviewQueueDeltaAnalysisMigrated` as one-shot migration gate flags that had not been independently verified against the confirmed defect class remediated under INV-003 and INV-005. INV-006 was opened to determine whether either location contains the same gate/persistence-write divergence defect.
+
+Both locations were confirmed to contain the identical defect class:
+
+- `dedupInitialScan` gate wrapper (`working.html` ~1271-1280) calls `scanForDedupCandidates()`, which persists the dedup queue via `sv('dedupQueue', S.dedupQueue)` (`working.html` line 7520). `sv()` swallows write errors internally (`working.html` line 968). If that internal write fails, `scanForDedupCandidates()` still returns normally, and the wrapper unconditionally executes `localStorage.setItem('nw:dedupInitialScan','1')` immediately afterward — permanently marking the one-shot scan as complete even though `nw:dedupQueue` was never actually updated.
+- `reviewQueueDeltaAnalysisMigrated` gate function `_rqdaMigrate()` (`working.html` ~2178-2186) calls `_rqdaReclassifyAll()`, which persists the classified register via `sv('clashes', S.clashes)` (`working.html` line 1961, conditional on `if(touched)`). The same silent-swallow behavior applies: if that write fails, `_rqdaMigrate()` still proceeds to unconditionally set `nw:reviewQueueDeltaAnalysisMigrated` to `'1'`, permanently marking the migration as complete even though `nw:clashes` was never actually updated with the classification annotations.
+
+This is architecturally identical to the previously-remediated INV-003 (`_migrateDedupQueueV1()`) and INV-005 (`REVIEW-QUEUE-MIGRATE-SCOPE-FIX` / `REVIEW-QUEUE-MIGRATE-DATE-GUARD-FIX`) defects.
+
+Areas Reviewed:
+
+- localStorage persistence
+- Dedup Queue initial scan (`DEDUP-QUEUE-DETECT`)
+- `scanForDedupCandidates()`
+- Review Queue Delta Analysis migration (`REVIEW-QUEUE-DELTA-ANALYSIS-MIGRATE`)
+- `_rqdaMigrate()` / `_rqdaReclassifyAll()`
+- `sv()` / `lv()` storage helpers
+- One-shot migration gate flags
+- INV-003 / INV-005 remediation pattern
+
+Project Analyst Findings:
+
+- Confirmed both suspected locations use the vulnerable `if(!gate){ persist_via_sv(); setGate(); }` shape.
+- Classified as a Persistence Defect, High priority, matching the previously-confirmed defect class.
+
+Architect Findings:
+
+- Confirmed the write for `dedupInitialScan` occurs inside `scanForDedupCandidates()` (not inside the gate wrapper's own try block) and is not a direct/throwing write, so the wrapper's own try/catch never observes a failure.
+- Confirmed the write for `reviewQueueDeltaAnalysisMigrated` occurs inside `_rqdaReclassifyAll()` under the same silent-swallow pattern.
+- Noted that `scanForDedupCandidates()` and `_rqdaReclassifyAll()` are shared functions called from many non-gate contexts (weekly import, Settings pattern edits, tolerance changes, bulk-delta reclassify) where `sv()`'s error-tolerant behavior may be intentionally acceptable — directed that remediation scope stay confined to the two one-shot gate wrappers rather than modifying the shared helper functions or `sv()` itself.
+- Recommended Action: Remediation, reusing the INV-003/INV-005 pattern.
+
+QA Investigator Findings:
+
+Independent reproduction using the same asymmetric-failure technique as `tests/inv003-asym.spec.js` / `tests/inv005-asym.spec.js` (mocked `Storage.prototype.setItem` throwing `QuotaExceededError` for payloads >50 characters, small gate-flag writes succeeding) confirmed:
+
+- Probe A (`dedupInitialScan`): gate was permanently set to `'1'` while `nw:dedupQueue` remained `null` in storage; the detected candidate pair existed only in memory for that session.
+- Probe B (`reviewQueueDeltaAnalysisMigrated`): gate was permanently set to `'1'` while `nw:clashes` remained `null` in storage; the classification annotations existed only in memory for that session.
+- Reproduction rate: 2/2 (100%) under the mocked write-failure condition.
+- No automated regression coverage existed for either asymmetric-failure scenario prior to this investigation.
+
+Severity Assessment:
+
+- `dedupInitialScan`: High. No other code path re-triggers a full unscoped initial scan, so divergence is permanent and non-self-correcting.
+- `reviewQueueDeltaAnalysisMigrated`: Medium. The one-shot gate itself remains incorrectly and permanently set, but explicit reclassify still runs on every import and every Settings change, providing a partial self-healing path outside the broken gate.
+
+Developer Assessment:
+
+- Independently confirmed QA Investigator and Architect findings.
+- Identified `working.html` as the sole implementation target; confirmed defect isolated to the two gate wrappers.
+- Raised architectural ambiguity: literally mirroring INV-003/INV-005 by converting the shared functions' internal `sv()` calls to throwing writes risks regressing the many other call sites of `scanForDedupCandidates()` / `_rqdaReclassifyAll()` that currently rely on `sv()`'s error tolerance. Presented two lower-risk, minimal-scope alternatives that preserve shared-helper behavior:
+  - Option B: read-after-write verification inside each wrapper before setting the gate.
+  - Option C: a dedicated, throwing persistence step scoped only to the two wrapper functions (functionally mirrors the INV-003/INV-005 shape without touching shared helpers).
+- Recommended Option C for implementation and test symmetry with the two already-released remediations, but flagged the choice as requiring explicit approval.
+
+Implementation Manager Review:
+
+- Confirmed scope is limited to `working.html` (two one-shot wrapper functions) plus new regression coverage; no shared-helper (`sv()`, `scanForDedupCandidates()`, `_rqdaReclassifyAll()`) modification approved at this stage.
+- Recommended Option C, matching the Developer Assessment recommendation, for governance and reviewer consistency with INV-003/INV-005.
+- Identified this investigation as requiring two concurrent decision gates before Developer Implementation may proceed: (1) standard Implementation Required (repository modification), and (2) Architectural Ambiguity (Option B vs. Option C final selection), per DEC-009.
+
+Human Decision:
+
+**Option C approved.** Human operator selected Option C — a dedicated, throwing persistence step scoped only to the two one-shot wrapper functions, without altering `sv()`, `scanForDedupCandidates()`, or `_rqdaReclassifyAll()`. Implementation authorized.
+
+Approved Scope:
+
+Files:
+
+- working.html (`DEDUP-QUEUE-DETECT` initial-scan wrapper; `_rqdaMigrate()`)
+- tests/inv006-asym.spec.js (new)
+
+Boundaries:
+
+- No changes to `sv()` / `lv()`.
+- No changes to `scanForDedupCandidates()` or `_rqdaReclassifyAll()` internals.
+- No changes to any other call site of those two shared functions.
+
+Developer Implementation:
+
+Implemented approved Option C remediation.
+
+Changes:
+
+working.html
+
+- `DEDUP-QUEUE-DETECT` one-shot initial-scan wrapper: added a direct, throwing `localStorage.setItem('nw:dedupQueue', JSON.stringify(S.dedupQueue))` call inside the same try block, immediately after `scanForDedupCandidates()` and before the `nw:dedupInitialScan` gate write. `scanForDedupCandidates()` itself is unmodified.
+- `_rqdaMigrate()`: added a direct, throwing `localStorage.setItem('nw:clashes', JSON.stringify(S.clashes))` call inside the same try block, immediately after `_rqdaReclassifyAll()` and before the `nw:reviewQueueDeltaAnalysisMigrated` gate write — guarded by `if(n>0)` to exactly mirror `_rqdaReclassifyAll()`'s own conditional `if(touched)` write and avoid introducing an unconditional write side-effect that did not exist before. `_rqdaReclassifyAll()` itself is unmodified.
+- Prevents each gate from ever being set whenever the corresponding data write fails.
+- Aligns both locations with the INV-003/INV-005 remediation pattern while explicitly preserving the shared helper functions and their other call sites, per Architect/Implementation Manager scope constraints.
+
+Regression Coverage Added:
+
+tests/inv006-asym.spec.js
+
+Coverage includes:
+
+- `dedupInitialScan` gate/persistence asymmetric-failure path (large `dedupQueue` write fails — gate stays unset, storage unchanged, scan retries and converges on next load)
+- `dedupInitialScan` gate/persistence success path (write succeeds — gate is set, storage updated, in-memory and persisted queue agree)
+- `reviewQueueDeltaAnalysisMigrated` gate/persistence asymmetric-failure path (large `clashes` write fails — gate stays unset, storage unchanged, migration retries and converges on next load)
+- `reviewQueueDeltaAnalysisMigrated` gate/persistence success path (write succeeds — gate is set, storage updated, in-memory and persisted classification agree)
+
+QA Retest:
+
+Result:
+
+PASS
+
+Verification:
+
+- Original gate/persistence divergence defect resolved for both `dedupInitialScan` and `reviewQueueDeltaAnalysisMigrated`.
+- Gate flags and persisted storage remain synchronized under both success and asymmetric-failure conditions for both locations.
+- Failed one-shot operations safely retry and converge on the next load instead of diverging permanently.
+- New regression suite (`tests/inv006-asym.spec.js`) passes: 4/4.
+- Combined targeted regression run (inv006-asym, inv003-asym, inv005-asym, dedup-scope-and-signature, dedup-audit-log, review-queue-bulk-delta-approve-source, review-queue-date-guard-fix, review-queue-scope, weekly-incremental-import) passes: 69/69, run with `--workers=1` for deterministic timing.
+- Full repository-wide suite run identified 22 pre-existing intermittent failures unrelated to `dedupInitialScan` / `reviewQueueDeltaAnalysisMigrated` (e.g. `approve-action-*`, `img-count-check`, `selective-reset-idb-reliability`, `frozen-week-and-chart-year`). These were independently reproduced on the unmodified pre-INV-006 baseline (`git stash` verification) with the same failing tests, confirming they are pre-existing MI-002 (Test Timing Sensitivity) flakiness under this environment's parallel/serial worker scheduling and are not attributable to the INV-006 remediation. No new failures were introduced by this change.
+- A first implementation draft unconditionally wrote `nw:clashes` inside `_rqdaMigrate()` regardless of whether reclassification touched any data, which was caught by the existing `clear-all-data-scope-fix.spec.js` "cancelling the first confirm" test failing under regression re-run; corrected to guard the write with `if(n>0)`, matching `_rqdaReclassifyAll()`'s own conditional-write semantics exactly. Re-verified clean afterward.
+
+Validation Results:
+
+tests/inv006-asym.spec.js
+
+- 4 / 4 Passed
+
+Combined targeted validation:
+
+- inv006-asym.spec.js
+- inv003-asym.spec.js
+- inv005-asym.spec.js
+- dedup-scope-and-signature.spec.js
+- dedup-audit-log.spec.js
+- review-queue-bulk-delta-approve-source.spec.js
+- review-queue-date-guard-fix.spec.js
+- review-queue-scope.spec.js
+- weekly-incremental-import.spec.js
+
+Result:
+
+- 69 / 69 Passed
+
+Repository Steward Review:
+
+Result:
+
+APPROVED WITH OBSERVATIONS
+
+Findings:
+
+- Scope remained limited to working.html (two one-shot wrapper functions), tests/inv006-asym.spec.js, and governance documentation.
+- No scope creep detected.
+- No unrelated modifications detected.
+- `sv()`, `scanForDedupCandidates()`, `_rqdaReclassifyAll()`, and all their other call sites remain untouched, exactly as directed by the Architect/Implementation Manager scope constraints.
+- Repository hygiene acceptable.
+- Remediation correctly reused the INV-003/INV-005 pattern (direct, throwing write preceding the gate write, inside the same try block) via Option C rather than modifying shared helpers.
+- An interim implementation defect (unconditional `nw:clashes` write) was self-corrected by the Developer Implementation step before reaching this review, evidencing effective QA-in-the-loop verification.
+
+Impact:
+
+Resolved risk of permanent gate/data divergence in the `dedupInitialScan` one-shot dedup scan and the `reviewQueueDeltaAnalysisMigrated` one-shot delta-analysis migration under persistence-write failure conditions, without introducing risk to the several other call sites of the shared `scanForDedupCandidates()` / `_rqdaReclassifyAll()` functions.
+
+Release Manager Review:
+
+Executive Summary:
+
+Implementation complete and QA-verified. Ready for commit/push pending human authorization.
+
+Implementation Review:
+
+Completed — Option C applied to both `dedupInitialScan` and `reviewQueueDeltaAnalysisMigrated` wrappers in working.html.
+
+QA Review:
+
+PASS — 69/69 on combined targeted validation; new regression suite 4/4.
+
+Repository Steward Review:
+
+APPROVED WITH OBSERVATIONS.
+
+Release Risk Assessment:
+
+Low. Change is minimal, additive, and scoped to two one-shot migration gate wrappers already covered by new regression tests. Pattern is identical in shape to two previously-released remediations (INV-003, INV-005).
+
+Approval Status:
+
+CONDITIONAL APPROVAL — approved for commit/push pending human authorization per DEC-009 (repository write actions require human authorization).
+
+Next Actions:
+
+Awaiting human authorization to commit and push:
+
+- working.html
+- tests/inv006-asym.spec.js
+- docs/governance/CURRENT_STATUS.md
+- docs/governance/INVESTIGATION_LOG.md
+- docs/governance/KNOWN_ISSUES.md
+
+Decision Gate Status:
+
+STOPPED — awaiting human decision at:
+
+- Commit / Push Authorization (per DEC-009, repository write actions require human authorization)
+
+Repository code has been modified in the working tree (`working.html`, `tests/inv006-asym.spec.js`) and governance documentation updated, but nothing has been committed or pushed.
+
 

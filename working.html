@@ -1271,10 +1271,23 @@ async function initAuth(){
   /* DEDUP-QUEUE-DETECT: one-shot initial scan so pre-existing register
      duplicates surface without needing a fresh import. Runs once per
      browser, gated on nw:dedupInitialScan. Idempotent — subsequent
-     scans are triggered by importToRegister via DEDUP-QUEUE-DETECT. */
+     scans are triggered by importToRegister via DEDUP-QUEUE-DETECT.
+
+     INV-006 GATE/DATA DIVERGENCE FIX (Option C): scanForDedupCandidates()
+     persists the scanned queue internally via sv(), which swallows write
+     errors. scanForDedupCandidates() is a shared function also called
+     from several non-gate contexts (weekly incremental import, test
+     suites), so its internals — and sv() itself — are left untouched.
+     Instead, a dedicated direct, throwing localStorage.setItem write of
+     the resulting S.dedupQueue is added here, inside the same try block
+     as the gate write, so a failed write propagates to the outer catch
+     and prevents the gate from ever being set — mirroring the
+     INV-003/INV-005 remediation shape without altering the shared
+     helper functions. */
   try{
     if(!localStorage.getItem('nw:dedupInitialScan')){
       if(typeof scanForDedupCandidates==='function')scanForDedupCandidates();
+      localStorage.setItem('nw:dedupQueue',JSON.stringify(S.dedupQueue));
       localStorage.setItem('nw:dedupInitialScan','1');
     }
   }catch(e){console.warn('DEDUP-QUEUE-DETECT initial scan error:',e);}
@@ -2175,10 +2188,27 @@ function _rqdaFirstSeen(c){
    happens on every import and on every Settings change. Auto-runs
    1600ms after load, same pattern as backfillStatusHistory /
    backfillImportFilenames. Idempotent by construction. */
+/* INV-006 GATE/DATA DIVERGENCE FIX (Option C): _rqdaReclassifyAll() persists
+   the reclassified register internally via sv('clashes',...), which
+   swallows write errors, and only does so when touched>0. _rqdaReclassifyAll()
+   is a shared function also called from several non-gate contexts (Settings
+   pattern edits, tolerance changes, import-time reclassify), so its
+   internals — and sv() itself — are left untouched. Instead, a dedicated
+   direct, throwing localStorage.setItem write of the resulting S.clashes is
+   added here, inside the same try block as the gate write, so a failed
+   write propagates to the outer catch and prevents the gate from ever
+   being set — mirroring the INV-003/INV-005 remediation shape without
+   altering the shared helper function. */
 function _rqdaMigrate(){
   try{
     if(localStorage.getItem('nw:reviewQueueDeltaAnalysisMigrated')==='1')return 0;
     const n=(typeof _rqdaReclassifyAll==='function')?_rqdaReclassifyAll():0;
+    /* Only re-assert the direct, throwing write when reclassification
+       actually touched data (n>0) — mirrors _rqdaReclassifyAll()'s own
+       conditional `if(touched)sv('clashes',...)` so this fix does not
+       introduce an unconditional S.clashes write (and resulting race
+       with unrelated code paths) on loads where nothing changed. */
+    if(n>0)localStorage.setItem('nw:clashes',JSON.stringify(S.clashes));
     localStorage.setItem('nw:reviewQueueDeltaAnalysisMigrated','1');
     console.log('REVIEW-QUEUE-DELTA-ANALYSIS: migrated '+n+' pendingReview clash'+(n===1?'':'es'));
     return n;
