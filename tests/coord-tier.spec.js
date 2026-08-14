@@ -58,6 +58,10 @@ function makeXml(x, y, z, sourceA = 'GAS_v_08_AMHS.nwc', sourceB = 'Structure.nw
 async function bootstrap(page) {
   await page.goto(HTML, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => typeof S !== 'undefined' && Array.isArray(S.clashes) && S.projName);
+  // INV-007: wait for the terminal inline one-shot migration gate so
+  // window.onload's setTimeout(1500/1600)-deferred migrations don't
+  // race and silently overwrite this test's seeded state.
+  await page.waitForFunction(() => localStorage.getItem('nw:dedupInitialScan') === '1');
   await page.evaluate(() => {
     Object.keys(localStorage).filter(k => k.startsWith('nw:')).forEach(k => localStorage.removeItem(k));
     localStorage.setItem('nw:reviewQueueScopeFixed', '1');

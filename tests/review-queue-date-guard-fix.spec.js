@@ -71,6 +71,10 @@ function makeXmlWithNoDate({ clashes = [1,2,3] } = {}) {
 async function bootstrap(page, { keepMigrationLive = false } = {}) {
   await page.goto(HTML, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => typeof S !== 'undefined' && Array.isArray(S.clashes) && S.projName);
+  // INV-007: wait for the terminal inline one-shot migration gate so
+  // window.onload's setTimeout(1500/1600)-deferred migrations don't
+  // race and silently overwrite this test's seeded state.
+  await page.waitForFunction(() => localStorage.getItem('nw:dedupInitialScan') === '1');
   await page.evaluate((keepMigrationLive) => {
     Object.keys(localStorage).filter(k => k.startsWith('nw:')).forEach(k => localStorage.removeItem(k));
     if (!keepMigrationLive) {
@@ -191,6 +195,10 @@ test.describe('REVIEW-QUEUE-MIGRATE-DATE-GUARD-FIX', () => {
   test('one-time migration clears stale pendingReview flags left by the pre-fix build and sets the guard', async ({ page }) => {
     await page.goto(HTML, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => typeof S !== 'undefined' && Array.isArray(S.clashes) && S.projName);
+    // INV-007: wait for the terminal inline one-shot migration gate so
+    // window.onload's setTimeout(1500/1600)-deferred migrations don't
+    // race and silently overwrite this test's seeded state.
+    await page.waitForFunction(() => localStorage.getItem('nw:dedupInitialScan') === '1');
 
     // Seed a pre-fix production register: 3 pending clashes + 1 reviewedStillOpen.
     // No nw:reviewQueueDateGuardFixed guard yet — mirrors a browser that first

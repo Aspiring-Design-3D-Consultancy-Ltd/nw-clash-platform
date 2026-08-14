@@ -253,11 +253,57 @@ None yet — implementation complete and QA-verified in the working tree, awaiti
 
 ---
 
+### INV-007
+
+Title:
+
+MI-002 Test Timing Sensitivity Assessment
+
+Status:
+
+Remediated and QA-verified — Implemented (awaiting commit/push authorization)
+
+Summary:
+
+Opened from MI-002 to determine the root cause of recurring, pre-existing intermittent Playwright test failures (`approve-action-*`, `dedup-queue.spec.js`, `img-count-check.spec.js`, `selective-reset-idb-reliability.spec.js`, and others) and whether remediation is required.
+
+Findings:
+
+Confirmed a test-harness synchronization gap, not an application defect. Test bootstrap helpers wait only for `working.html`'s earliest observable ready signal (`S.clashes` + `S.projName`), not for the full `window.onload` initialization chain (inline `initAuth()` migrations plus three further `setTimeout(1500/1600)`-deferred migrations). Deferred migrations fire within a typical test body's runtime and race/overwrite test-seeded state, producing the intermittent failures.
+
+Empirically validated fix (adding a single explicit wait on the terminal migration gate) eliminated the flakiness across 44/44 test executions on two independent spec files during pre-implementation validation, with zero application-code changes required. Implementation has since been completed across all 28 affected spec files and re-verified via full-suite QA Retest.
+
+Tracked as:
+
+KI-005 (Known Issues)
+
+Implementation Status:
+
+✅ Implemented — `await page.waitForFunction(() => localStorage.getItem('nw:dedupInitialScan') === '1');` added immediately after the existing early-signal wait in every affected bootstrap helper across 28 `tests/*.spec.js` files. Two bootstraps (`batch-import-folder.spec.js`, `weekly-incremental-import.spec.js`) plus `weekly-summary-screenshot.spec.js` also received a small additional in-memory `S.clashes = []` / `S.weekly = []` reset (mirroring the existing `img-count-check.spec.js` pattern) — the deterministic wait exposed that these bootstraps had been relying on lucky race timing to observe an empty register before the demo dataset finished seeding.
+
+QA Investigation / Architect Review:
+
+✅ Completed — root cause confirmed, remediation approach approved (test-file-only).
+
+QA Retest:
+
+✅ Completed — full-suite run (`--workers=1`): 278/284 passed. The remaining 6 failures (`frozen-week-and-chart-year.spec.js` ×2, `selective-reset-idb-reliability.spec.js` ×3, `wipe-verify.spec.js` ×1) were confirmed via `git stash` baseline comparison to be pre-existing, unrelated IndexedDB/chart-range timing flakiness present on the unmodified codebase too — out of scope for this remediation. Baseline (unmodified) comparison run showed 21 pre-existing intermittent failures; post-fix only the 6 confirmed-unrelated ones remain.
+
+Files Affected:
+
+- 28 files under `tests/*.spec.js` sharing the affected bootstrap idiom (enumerated and modified; see KI-005 for the full list of the three files requiring the additional in-memory reset)
+
+Release Commit:
+
+None yet — implementation complete in the working tree; awaiting commit/push authorization.
+
+---
+
 ## Known Issues
 
 ### Confirmed
 
-None currently requiring active investigation.
+None currently outstanding. KI-005 (Test-Harness Startup-Sequencing Race, MI-002 root cause) has been implemented and QA-verified under INV-007 — see below and the Known Issues document for detail. Awaiting commit/push authorization only.
 
 ### Monitoring
 
@@ -289,7 +335,7 @@ Test Timing Sensitivity
 
 Status:
 
-Monitoring
+Remediated under INV-007 / KI-005 — implemented and QA-verified (awaiting commit/push authorization).
 
 Description:
 
@@ -302,7 +348,7 @@ Areas include:
 - IndexedDB initialization
 - Persistence synchronization
 
-Continue monitoring and address through future investigations where necessary.
+INV-007 confirmed the root cause: test bootstrap helpers race `working.html`'s deferred one-shot migrations (inline `initAuth()` continuation plus `setTimeout(1500/1600)` migrations from `window.onload`). This is a test-harness synchronization gap, not an application defect. The validated, test-file-only fix has now been implemented across all 28 affected spec files, and full-suite QA Retest confirms 278/284 passing with the remaining 6 failures confirmed pre-existing and unrelated (see the INV-007 investigation entry above for full QA Retest detail).
 
 ---
 
@@ -408,7 +454,7 @@ Note: a full repository-wide suite run surfaced 22 pre-existing intermittent fai
 
 ## Current Priority
 
-INV-002, R1, and INV-005 are all closed and released. INV-006 is implemented and QA-verified (KI-004), stopped at the commit/push human decision gate.
+INV-002, R1, and INV-005 are all closed and released. INV-006 is implemented and QA-verified (KI-004), stopped at the commit/push human decision gate. INV-007 (MI-002 root cause) has been implemented and QA-verified (KI-005) — human authorization to implement was granted, the validated synchronization fix has been applied across all 28 affected `tests/*.spec.js` bootstrap helpers, and full-suite QA Retest confirms the fix. Both INV-006 and INV-007 are now stopped at the commit/push human decision gate.
 
 Remaining Actions:
 
@@ -422,8 +468,24 @@ INV-006 requires human authorization to commit and push:
 - docs/governance/INVESTIGATION_LOG.md
 - docs/governance/KNOWN_ISSUES.md
 
+INV-007 requires human authorization to commit and push:
+
+- 28 files under tests/*.spec.js (synchronization-gate wait added to each affected bootstrap; three of the 28 also received a small in-memory `S.clashes`/`S.weekly` reset — see KI-005 for the full detail and rationale)
+- docs/governance/CURRENT_STATUS.md
+- docs/governance/INVESTIGATION_LOG.md
+- docs/governance/KNOWN_ISSUES.md
+
+Repository Steward Review: Repository state audited — only the 28 intended spec files plus the three governance documents are modified in the working tree; no unrelated or unexpected changes. Working tree is clean apart from these intentional edits.
+
+Release Manager Review: All prior workflow stages (Developer Implementation, QA Retest) are complete with evidence recorded above. Release readiness: READY, pending human authorization to commit and push per DEC-009 (repository-modification decision gate). No outstanding risks beyond the two pre-existing, independently-confirmed-unrelated flaky categories (IndexedDB `deleteDatabase` connection timing, chart-range reset timing) already tracked under MI-002/KI-005 monitoring notes and excluded from this remediation's scope.
+
 ---
 
 ## Next Planned Activity
 
-Await human authorization to commit and push the INV-006 remediation. Once authorized, close INV-006 (Final Release Approval) and select the next investigation or enhancement work item.
+Await human authorization on two independent decision gates:
+
+1. Commit and push the INV-006 remediation (working.html + regression test + governance docs already modified in the working tree).
+2. Commit and push the INV-007 remediation (28 tests/*.spec.js files + governance docs already modified in the working tree).
+
+Once authorized, close the respective investigation(s) via Final Release Approval / Implementation, and select the next investigation or enhancement work item.

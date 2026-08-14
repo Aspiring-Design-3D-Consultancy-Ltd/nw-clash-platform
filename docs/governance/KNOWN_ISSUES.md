@@ -418,7 +418,7 @@ Test Timing Sensitivity
 
 Status:
 
-Monitoring
+Remediated — test-harness synchronization fix implemented and QA-verified under INV-007 (see KI-005).
 
 Description:
 
@@ -430,21 +430,65 @@ Certain Playwright tests continue to exhibit timing-related behaviour associated
 - Persistence synchronization
 - Asynchronous UI initialization
 
+Root Cause (confirmed under INV-007):
+
+Test bootstrap helpers across ~30+ spec files wait only for the earliest observable application-ready signal (`S.clashes` + `S.projName` populated), not for `working.html`'s full `window.onload` initialization chain to complete. Several further one-shot migrations run inline inside `initAuth()` (past that early signal) or are deferred via `setTimeout(1500/1600)` from `window.onload`, and fire within the typical runtime of a test body — racing and silently overwriting test-seeded `S.clashes`/`S.dedupQueue` state and, in some cases, colliding with test-owned IndexedDB connections. This is a test-harness synchronization gap, not an application defect — confirmed via Architect review under INV-007.
+
 Potential Risks:
 
 - Test flakiness
 - Intermittent failures
 - False-positive regression reports
+- Genuine regressions masked by "known flaky" pattern-matching
 
 Recommended Action:
 
-Continue monitoring and improve test stability when future investigations involve startup sequencing or persistence workflows.
+Implemented. Human authorization was granted to proceed with the INV-007 remediation; the validated synchronization fix (`await page.waitForFunction(() => localStorage.getItem('nw:dedupInitialScan') === '1');` inserted into each affected bootstrap helper, immediately after the existing early-signal wait) has been applied across all 28 affected `tests/*.spec.js` files sharing the shared bootstrap idiom. QA Retest confirms the fix eliminates the previously-intermittent failures (see KI-005 Validation Results). Remediation was test-file-only; no `working.html` changes were made.
 
 ---
 
 # Confirmed Issues
 
-None currently recorded.
+## KI-005
+
+Title:
+
+Test-Harness Startup-Sequencing Race (MI-002 root cause)
+
+Status:
+
+Closed — Remediated and QA-verified.
+
+Severity:
+
+Medium
+
+Related Investigation:
+
+- INV-007
+- MI-002
+
+Summary:
+
+Test bootstrap helpers across ~30+ Playwright spec files wait only for `working.html`'s earliest observable application-ready signal (`S.clashes` + `S.projName` populated), not for the full `window.onload` initialization chain to complete. Several one-shot migrations either continue executing inside `initAuth()` past that early signal, or are deferred via `setTimeout(1500/1600)` from `window.onload`, and fire within the typical runtime of a test body — racing and silently overwriting test-seeded `S.clashes`/`S.dedupQueue` state, and in some cases colliding with test-owned IndexedDB connections.
+
+Root Cause:
+
+Confirmed test-harness synchronization gap (not an application defect). See INV-007 for full technical detail.
+
+Approved Remediation:
+
+Added a single explicit wait to each affected bootstrap helper — on the terminal inline one-shot migration gate (`nw:dedupInitialScan`) — immediately after the existing early-signal wait, before any per-test `localStorage` wipe/seed. Test-file-only change; no `working.html` modification made.
+
+Implementation Status:
+
+✅ Implemented across all 28 affected spec files. Two bootstrap helpers (`batch-import-folder.spec.js`, `weekly-incremental-import.spec.js`, and — preventively — `weekly-summary-screenshot.spec.js`) required a small additional fix: an explicit in-memory `S.clashes = []` / `S.weekly = []` reset (mirroring the pattern already used in `img-count-check.spec.js`) alongside the `localStorage` wipe, because the now-deterministic wait exposed that these bootstraps had previously relied on lucky race timing to observe an empty register before the demo dataset finished seeding.
+
+Validation Results:
+
+- Pre-implementation empirical proof: `dedup-queue.spec.js` 13/13 passed post-fix (vs. intermittent 3–10 failures pre-fix), 39/39 across `--repeat-each=3`; `approve-action-clash-register.spec.js` "bulk-bar" test 10/10 across `--repeat-each=5` post-fix (vs. 5/10 pre-fix).
+- Full-suite QA Retest (post-implementation, `--workers=1`): 278/284 passed. The remaining 6 failures (`frozen-week-and-chart-year.spec.js` ×2, `selective-reset-idb-reliability.spec.js` ×3, `wipe-verify.spec.js` ×1) were independently confirmed to be pre-existing, unrelated IndexedDB/`deleteDatabase`-connection and chart-range timing flakiness — reproduced identically on the unmodified pre-INV-007 baseline (`git stash` verification) — and are out of scope for this remediation.
+- Baseline (unmodified) full-suite comparison run: 21 pre-existing intermittent failures. Post-fix: 6 pre-existing-and-confirmed-unrelated failures remain; the other 15 are eliminated.
 
 ---
 
@@ -462,16 +506,18 @@ Resolved Issues:
 - KI-002 — Data Resurrection After Reset ✅
 - KI-003 — Migration Gate / Persistence Write Divergence (Review Queue Migrations) ✅
 - KI-004 — Residual Migration Gate / Persistence Divergence (Dedup Initial Scan + Review Queue Delta Analysis Migration) ✅ (implemented, QA-verified — commit/push authorization pending)
+- KI-005 — Test-Harness Startup-Sequencing Race (MI-002 root cause) ✅ (implemented, QA-verified — commit/push authorization pending)
 
 Monitoring Items:
 
 - MI-001 — Migration Complexity
-- MI-002 — Test Timing Sensitivity
+- MI-002 — Test Timing Sensitivity (root cause remediated under INV-007 / KI-005)
 
 Confirmed Issues:
 
-- None
+None currently recorded.
 
 Active Investigations:
 
 - INV-006 — Residual Migration Gate / Persistence Divergence Risk Assessment (implemented, QA-verified — awaiting commit/push authorization)
+- INV-007 — MI-002 Test Timing Sensitivity Assessment (remediated and QA-verified — awaiting commit/push authorization)

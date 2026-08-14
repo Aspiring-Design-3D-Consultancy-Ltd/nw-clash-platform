@@ -40,6 +40,13 @@ function makePair() {
 async function bootstrap(page) {
   await page.goto(HTML, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => typeof S !== 'undefined' && Array.isArray(S.clashes) && S.projName);
+  // INV-007: wait for the terminal inline one-shot migration gate (against
+  // the initial demo dataset) so window.onload's setTimeout(1500/1600)-
+  // deferred migrations don't race and silently overwrite this test's
+  // seeded state below. localStorage is wiped immediately after, and the
+  // per-test seed() re-triggers scanForDedupCandidates() directly, so
+  // leaving dedupInitialScan unset post-wipe (see below) still holds.
+  await page.waitForFunction(() => localStorage.getItem('nw:dedupInitialScan') === '1');
   await page.evaluate(() => {
     Object.keys(localStorage).filter(k => k.startsWith('nw:')).forEach(k => localStorage.removeItem(k));
     localStorage.setItem('nw:reviewQueueScopeFixed', '1');

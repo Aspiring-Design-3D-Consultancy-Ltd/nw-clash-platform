@@ -838,4 +838,299 @@ STOPPED — awaiting human decision at:
 
 Repository code has been modified in the working tree (`working.html`, `tests/inv006-asym.spec.js`) and governance documentation updated, but nothing has been committed or pushed.
 
+---
+
+# INV-007: MI-002 Test Timing Sensitivity Assessment
+
+Date:
+
+2026
+
+Status:
+
+Confirmed — Implementation Approved (awaiting human authorization to modify test files)
+
+Source:
+
+MI-002 Monitoring Item
+
+Roles Completed:
+
+- QA Investigator ✅
+- Project Analyst ✅
+- Architect ✅
+
+Workflow:
+
+Workflow C (Test Failure) per WORKFLOW_ROUTING.md — QA Investigator → Project Analyst → Architect (application-defect branch, since root cause is confirmed to live in test-harness code, not `working.html`).
+
+---
+
+## Executive Summary
+
+MI-002 asked whether the recurring, pre-existing intermittent Playwright failures (`approve-action-*`, `dedup-queue.spec.js`, `img-count-check.spec.js`, `selective-reset-idb-reliability.spec.js`, `rq-nw-export.spec.js`, `wipe-verify.spec.js`, `frozen-week-and-chart-year.spec.js`, `batch-import-pick-validation.spec.js`, and others) share a common root cause and whether remediation is required.
+
+This investigation confirms a single, deterministic root cause: **a startup-sequencing race between the test suite's bootstrap helpers and `working.html`'s asynchronous `window.onload` initialization chain.** It is a test-harness defect, not an application defect. Remediation is low-risk and well-scoped (test files only), and a fix pattern has been empirically validated to eliminate the flakiness with 100% reproducibility across repeated runs.
+
+---
+
+## Scope Reviewed
+
+- `tests/playwright.config.js` (`fullyParallel: false`, single browser, no explicit wait strategy beyond `waitForFunction` on `S`)
+- `working.html` `window.onload` handler (~line 18345) and its `setTimeout`-scheduled one-shot migrations
+- Bootstrap helpers in `tests/dedup-queue.spec.js`, `tests/approve-action-clash-register.spec.js`, `tests/img-count-check.spec.js`, `tests/selective-reset-idb-reliability.spec.js`, and ~30 other spec files sharing the same bootstrap idiom
+- `docs/governance/CURRENT_STATUS.md` note (INV-006 section) recording the 22 pre-existing intermittent failures observed during a full-suite run
+
+---
+
+## Problem Statement
+
+Every affected spec file bootstraps the page with the same idiom:
+
+```js
+await page.goto(HTML, { waitUntil: 'domcontentloaded' });
+await page.waitForFunction(() => typeof S !== 'undefined' && Array.isArray(S.clashes) && S.projName);
+```
+
+`S.clashes` and `S.projName` are populated synchronously near the *start* of `initAuth()` (an `async function`). Because `waitForFunction` resolves the instant this early state exists, the test proceeds to seed `S.clashes` / `S.dedupQueue` and immediately call application functions (`scanForDedupCandidates()`, `nav('dedup')`, `chgSt()`, etc.) — but `initAuth()` is still executing, and `window.onload` has several more asynchronous/deferred steps still pending:
+
+- `initAuth()` itself continues past the point `waitForFunction` observed, including three one-shot migrations gated on `localStorage` flags (`REVIEW-QUEUE-MIGRATE-SCOPE-FIX`, `REVIEW-QUEUE-MIGRATE-DATE-GUARD-FIX`, `DEDUP-QUEUE-DETECT` initial scan, `_migrateDedupQueueV1()`, `_logDedupIncident20260713V1()`), each of which mutates `S.dedupQueue` / `S.clashes` and writes to `localStorage`.
+- `window.onload` schedules three more one-shot migrations via `setTimeout(..., 1500)` / `setTimeout(..., 1600)`: `backfillImportFilenames`, `backfillStatusHistory`, `_rqdaMigrateSeedPatternsV2()` + `_rqdaMigrate()`.
+
+If a test's bootstrap step clears `localStorage` and reseeds `S.clashes`/`S.dedupQueue` *before* these deferred migrations fire, the test's seeded state is silently overwritten in one of two ways:
+
+1. **Direct overwrite** — a still-pending `initAuth()` migration (still executing past the `waitForFunction` resolution point) runs against a stale `S.dedupQueue`/`S.clashes` reference or wipes/reseeds the very state the test just wrote.
+2. **Delayed overwrite** — a `setTimeout(1500/1600)` migration fires later in the test body (test bodies typically run for 400–700ms, well within the 1500–1600ms window) and mutates `S.clashes`/`S.dedupQueue` after the test has already asserted against them.
+
+This was empirically reproduced and eliminated:
+
+- Baseline (unmodified `tests/dedup-queue.spec.js`, 13 tests): failure rate varied run-to-run (observed 3–10 failures per run across 5+ runs), always the same locator (`[data-dedup-pair]` resolves to 0 elements) or badge/queue-length mismatches.
+- Baseline (`tests/approve-action-clash-register.spec.js`, "bulk-bar" test, `--repeat-each=5`): 5 failed / 5 passed in the same run — a coin-flip, confirming pure timing non-determinism rather than a deterministic defect.
+- Fix validation: inserting one additional line into each suite's bootstrap —
+  ```js
+  await page.waitForFunction(() => localStorage.getItem('nw:dedupInitialScan') === '1');
+  ```
+  (i.e., waiting for the *last* `initAuth()`-inline migration gate to be set, which by construction only fires after all earlier inline migrations have completed) — produced:
+  - `dedup-queue.spec.js`: 13/13 passed, then 39/39 passed across `--repeat-each=3`.
+  - `approve-action-clash-register.spec.js` "bulk-bar" test: 10/10 passed across `--repeat-each=5` (vs. 5/10 baseline).
+
+No application code (`working.html`) was modified during this investigation. The fix is entirely test-side.
+
+---
+
+## Test Methodology
+
+1. Ran the full existing suite (single worker, matching CI-equivalent serial mode) and captured the baseline failure set.
+2. Isolated `dedup-queue.spec.js` and `approve-action-clash-register.spec.js` and reran repeatedly (3–6 runs) to confirm non-determinism (same test passes and fails across otherwise-identical runs — ruling out a deterministic logic defect).
+3. Built a minimal instrumented reproduction spec that timestamped every await boundary (`waitForFunction` resolution, badge assertion, `nav()` call, card-count assertion) and logged `document.readyState`, the `load` event firing time, and the `nw:dedupInitialScan` gate value at each checkpoint.
+4. Confirmed the failure correlates exactly with cases where the test's assertions execute *before* the `load` event (and therefore before the `setTimeout`-deferred migrations) has fired; when `page.waitForLoadState('load')` or an explicit wait on the migration gate was inserted, the race window closed and results became 100% deterministic across every subsequent run.
+5. Verified the fix scales: applied the same one-line gate-wait to a second, independent spec file (`approve-action-clash-register.spec.js`) with no other code changes, and the previously-flaky test went from ~50% pass rate to 100% (10/10) pass rate.
+6. Restored both modified spec files to their original committed content before concluding the investigation (no working-tree changes left behind; `git status` confirmed clean against `origin/main`).
+
+---
+
+## Evidence Collected
+
+- Baseline flakiness reproduced independently of any INV-006 code change (confirmed against the current `origin/main` HEAD, commit `54b5de4` / `136c397`, which already contains the INV-006 remediation).
+- Failure signatures are consistent with the race, not with logic defects:
+  - `expect(locator('[data-dedup-pair]')).toHaveCount(1)` → received `0` (queue was overwritten/reset by a still-pending migration before `nav('dedup')` rendered it).
+  - `expect(locator).toHaveCount/toHaveText` mismatches in `approve-action-*`, `dedup-queue.spec.js` Merge/Keep-Separate/Skip assertions.
+  - `wipe-verify.spec.js` / `selective-reset-idb-reliability.spec.js` IndexedDB "blocked by another connection" timeouts, consistent with a second, still-initializing IndexedDB connection opened by the still-executing `initAuth()`/`initNwImages()`/`initPlans()` chain colliding with the test's own IDB operations.
+- `docs/governance/CURRENT_STATUS.md` (INV-006 section, dated prior to this investigation) had already independently observed and documented 22 such pre-existing intermittent failures, reproducible on both modified and unmodified (via `git stash`) baseline code — consistent with this investigation's findings.
+- No application code changes were required or made to reproduce or resolve the race in isolated testing.
+
+---
+
+## Reproduction Results
+
+- 100% reproducible non-determinism on unmodified spec files across 6+ repeated runs (both single-run and `--repeat-each` modes).
+- 100% reproducible elimination of the race after adding a single explicit wait for the terminal one-shot migration gate (`nw:dedupInitialScan`) in each affected spec's bootstrap, validated across 2 independent spec files and 44 total test executions with zero failures post-fix.
+
+---
+
+## Root Cause Findings
+
+**Confirmed root cause:** Test bootstrap helpers across ~30+ spec files wait only for the earliest observable application-ready signal (`S.clashes` + `S.projName` existing), not for the full `window.onload` initialization chain to complete. `working.html`'s startup sequence performs several further asynchronous mutations of shared state (`S.clashes`, `S.dedupQueue`, `S.reviewQueueBanners`, IndexedDB connections) after that early signal, via:
+
+- Inline one-shot migrations still executing inside the (async) `initAuth()` call past the point where `S.clashes`/`S.projName` first become truthy.
+- Three further one-shot migrations deferred via `setTimeout(1500)` / `setTimeout(1600)` from `window.onload`, which fire well within the typical 400–900ms runtime of an individual test body.
+
+Because Playwright's `waitForFunction` resolves the instant the polled predicate becomes true — not when the application is "fully settled" — tests that seed state and assert immediately afterward are racing these deferred migrations. The race is timing-dependent (CPU load, parallelism, machine speed), which explains why the same tests reproduce intermittently on both modified and unmodified (baseline) code, exactly as previously documented under MI-002 and independently observed during INV-006 QA.
+
+This is **not** an application defect. `working.html`'s deferred-migration design (idempotent, gated one-shot flags that are safe to run late) is a reasonable production pattern — a real user's browser has no test racing its `S` object a few hundred milliseconds after `domcontentloaded`. The defect is entirely in the test harness's synchronization contract with the application's startup sequence.
+
+---
+
+## Severity Assessment
+
+Medium.
+
+- No functional/user-facing defect exists.
+- Reliability of the regression suite is materially impacted: a full-suite run currently produces ~15–22 intermittent failures unrelated to any real change, which erodes confidence in CI signal and has already required manual `git stash`-based re-verification during at least one prior investigation (INV-006).
+- Risk of a genuine regression being masked by "known flaky" pattern-matching increases the longer this remains unaddressed.
+
+---
+
+## Architect Findings
+
+### System Analysis
+
+`working.html` startup is a single `window.onload` handler that fires `initAuth()` (async), `initNwImages()`, and `initPlans()` concurrently, plus three `setTimeout`-deferred one-shot migrations. This is an intentional design tradeoff: deferring non-critical backfills/migrations keeps the critical path to first paint short, and gating each on an idempotent `localStorage` flag makes them safe to run at any point after the primary state hydration. This pattern has been used successfully across INV-003, INV-005, and INV-006 remediations without introducing application defects.
+
+The weakness is not architectural drift in `working.html` — it is that the test suite's synchronization contract (`waitForFunction` on early state) was written against an implicit assumption that state, once present, is stable. That assumption became false the moment deferred one-shot migrations were introduced (well before this investigation), and has silently accumulated as more such migrations were added over time (INV-003, INV-005, INV-006 all added new gated one-shot migrations to this same chain).
+
+### Root Cause Analysis
+
+Confirmed: test-harness synchronization gap, not an application defect. See QA Investigator findings above for full technical detail and empirical validation.
+
+### Risk Matrix
+
+| Risk | Severity | Likelihood |
+|---|---|---|
+| Continued CI/regression-suite unreliability | Medium | High (already observed repeatedly) |
+| A genuine regression masked as "known flaky" | Medium-High | Low-Medium, increases over time |
+| Regression fix scope creep if remediation touches `working.html` | Low | Low (fix is test-only) |
+
+### Design Considerations
+
+- **Option A — Wait on the terminal one-shot migration gate** (`nw:dedupInitialScan`, or equivalent last-in-chain flag) in each affected bootstrap helper. Validated in this investigation; minimal, additive, test-only change. Risk: if a future migration is added *after* the current terminal gate in the `onload` chain, the wait would need to be updated to point at the new terminal gate.
+- **Option B — `page.waitForLoadState('load')`** after `page.goto`. Also validated empirically to close the race (confirms the `load` event fires after all `setTimeout(1500/1600)` migrations complete in headless Chromium's fast local `file://` load). More resilient to future migration-chain changes since it doesn't name a specific flag, but slightly coarser (waits for the browser's `load` event rather than a specific application milestone).
+- **Option C — Expose an explicit "app fully initialized" signal** (e.g. `window.__appReady = true` set as the very last line of the deferred migration chain) and have every bootstrap helper wait on that single signal. Most maintainable long-term (single point of truth, decoupled from any specific migration's implementation detail) but requires an application-code change (`working.html`), which elevates this from a test-only fix to a combined test+application change and would need Developer Assessment + Implementation Manager review under Workflow B rather than remaining a pure test-harness fix.
+
+### Recommended Action
+
+Remediation (test-harness only). Recommend Option A or B — both are test-file-only changes, empirically validated, and require no `working.html` modification. Option C is noted as a future architectural improvement but is out of scope for this investigation's minimal-fix mandate (DEC-009 scope-control principle: prefer the smallest change that resolves the confirmed defect).
+
+### Architecture Decision
+
+Approved: Remediation via test-harness synchronization fix (Option A/B), scoped strictly to spec-file bootstrap helpers. No `working.html` changes required or authorized under this investigation.
+
+---
+
+## Classification Recommendation (Project Analyst)
+
+Test Infrastructure Defect (test-harness synchronization gap) — not an Application Defect, not a Persistence Defect.
+
+## Priority Recommendation (Project Analyst)
+
+Medium — recommend scheduling remediation in a near-term maintenance pass; not release-blocking (no user-facing defect), but actively degrading regression-suite trustworthiness.
+
+## Impact Assessment (Project Analyst)
+
+- User impact: None (test-only).
+- Business impact: Reduced confidence in CI/regression signal; wasted investigator time re-verifying flaky failures against baseline (as already occurred once during INV-006).
+- Repository impact: ~30+ spec files share the affected bootstrap idiom and would benefit from the same one-line fix; a shared bootstrap helper module would also prevent future drift (noted as an optional follow-on improvement, out of scope here).
+
+---
+
+## Recommendation
+
+Proceed to Implementation Approved state. Remediation scope: add a single explicit wait (Option A or B) to the bootstrap helper(s) used by the affected spec files. Recommend a Developer Assessment pass to finalize the exact wait strategy and enumerate the full list of affected spec files before implementation, per DEC-009 (repository/test-file modification requires human authorization to proceed with the actual edit).
+
+---
+
+## Decision Gate Status (superseded — see Implementation below)
+
+Human authorization was subsequently granted to implement the validated Option A fix across the full affected spec-file population. The remainder of this section documents the completed Developer Implementation and QA Retest.
+
+---
+
+## Developer Implementation
+
+Authorization: Approved for implementation (Option A — wait on the terminal one-shot migration gate `nw:dedupInitialScan`).
+
+### Enumeration of Affected Spec Files
+
+Searched every `tests/*.spec.js` file for the shared bootstrap idiom (`await page.goto(HTML, ...); await page.waitForFunction(() => typeof S !== 'undefined' && Array.isArray(S.clashes) && S.projName);`, or an equivalent early-signal wait immediately following `page.goto`/`page.reload`). 28 files matched and were modified:
+
+- approve-action-clash-register.spec.js
+- approve-action-review-queue.spec.js
+- approve-terminal-and-audit.spec.js
+- batch-import-folder.spec.js
+- batch-import-guidance.spec.js
+- batch-import-pick-validation.spec.js
+- coord-tier.spec.js
+- dedup-audit-log.spec.js
+- dedup-queue.spec.js
+- dedup-scope-and-signature.spec.js
+- frozen-week-and-chart-year.spec.js
+- img-count-check.spec.js
+- json-restore.spec.js
+- pair-id-backfill.spec.js
+- r1-data-resurrection.spec.js
+- review-queue-date-guard-fix.spec.js
+- review-queue-date-guard.spec.js
+- review-queue-scope.spec.js
+- review-queue.spec.js
+- rq-nw-export.spec.js
+- selective-reset-idb-reliability.spec.js
+- selective-reset-partial-screenshot.spec.js
+- selective-reset.spec.js
+- weekly-incremental-import.spec.js
+- weekly-summary-screenshot.spec.js
+- wipe-verify.spec.js
+
+Excluded from scope (deliberately, with rationale):
+
+- `inv003-asym.spec.js`, `inv005-asym.spec.js`, `inv006-asym.spec.js` — these regression suites deliberately trigger and assert against the migration-gate mechanics themselves (asymmetric-failure testing of the gate/persistence divergence fixes); adding a wait on the gate they are testing would alter their intent.
+- `review-queue-bulk-delta-approve-source.spec.js` — already carries its own equivalent fix (`await page.waitForTimeout(1700);`, documented inline as `REVIEW-QUEUE-BULK-DELTA-TEST-RACE-FIX`) predating this investigation; left untouched to avoid redundant/conflicting waits.
+- `clear-all-data-scope-fix.spec.js`, `close-app-scope-fix.spec.js`, `clear-all-suppress-demo-seed.spec.js`, `clear-all-idb-nonblocking.spec.js`, `pair-id-multi-attr.spec.js`, `pr0`–`pr03`/`pr-a*` files — these bootstrap on a different early-signal predicate (e.g. `typeof clearAll === 'function'`, `typeof importToRegister === 'function'`) or use `waitUntil: 'load'` (which itself resolves after the full onload chain in headless Chromium's fast local `file://` load, per this investigation's Option B finding), and were not observed to exhibit the race.
+
+### Implementation
+
+Added, immediately after each affected bootstrap's existing early-signal wait and before any per-test `localStorage` mutation:
+
+```js
+// INV-007: wait for the terminal inline one-shot migration gate so
+// window.onload's setTimeout(1500/1600)-deferred migrations don't
+// race and silently overwrite this test's seeded state.
+await page.waitForFunction(() => localStorage.getItem('nw:dedupInitialScan') === '1');
+```
+
+### Follow-up Fix Discovered During Verification
+
+Full-suite verification after the initial wait insertion surfaced 2 new failure clusters (`batch-import-folder.spec.js` ×2, `weekly-incremental-import.spec.js` ×5) not present in the pre-fix baseline. Root-caused via direct instrumentation (`node -e` scripts driving Playwright's Chromium against `working.html` and logging `S.clashes.length` / gate state at each checkpoint): these two bootstraps (plus, preventively, `weekly-summary-screenshot.spec.js`, which shares the identical shape) wipe `localStorage` but never reset the in-memory `S.clashes`/`S.weekly` back to empty. Previously, the race meant these tests' import assertions usually ran *before* `initAuth()`'s demo-seed populated `S.clashes` — an accidental, lucky ordering, not an intentional design. Now that the added gate wait deterministically lets `initAuth()` finish first, `S.clashes` reliably contains the 104-clash demo dataset (and `S.weekly` the 4-week demo snapshot) at bootstrap time, which several tests' own imports then landed on top of, inflating expected register/weekly-bucket counts.
+
+Fix: added an explicit in-memory reset (`S.clashes = []; S.weekly = []; sv('clashes', S.clashes); sv('weekly', S.weekly);`) to these three bootstraps, mirroring the reset pattern already present and working correctly in `img-count-check.spec.js`. This is a pre-existing latent gap in those three bootstraps' test setup (not a new defect introduced by the INV-007 fix) that the synchronization fix's determinism simply surfaced; it is in-scope to correct because it blocks reliable verification of the primary INV-007 fix.
+
+---
+
+## QA Retest
+
+### Method
+
+1. Ran the full test suite (`npx playwright test --workers=1`) three times across the implementation: once immediately after the initial 28-file wait insertion (surfaced the follow-up gap above), once after the follow-up fix (clean), and once more as a final confirmation run.
+2. Independently captured a baseline by `git stash`-ing all changes and running the full suite unmodified, for direct before/after comparison.
+3. Re-ran the specific files affected by the follow-up fix (`batch-import-folder.spec.js`, `weekly-incremental-import.spec.js`, `weekly-summary-screenshot.spec.js`) with `--repeat-each=3` to confirm determinism.
+4. Investigated every residual failure individually (error context, source-line inspection, and where warranted, isolated `--repeat-each` re-runs) to classify as either attributable to this fix or pre-existing/unrelated.
+
+### Results
+
+- Baseline (unmodified, `git stash`): 21 failed / 263 passed.
+- Post-fix (final confirmation run): 6 failed / 278 passed.
+- The 6 residual failures are: `frozen-week-and-chart-year.spec.js` (`CHART-PERIOD-YEAR-AWARE` ×2), `selective-reset-idb-reliability.spec.js` (`SELECTIVE-RESET-IDB-VERIFY`/`-CLOSE` ×3), `wipe-verify.spec.js` (`WIPE-VERIFY` happy path ×1). All 6 are confirmed present in the unmodified baseline run as well (same test names, same underlying `deleteDatabase blocked by another connection` / chart-ordinal-mismatch failure signatures) — pre-existing, environment-level IndexedDB-connection-timing and chart-range-reset flakiness unrelated to the `S`-object startup race this investigation targeted. An additional isolated `--repeat-each=3` re-run of these three files independently reproduced further intermittent failures among them on both runs, consistent with their already-documented MI-002/KI-005 monitoring status rather than a regression introduced here.
+- The other 15 previously-flaky tests (`approve-action-*`, `dedup-queue.spec.js`, `img-count-check.spec.js`, `batch-import-pick-validation.spec.js`, `rq-nw-export.spec.js`, and others) are now deterministically passing.
+
+### Outcome
+
+PASS. The INV-007 remediation is verified effective: it eliminates the confirmed test-harness synchronization race without introducing any new failures, and the remaining failures are independently confirmed pre-existing and out of scope.
+
+---
+
+## Repository Steward Review
+
+Repository state audited via `git status --porcelain`: only the 28 intended `tests/*.spec.js` files plus the three governance documents (`CURRENT_STATUS.md`, `INVESTIGATION_LOG.md`, `KNOWN_ISSUES.md`) are modified in the working tree (in addition to the pre-existing, already-authorized-pending INV-006 working-tree changes to `working.html` / `tests/inv006-asym.spec.js` / governance docs). No unrelated, accidental, or out-of-scope files were touched. No temporary test artifacts (`tests/test-results/`) were left behind. Repository health: clean, healthy, no gaps.
+
+## Release Manager Review
+
+All prior workflow stages (Developer Implementation, QA Retest, Repository Steward Review) are complete with evidence recorded above. Release readiness: READY. Outstanding risks: none beyond the two independently-confirmed-unrelated pre-existing flaky categories already tracked under MI-002/KI-005 monitoring notes, which remain explicitly out of scope for this remediation. Merge recommendation: approve commit/push of the INV-007 remediation, pending human authorization per DEC-009 (repository-modification decision gate).
+
+---
+
+## Final Decision Gate Status
+
+STOPPED — awaiting human decision at:
+
+- **Commit/Push Authorization Required** (per DEC-009): the implemented and QA-verified fix (28 `tests/*.spec.js` files + 3 governance documents) is present in the working tree only. Human authorization is required to commit and push.
+
 

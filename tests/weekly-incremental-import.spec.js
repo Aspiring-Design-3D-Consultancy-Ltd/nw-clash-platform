@@ -60,6 +60,10 @@ function makeXml({ testName = 'GAS vs Struct', clashes = [] }) {
 async function bootstrap(page, view = 'bcf') {
   await page.goto(HTML, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => typeof S !== 'undefined' && Array.isArray(S.clashes) && S.projName);
+  // INV-007: wait for the terminal inline one-shot migration gate so
+  // window.onload's setTimeout(1500/1600)-deferred migrations don't
+  // race and silently overwrite this test's seeded state.
+  await page.waitForFunction(() => localStorage.getItem('nw:dedupInitialScan') === '1');
   await page.evaluate((v) => {
     Object.keys(localStorage).filter(k => k.startsWith('nw:')).forEach(k => localStorage.removeItem(k));
     localStorage.setItem('nw:reviewQueueScopeFixed', '1');
@@ -67,6 +71,19 @@ async function bootstrap(page, view = 'bcf') {
     localStorage.setItem('nw:dedupInitialScan', '1');
     document.getElementById('auth').style.display = 'none';
     document.getElementById('app').classList.add('show');
+    // INV-007 follow-up: now that the bootstrap deterministically waits
+    // past initAuth()'s demo-seed (see the gate wait above), S.clashes /
+    // S.weekly reliably hold the 104-clash / 4-week demo dataset at this
+    // point instead of sometimes still being empty by race luck. Reset
+    // both explicitly so per-test imports land in an empty register with
+    // no stale weekly buckets (importWeek()'s own "seed a bucket if none
+    // exists" fallback depends on S.weekly starting empty), as this suite
+    // always intended (mirrors the reset already used in
+    // img-count-check.spec.js).
+    S.clashes = [];
+    S.weekly = [];
+    sv('clashes', S.clashes);
+    sv('weekly', S.weekly);
     nav(v);
   }, view);
 }
