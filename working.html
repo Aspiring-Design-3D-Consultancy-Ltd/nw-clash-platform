@@ -1172,7 +1172,11 @@ async function initAuth(){
         if(c.disappearedAt!==undefined)delete c.disappearedAt;
         if(c.disappearedInBatch!==undefined)delete c.disappearedInBatch;
       });
-      if(_rqCleared)sv('clashes',S.clashes);
+      if(_rqCleared)
+        localStorage.setItem(
+          'nw:clashes',
+          JSON.stringify(S.clashes)
+        );
       localStorage.setItem('nw:reviewQueueScopeFixed','1');
     }
   }catch(e){console.warn('REVIEW-QUEUE-MIGRATE-SCOPE-FIX error:',e);}
@@ -1195,10 +1199,17 @@ async function initAuth(){
         if(c.disappearedAt!==undefined)delete c.disappearedAt;
         if(c.disappearedInBatch!==undefined)delete c.disappearedInBatch;
       });
-      if(_rqDgCleared)sv('clashes',S.clashes);
+      if(_rqDgCleared)
+        localStorage.setItem(
+          'nw:clashes',
+          JSON.stringify(S.clashes)
+        );
       if(S.reviewQueueNoDateBanner){
         S.reviewQueueNoDateBanner=false;
-        sv('reviewQueueNoDateBanner',false);
+        localStorage.setItem(
+          'nw:reviewQueueNoDateBanner',
+          JSON.stringify(false)
+        );
       }
       localStorage.setItem('nw:reviewQueueDateGuardFixed','1');
     }
