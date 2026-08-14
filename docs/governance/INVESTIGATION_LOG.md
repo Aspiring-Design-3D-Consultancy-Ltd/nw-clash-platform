@@ -6,7 +6,7 @@ Date:
 
 Status:
 
-Resolved - Release Approval Pending Commit
+Closed - Released
 
 Roles Completed:
 
@@ -20,12 +20,17 @@ Roles Completed:
 - Developer Implementation ✅
 - QA Retest ✅
 - Repository Steward Review ✅
+- Final Release Approval ✅
 
-Pending:
+Release:
 
-- Final Release Approval
-- Commit and Push
-- Governance Status Updates
+Commit: 680cfd5146272473b1887ed0cf96d984731164f9
+
+Commit Message: "Fix closeApp persistence whitelist drift"
+
+Branch: main
+
+Status: Committed and pushed.
 
 Summary:
 
@@ -222,13 +227,13 @@ QA verification completed.
 
 Repository review completed.
 
-Awaiting final release sign-off and commit/push.
+Final release sign-off granted. Committed and pushed.
 
 Production Changes:
 
-Not yet committed at time of record update.
+Committed via commit 680cfd5146272473b1887ed0cf96d984731164f9 ("Fix closeApp persistence whitelist drift").
 
-Working tree contains:
+Files committed:
 
 - working.html
 - tests/close-app-scope-fix.spec.js
@@ -243,7 +248,7 @@ Date:
 
 Status:
 
-Resolved - Release Approval Conditional Pending Documentation Commit
+Closed - Released
 
 Roles Completed:
 
@@ -251,12 +256,17 @@ Roles Completed:
 - QA Retest ✅
 - Repository Steward Review ✅
 - Release Manager ✅
+- Final Release Approval ✅
 
-Pending:
+Release:
 
-- Governance Documentation Commit
-- Final Release Approval
-- Commit and Push
+Commit: a0526bfaaf47d0256219f9727279ef190c321925
+
+Commit Message: "Fix R1 data resurrection after reset"
+
+Branch: main
+
+Status: Committed and pushed. DEC-007 documentation-commit condition satisfied.
 
 Summary:
 
@@ -358,4 +368,236 @@ Verification:
 
 Validation Results:
 
-tests/r1-data
+tests/r1-data-resurrection.spec.js
+
+- 10 / 10 Passed
+
+Combined validation:
+
+- close-app-scope-fix.spec.js
+- clear-all-data-scope-fix.spec.js
+- selective-reset.spec.js
+- r1-data-resurrection.spec.js
+
+Result:
+
+- 22 / 22 Passed
+
+Repository Steward Review:
+
+Result:
+
+APPROVED WITH OBSERVATIONS
+
+Findings:
+
+- Scope remained limited to working.html and tests/r1-data-resurrection.spec.js.
+- No scope creep detected.
+- No unrelated modifications detected.
+- Repository hygiene acceptable.
+
+Resolution:
+
+Technical remediation completed.
+
+Regression protection added.
+
+QA verification completed.
+
+Repository review completed.
+
+Final release sign-off granted. Committed and pushed.
+
+Production Changes:
+
+Committed via commit a0526bfaaf47d0256219f9727279ef190c321925 ("Fix R1 data resurrection after reset").
+
+Files committed:
+
+- working.html
+- tests/r1-data-resurrection.spec.js
+
+---
+
+# INV-005: Migration Gate / Persistence Write Divergence Remediation
+
+Date:
+
+2026
+
+Status:
+
+Closed - Released
+
+Roles Completed:
+
+- Project Analyst ✅
+- Architect ✅
+- QA Investigator ✅
+- Developer ✅
+- Implementation Manager ✅
+- Developer Implementation ✅
+- QA Retest ✅
+- Repository Steward Review ✅
+- Release Manager ✅
+- Final Release Approval ✅
+
+Release:
+
+Commit: 3f37f724891f42de14571cd198a0fd9c195cbbad
+
+Commit Message: "Fix INV-005 migration gate persistence divergence"
+
+Branch: main
+
+Status: Committed and pushed.
+
+Summary:
+
+A gate/persistence-write divergence defect was identified in the `REVIEW-QUEUE-MIGRATE-SCOPE-FIX` and `REVIEW-QUEUE-MIGRATE-DATE-GUARD-FIX` one-shot migrations that run inline inside `initAuth()`.
+
+Both migrations previously used the `sv()` persistence helper — which internally swallows write errors — to persist the migrated `clashes` register (and, for the date-guard migration, the `reviewQueueNoDateBanner` value) before unconditionally setting the corresponding one-shot gate flag. If the `sv()` write failed silently (for example under a near-quota `QuotaExceededError` condition), the gate flag was still set, permanently marking the migration as complete even though the underlying storage was never actually updated — creating a divergence between the one-shot gate and the persisted data that could not self-correct on a later load.
+
+This defect is architecturally identical to the previously-remediated INV-003 (Migration Gate Persistence Divergence) defect in `_migrateDedupQueueV1()`.
+
+Areas Reviewed:
+
+- localStorage persistence
+- Review Queue
+- initAuth() migration sequence
+- REVIEW-QUEUE-MIGRATE-SCOPE-FIX
+- REVIEW-QUEUE-MIGRATE-DATE-GUARD-FIX
+- One-shot migration gate flags
+- INV-003 remediation pattern
+
+Project Analyst Findings:
+
+- Confirmed affected workflows were limited to the two review-queue one-shot migrations.
+- Identified direct architectural parallel with the previously-closed INV-003 defect.
+
+Architect Findings:
+
+- Classified the issue as a migration gate/persistence-write divergence defect.
+- Confirmed the correct remediation pattern was already established and released under INV-003.
+- Directed alignment of both affected migrations with the INV-003 pattern rather than introducing a new remediation approach.
+
+QA Investigator Findings:
+
+Independent verification confirmed:
+
+- Both migrations persisted via `sv()` before setting their gate flags.
+- `sv()` write failures were swallowed, allowing the gate flag to be set unconditionally regardless of write outcome.
+- No automated regression coverage existed for this asymmetric-failure scenario in either migration.
+
+Developer Assessment:
+
+- Independently confirmed findings.
+- Confirmed issue scope was isolated to the two `initAuth()` review-queue migrations.
+- Identified working.html as the implementation target.
+- Identified the INV-003 remediation pattern as the correct fix.
+
+Implementation Manager Review:
+
+Approved implementation direction:
+
+- Replace the `sv()` calls in both migrations with direct, throwing `localStorage.setItem` calls, mirroring the INV-003 pattern (`_migrateDedupQueueV1()` / `_rqdaMigrateSeedPatternsV2()`).
+- Ensure the persistence write occurs, and can throw, inside the same try block as the gate-flag write, so a failed write prevents the gate from ever being set.
+- Add asymmetric-failure regression coverage mirroring `tests/inv003-asym.spec.js`.
+- Maintain minimal implementation scope.
+
+Developer Implementation:
+
+Implemented approved remediation.
+
+Changes:
+
+working.html
+
+- `REVIEW-QUEUE-MIGRATE-SCOPE-FIX`: replaced `sv('clashes',S.clashes)` with a direct, throwing `localStorage.setItem('nw:clashes', JSON.stringify(S.clashes))` call preceding the `nw:reviewQueueScopeFixed` gate write.
+- `REVIEW-QUEUE-MIGRATE-DATE-GUARD-FIX`: replaced `sv('clashes',S.clashes)` and `sv('reviewQueueNoDateBanner',false)` with direct, throwing `localStorage.setItem` calls preceding the `nw:reviewQueueDateGuardFixed` gate write.
+- Prevents gate creation whenever migration persistence fails.
+- Aligns both review-queue migrations with the INV-003 remediation pattern.
+
+Regression Coverage Added:
+
+tests/inv005-asym.spec.js
+
+Coverage includes:
+
+- `reviewQueueScopeFixed` failure path: large-payload write fails — gate stays unset, storage unchanged, migration retries and converges on next load.
+- `reviewQueueScopeFixed` success path: write succeeds — gate is set, storage updated, gate and storage stay synchronized.
+- `reviewQueueDateGuardFixed` failure path: large-payload write fails — gate stays unset, storage (clashes + banner) unchanged, migration retries and converges on next load.
+- `reviewQueueDateGuardFixed` success path: write succeeds — gate is set, storage (clashes + banner) updated, gate and storage stay synchronized.
+
+QA Retest:
+
+Result:
+
+PASS
+
+Verification:
+
+- Original gate/persistence divergence defect resolved for both migrations.
+- Gate flags and persisted storage remain synchronized under both success and asymmetric-failure conditions.
+- Failed migrations safely retry and converge on the next load instead of diverging permanently.
+- New regression suite passes.
+- Adjacent persistence and migration suites continue to pass.
+
+Validation Results:
+
+tests/inv005-asym.spec.js
+
+- 4 / 4 Passed
+
+Combined validation:
+
+- close-app-scope-fix.spec.js
+- clear-all-data-scope-fix.spec.js
+- selective-reset.spec.js
+- r1-data-resurrection.spec.js
+- inv005-asym.spec.js
+
+Result:
+
+- 26 / 26 Passed
+
+Repository Steward Review:
+
+Result:
+
+APPROVED WITH OBSERVATIONS
+
+Findings:
+
+- Scope remained limited to working.html and tests/inv005-asym.spec.js.
+- No scope creep detected.
+- No unrelated modifications detected.
+- Repository hygiene acceptable.
+- Remediation correctly reused the INV-003 pattern rather than introducing a divergent approach.
+
+Impact:
+
+Resolved risk of permanent gate/data divergence in the Review Queue scope-fix and date-guard-fix one-shot migrations under persistence-write failure conditions.
+
+Resolution:
+
+Technical remediation completed.
+
+Regression protection added.
+
+QA verification completed.
+
+Repository review completed.
+
+Final release sign-off granted. Committed and pushed.
+
+Production Changes:
+
+Committed via commit 3f37f724891f42de14571cd198a0fd9c195cbbad ("Fix INV-005 migration gate persistence divergence").
+
+Files committed:
+
+- working.html
+- tests/inv005-asym.spec.js
+
+

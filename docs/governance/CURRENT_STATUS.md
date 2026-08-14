@@ -39,14 +39,11 @@ Repository Health:
 - Governance framework committed and pushed
 - Project memory established in repository
 - No known governance gaps requiring immediate action
-- R1 governance documentation prepared pending commit
+- INV-002, R1, and INV-005 remediations committed and pushed
 
 Current Working Tree:
 
-Pending commit of R1 remediation:
-
-- working.html
-- tests/r1-data-resurrection.spec.js
+INV-002 (680cfd5), R1 (a0526bf), and INV-005 (3f37f72) remediations are committed and pushed to main. No pending remediation commits outstanding.
 
 ---
 
@@ -60,7 +57,7 @@ closeApp() Whitelist Drift
 
 Status:
 
-Resolved
+Closed - Released
 
 Summary:
 
@@ -95,6 +92,10 @@ Files Affected:
 - working.html
 - tests/close-app-scope-fix.spec.js
 
+Release Commit:
+
+680cfd5146272473b1887ed0cf96d984731164f9 — Committed and pushed.
+
 ---
 
 ### R1
@@ -105,7 +106,7 @@ Data Resurrection After Reset
 
 Status:
 
-Resolved
+Closed - Released
 
 Summary:
 
@@ -129,7 +130,7 @@ Repository Steward Review:
 
 Release Approval:
 
-⏳ Conditional - Pending Documentation Commit (DEC-007)
+✅ Approved (DEC-007 documentation-commit condition satisfied)
 
 Regression Protection:
 
@@ -139,6 +140,57 @@ Files Affected:
 
 - working.html
 - tests/r1-data-resurrection.spec.js
+
+Release Commit:
+
+a0526bfaaf47d0256219f9727279ef190c321925 — Committed and pushed.
+
+---
+
+### INV-005
+
+Title:
+
+Migration Gate / Persistence Write Divergence Remediation
+
+Status:
+
+Closed - Released
+
+Summary:
+
+The `REVIEW-QUEUE-MIGRATE-SCOPE-FIX` and `REVIEW-QUEUE-MIGRATE-DATE-GUARD-FIX` one-shot migrations inside `initAuth()` previously persisted migrated data via `sv()`, which swallows write errors internally. A failed persistence write could therefore leave storage unchanged while the one-shot gate flag was still set unconditionally, permanently and silently diverging the gate from the underlying data — the same failure mode previously remediated under INV-003.
+
+The approved remediation replaced the `sv()` calls with direct, throwing `localStorage.setItem` calls inside the same try block as the gate write, mirroring the INV-003 pattern, so a failed write prevents the gate from ever being set and the migration safely retries on the next load.
+
+Implementation Status:
+
+✅ Completed
+
+QA Retest:
+
+✅ Passed
+
+Repository Steward Review:
+
+✅ Approved With Observations
+
+Release Approval:
+
+✅ Approved
+
+Regression Protection:
+
+✅ Added
+
+Files Affected:
+
+- working.html
+- tests/inv005-asym.spec.js
+
+Release Commit:
+
+3f37f724891f42de14571cd198a0fd9c195cbbad — Committed and pushed.
 
 ---
 
@@ -245,26 +297,40 @@ PASS
 
 ---
 
+### INV-005 Regression Coverage
+
+Test:
+
+- tests/inv005-asym.spec.js
+
+Coverage:
+
+- reviewQueueScopeFixed gate/persistence asymmetric-failure path
+- reviewQueueScopeFixed gate/persistence success path
+- reviewQueueDateGuardFixed gate/persistence asymmetric-failure path
+- reviewQueueDateGuardFixed gate/persistence success path
+
+Results:
+
+- inv005-asym.spec.js → 4/4 Passed
+- Combined persistence validation suite → 26/26 Passed
+
+Outcome:
+
+PASS
+
+---
+
 ## Current Priority
 
-Satisfy DEC-007 by committing governance documentation updates for R1, then complete final release workflow.
+INV-002, R1, and INV-005 are all closed and released. No open remediation work is outstanding.
 
 Remaining Actions:
 
-1. Commit governance documentation updates
-2. Obtain final Release Manager approval
-3. Commit implementation
-4. Push implementation
-5. Mark R1 fully closed
+None outstanding for INV-002, R1, or INV-005.
 
 ---
 
 ## Next Planned Activity
 
-R1 Final Release Approval
-
-Following completion:
-
-- Commit and push remediation
-- Mark R1 closed
-- Select next investigation or enhancement work item
+Select next investigation or enhancement work item.

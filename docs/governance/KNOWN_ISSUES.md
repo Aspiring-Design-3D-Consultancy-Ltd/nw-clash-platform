@@ -215,6 +215,88 @@ Previously cleared data can no longer be unintentionally resurrected through sub
 
 ---
 
+## KI-003
+
+Title:
+
+Migration Gate / Persistence Write Divergence (Review Queue Migrations)
+
+Status:
+
+Resolved
+
+Severity:
+
+High
+
+Related Investigation:
+
+- INV-005
+
+Summary:
+
+The `REVIEW-QUEUE-MIGRATE-SCOPE-FIX` and `REVIEW-QUEUE-MIGRATE-DATE-GUARD-FIX` one-shot migrations inside `initAuth()` persisted their migrated data via `sv()`, a helper that swallows write errors internally.
+
+If the underlying `localStorage.setItem` write failed (for example under a near-quota `QuotaExceededError` condition), the failure was silently absorbed by `sv()` and the one-shot gate flag (`nw:reviewQueueScopeFixed` / `nw:reviewQueueDateGuardFixed`) was still set unconditionally afterward. This permanently marked the migration as complete even though the underlying `nw:clashes` (and, for the date-guard migration, `nw:reviewQueueNoDateBanner`) data was never actually updated, creating a divergence between the gate and the persisted data that could not self-correct on a later load.
+
+This is architecturally identical to the previously-remediated INV-003 (Migration Gate Persistence Divergence) defect.
+
+Affected Areas:
+
+- Review Queue
+- initAuth() migration sequence
+- One-shot migration gate flags
+
+Root Cause:
+
+`sv()` swallows write errors internally, so a failed persistence write did not prevent the subsequent unconditional gate-flag write, allowing gate and data to diverge permanently on write failure.
+
+Approved Remediation:
+
+Replaced the `sv()` calls in both migrations with direct, throwing `localStorage.setItem` calls inside the same try block as the gate-flag write, mirroring the INV-003 remediation pattern, so that a failed write prevents the gate from ever being set and the migration safely retries on the next load.
+
+Implementation Status:
+
+✅ Completed
+
+QA Retest Status:
+
+✅ PASS
+
+Repository Steward Review:
+
+✅ Approved With Observations
+
+Release Manager Status:
+
+✅ Approved
+
+Regression Protection:
+
+Added:
+
+- tests/inv005-asym.spec.js
+
+Coverage includes:
+
+- reviewQueueScopeFixed gate/persistence asymmetric-failure path
+- reviewQueueScopeFixed gate/persistence success path
+- reviewQueueDateGuardFixed gate/persistence asymmetric-failure path
+- reviewQueueDateGuardFixed gate/persistence success path
+
+Validation Results:
+
+- inv005-asym.spec.js → 4 / 4 Passed
+- Combined persistence validation suite → 26 / 26 Passed
+
+Outcome:
+
+The defect has been resolved and verified.
+
+Both review-queue one-shot migrations now safely retry on the next load instead of permanently diverging when a persistence write fails.
+
+---
+
 # Monitoring
 
 ## MI-001
@@ -304,6 +386,7 @@ Resolved Issues:
 
 - KI-001 — closeApp() Whitelist Drift ✅
 - KI-002 — Data Resurrection After Reset ✅
+- KI-003 — Migration Gate / Persistence Write Divergence (Review Queue Migrations) ✅
 
 Monitoring Items:
 
