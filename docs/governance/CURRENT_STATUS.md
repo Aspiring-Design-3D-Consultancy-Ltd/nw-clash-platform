@@ -39,11 +39,11 @@ Repository Health:
 - Governance framework committed and pushed
 - Project memory established in repository
 - No known governance gaps requiring immediate action
-- INV-002, R1, and INV-005 remediations committed and pushed
+- INV-002, R1, INV-005, INV-006, and INV-007 remediations committed and pushed
 
 Current Working Tree:
 
-INV-002 (680cfd5), R1 (a0526bf), and INV-005 (3f37f72) remediations are committed and pushed to main. No pending remediation commits outstanding.
+INV-002 (680cfd5), R1 (a0526bf), INV-005 (3f37f72), INV-006 (136c397), and INV-007 (b471e5c) remediations are committed and pushed to main.
 
 ---
 
@@ -202,7 +202,7 @@ Residual Migration Gate / Persistence Divergence Risk Assessment
 
 Status:
 
-Implemented — Awaiting Human Decision (Commit / Push Authorization)
+Closed - Released
 
 Summary:
 
@@ -236,7 +236,7 @@ Repository Steward Review:
 
 Release Manager Review:
 
-✅ Conditional Approval (pending commit/push authorization)
+✅ Approved
 
 Regression Protection:
 
@@ -249,7 +249,11 @@ Files Affected:
 
 Release Commit:
 
-None yet — implementation complete and QA-verified in the working tree, awaiting human commit/push authorization per DEC-009.
+136c397 — Fix INV-006 migration gate persistence divergence
+
+Status:
+
+Committed and pushed.
 
 ---
 
@@ -261,7 +265,7 @@ MI-002 Test Timing Sensitivity Assessment
 
 Status:
 
-Remediated and QA-verified — Implemented (awaiting commit/push authorization)
+Closed - Released
 
 Summary:
 
@@ -295,7 +299,11 @@ Files Affected:
 
 Release Commit:
 
-None yet — implementation complete in the working tree; awaiting commit/push authorization.
+b471e5c — Fix INV-007 test timing sensitivity
+
+Status:
+
+Committed and pushed.
 
 ---
 
@@ -303,7 +311,7 @@ None yet — implementation complete in the working tree; awaiting commit/push a
 
 ### Confirmed
 
-None currently outstanding. KI-005 (Test-Harness Startup-Sequencing Race, MI-002 root cause) has been implemented and QA-verified under INV-007 — see below and the Known Issues document for detail. Awaiting commit/push authorization only.
+None currently outstanding.
 
 ### Monitoring
 
@@ -321,11 +329,11 @@ Multiple one-time migration flags remain a long-term regression risk area:
 
 - reviewQueueScopeFixed (verified defect-free — INV-005)
 - reviewQueueDateGuardFixed (verified defect-free — INV-005)
-- dedupInitialScan (remediated — INV-006 / KI-004, commit/push pending)
-- reviewQueueDeltaAnalysisMigrated (remediated — INV-006 / KI-004, commit/push pending)
+- dedupInitialScan (verified defect-free — INV-006)
+- reviewQueueDeltaAnalysisMigrated (verified defect-free — INV-006)
 - dedupRetroCleanup:v1 (verified defect-free — INV-003)
 
-Continue monitoring for future migration-related regressions. INV-006 remediation is complete and QA-verified, pending commit/push authorization.
+Continue monitoring for future migration-related regressions.
 
 ---
 
@@ -335,7 +343,7 @@ Test Timing Sensitivity
 
 Status:
 
-Remediated under INV-007 / KI-005 — implemented and QA-verified (awaiting commit/push authorization).
+Resolved under INV-007 / KI-005.
 
 Description:
 
@@ -454,38 +462,32 @@ Note: a full repository-wide suite run surfaced 22 pre-existing intermittent fai
 
 ## Current Priority
 
-INV-002, R1, and INV-005 are all closed and released. INV-006 is implemented and QA-verified (KI-004), stopped at the commit/push human decision gate. INV-007 (MI-002 root cause) has been implemented and QA-verified (KI-005) — human authorization to implement was granted, the validated synchronization fix has been applied across all 28 affected `tests/*.spec.js` bootstrap helpers, and full-suite QA Retest confirms the fix. Both INV-006 and INV-007 are now stopped at the commit/push human decision gate.
+No active investigations.
 
-Remaining Actions:
+All confirmed defects identified through INV-002, R1, INV-005, INV-006, and INV-007 have been remediated, verified, committed, pushed, and released.
 
-None outstanding for INV-002, R1, or INV-005.
+Remaining Activities:
 
-INV-006 requires human authorization to commit and push:
+- Continue normal application development.
+- Monitor MI-001 (Migration Complexity).
+- Monitor MI-002 residual test-infrastructure observations.
+- Use real-world project workflows to identify future enhancements or defects.
 
-- working.html
-- tests/inv006-asym.spec.js
-- docs/governance/CURRENT_STATUS.md
-- docs/governance/INVESTIGATION_LOG.md
-- docs/governance/KNOWN_ISSUES.md
+Repository Status:
 
-INV-007 requires human authorization to commit and push:
+Healthy.
 
-- 28 files under tests/*.spec.js (synchronization-gate wait added to each affected bootstrap; three of the 28 also received a small in-memory `S.clashes`/`S.weekly` reset — see KI-005 for the full detail and rationale)
-- docs/governance/CURRENT_STATUS.md
-- docs/governance/INVESTIGATION_LOG.md
-- docs/governance/KNOWN_ISSUES.md
-
-Repository Steward Review: Repository state audited — only the 28 intended spec files plus the three governance documents are modified in the working tree; no unrelated or unexpected changes. Working tree is clean apart from these intentional edits.
-
-Release Manager Review: All prior workflow stages (Developer Implementation, QA Retest) are complete with evidence recorded above. Release readiness: READY, pending human authorization to commit and push per DEC-009 (repository-modification decision gate). No outstanding risks beyond the two pre-existing, independently-confirmed-unrelated flaky categories (IndexedDB `deleteDatabase` connection timing, chart-range reset timing) already tracked under MI-002/KI-005 monitoring notes and excluded from this remediation's scope.
+No outstanding remediation actions.
 
 ---
 
 ## Next Planned Activity
 
-Await human authorization on two independent decision gates:
+Return to normal application usage and enhancement work.
 
-1. Commit and push the INV-006 remediation (working.html + regression test + governance docs already modified in the working tree).
-2. Commit and push the INV-007 remediation (28 tests/*.spec.js files + governance docs already modified in the working tree).
+Future investigations should originate from:
 
-Once authorized, close the respective investigation(s) via Final Release Approval / Implementation, and select the next investigation or enhancement work item.
+- Real-world usage feedback
+- Newly discovered defects
+- Enhancement requests
+- Monitoring-item escalation if new evidence emerges

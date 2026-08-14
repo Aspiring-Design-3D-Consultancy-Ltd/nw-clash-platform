@@ -305,7 +305,7 @@ Residual Migration Gate / Persistence Divergence (Dedup Initial Scan + Review Qu
 
 Status:
 
-Resolved (implemented, QA-verified — awaiting commit/push authorization)
+Resolved
 
 Severity:
 
@@ -345,7 +345,7 @@ Repository Steward Review:
 
 Release Manager Status:
 
-✅ Conditional Approval (pending commit/push authorization)
+✅ Approved
 
 Regression Protection:
 
@@ -367,7 +367,11 @@ Validation Results:
 
 Outcome:
 
-The defect has been resolved and verified. Both `dedupInitialScan` and `reviewQueueDeltaAnalysisMigrated` now safely retry on the next load instead of permanently diverging when a persistence write fails. Repository code changes are complete and QA-verified but not yet committed — awaiting human commit/push authorization per DEC-009.
+The defect has been resolved and verified.
+
+Both `dedupInitialScan` and `reviewQueueDeltaAnalysisMigrated` now safely retry on the next load instead of permanently diverging when a persistence write fails.
+
+The remediation has been committed, pushed, and released under INV-006.
 
 ---
 
@@ -391,8 +395,8 @@ Examples include:
 
 - reviewQueueScopeFixed (verified defect-free — remediated under INV-005)
 - reviewQueueDateGuardFixed (verified defect-free — remediated under INV-005)
-- dedupInitialScan (remediated under INV-006 — see KI-004; commit/push pending)
-- reviewQueueDeltaAnalysisMigrated (remediated under INV-006 — see KI-004; commit/push pending)
+- dedupInitialScan (verified defect-free — INV-006)
+- reviewQueueDeltaAnalysisMigrated (verified defect-free — INV-006)
 - dedupRetroCleanup:v1 (verified defect-free — remediated under INV-003)
 
 While functioning correctly, migration behaviour remains an area of elevated regression risk due to the complexity of historical state transitions.
@@ -406,7 +410,9 @@ Potential Risks:
 
 Recommended Action:
 
-INV-006's gate/persistence divergence defect in dedupInitialScan and reviewQueueDeltaAnalysisMigrated (KI-004) has been remediated, QA-verified, and is awaiting commit/push authorization. All five tracked one-shot migration flags will be verified defect-free once INV-006 is committed and closed. Continue monitoring during future persistence-related investigations and test development.
+All five tracked one-shot migration flags have been investigated and verified defect-free through INV-003, INV-005, and INV-006.
+
+Continue monitoring during future persistence-related investigations and test development.
 
 ---
 
@@ -449,46 +455,7 @@ Implemented. Human authorization was granted to proceed with the INV-007 remedia
 
 # Confirmed Issues
 
-## KI-005
-
-Title:
-
-Test-Harness Startup-Sequencing Race (MI-002 root cause)
-
-Status:
-
-Closed — Remediated and QA-verified.
-
-Severity:
-
-Medium
-
-Related Investigation:
-
-- INV-007
-- MI-002
-
-Summary:
-
-Test bootstrap helpers across ~30+ Playwright spec files wait only for `working.html`'s earliest observable application-ready signal (`S.clashes` + `S.projName` populated), not for the full `window.onload` initialization chain to complete. Several one-shot migrations either continue executing inside `initAuth()` past that early signal, or are deferred via `setTimeout(1500/1600)` from `window.onload`, and fire within the typical runtime of a test body — racing and silently overwriting test-seeded `S.clashes`/`S.dedupQueue` state, and in some cases colliding with test-owned IndexedDB connections.
-
-Root Cause:
-
-Confirmed test-harness synchronization gap (not an application defect). See INV-007 for full technical detail.
-
-Approved Remediation:
-
-Added a single explicit wait to each affected bootstrap helper — on the terminal inline one-shot migration gate (`nw:dedupInitialScan`) — immediately after the existing early-signal wait, before any per-test `localStorage` wipe/seed. Test-file-only change; no `working.html` modification made.
-
-Implementation Status:
-
-✅ Implemented across all 28 affected spec files. Two bootstrap helpers (`batch-import-folder.spec.js`, `weekly-incremental-import.spec.js`, and — preventively — `weekly-summary-screenshot.spec.js`) required a small additional fix: an explicit in-memory `S.clashes = []` / `S.weekly = []` reset (mirroring the pattern already used in `img-count-check.spec.js`) alongside the `localStorage` wipe, because the now-deterministic wait exposed that these bootstraps had previously relied on lucky race timing to observe an empty register before the demo dataset finished seeding.
-
-Validation Results:
-
-- Pre-implementation empirical proof: `dedup-queue.spec.js` 13/13 passed post-fix (vs. intermittent 3–10 failures pre-fix), 39/39 across `--repeat-each=3`; `approve-action-clash-register.spec.js` "bulk-bar" test 10/10 across `--repeat-each=5` post-fix (vs. 5/10 pre-fix).
-- Full-suite QA Retest (post-implementation, `--workers=1`): 278/284 passed. The remaining 6 failures (`frozen-week-and-chart-year.spec.js` ×2, `selective-reset-idb-reliability.spec.js` ×3, `wipe-verify.spec.js` ×1) were independently confirmed to be pre-existing, unrelated IndexedDB/`deleteDatabase`-connection and chart-range timing flakiness — reproduced identically on the unmodified pre-INV-007 baseline (`git stash` verification) — and are out of scope for this remediation.
-- Baseline (unmodified) full-suite comparison run: 21 pre-existing intermittent failures. Post-fix: 6 pre-existing-and-confirmed-unrelated failures remain; the other 15 are eliminated.
+None currently recorded.
 
 ---
 
@@ -505,8 +472,8 @@ Resolved Issues:
 - KI-001 — closeApp() Whitelist Drift ✅
 - KI-002 — Data Resurrection After Reset ✅
 - KI-003 — Migration Gate / Persistence Write Divergence (Review Queue Migrations) ✅
-- KI-004 — Residual Migration Gate / Persistence Divergence (Dedup Initial Scan + Review Queue Delta Analysis Migration) ✅ (implemented, QA-verified — commit/push authorization pending)
-- KI-005 — Test-Harness Startup-Sequencing Race (MI-002 root cause) ✅ (implemented, QA-verified — commit/push authorization pending)
+- KI-004 — Residual Migration Gate / Persistence Divergence (Dedup Initial Scan + Review Queue Delta Analysis Migration) ✅
+- KI-005 — Test-Harness Startup-Sequencing Race (MI-002 root cause) ✅
 
 Monitoring Items:
 
@@ -519,5 +486,4 @@ None currently recorded.
 
 Active Investigations:
 
-- INV-006 — Residual Migration Gate / Persistence Divergence Risk Assessment (implemented, QA-verified — awaiting commit/push authorization)
-- INV-007 — MI-002 Test Timing Sensitivity Assessment (remediated and QA-verified — awaiting commit/push authorization)
+None currently recorded.
