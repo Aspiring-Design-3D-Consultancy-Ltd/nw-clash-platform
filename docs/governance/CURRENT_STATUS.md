@@ -462,15 +462,34 @@ Note: a full repository-wide suite run surfaced 22 pre-existing intermittent fai
 
 ## Current Priority
 
-No active investigations.
+### INV-008 (Open)
+
+Title:
+
+IndexedDB Reset Reliability Investigation
+
+Status:
+
+Open — Root Cause Confirmed. STOPPED at the "Implementation Required" decision gate (WORKFLOW_ROUTING.md, Workflow A). Awaiting human authorization to proceed to Developer Assessment.
+
+Summary:
+
+Opened following completion of INV-002/R1/INV-005/INV-006/INV-007 and the Repository Hygiene review, to root-cause the residual `selective-reset-idb-reliability.spec.js` / `wipe-verify.spec.js` "deleteDatabase blocked by another connection" failures left unexplained under MI-002/KI-005. Confirmed two independent findings: (1) the reported `test.describe()` error is an environment/invocation issue (two `@playwright/test` module instances loaded when Playwright is run from the repository root instead of `tests/`) — no code defect; (2) a real, confirmed application defect in `openIDB()`'s connection-singleton management in `working.html` — a check-then-act race on the module-level `_idb` variable (triggered every page load by `window.onload`'s concurrent `initNwImages()`/`initPlans()` calls) that can create an orphaned, unreferenced `IDBDatabase` connection, compounded by an `onversionchange` handler that closes over the shared `_idb` variable instead of its own connection and therefore fails to close the orphan when a peer requests a version change. Full findings, evidence, and remediation options in `INVESTIGATION_LOG.md` (INV-008).
+
+Next Action:
+
+Human authorization required to proceed to Developer Assessment for the proposed remediation (Option A: de-duplicate concurrent `openIDB()` calls via a cached in-flight promise; Option B: fix the `onversionchange` closure to reference its own connection). No code changes have been made under this investigation.
+
+---
 
 All confirmed defects identified through INV-002, R1, INV-005, INV-006, and INV-007 have been remediated, verified, committed, pushed, and released.
 
 Remaining Activities:
 
+- Progress INV-008 to Developer Assessment upon authorization.
 - Continue normal application development.
 - Monitor MI-001 (Migration Complexity).
-- Monitor MI-002 residual test-infrastructure observations.
+- Monitor MI-002 residual test-infrastructure observations (root cause of the remaining IndexedDB-timing subset now separately tracked under INV-008).
 - Use real-world project workflows to identify future enhancements or defects.
 
 Repository Status:

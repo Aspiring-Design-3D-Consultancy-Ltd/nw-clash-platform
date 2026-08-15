@@ -482,8 +482,8 @@ Monitoring Items:
 
 Confirmed Issues:
 
-None currently recorded.
+- IndexedDB `openIDB()` check-then-act race producing orphaned connections that block `deleteDatabase` (see INV-008 in `INVESTIGATION_LOG.md`) — root cause confirmed, remediation not yet authorized/implemented.
 
 Active Investigations:
 
-None currently recorded.
+- INV-008 — IndexedDB Reset Reliability Investigation (Open — Root Cause Confirmed, stopped at Implementation Required decision gate).

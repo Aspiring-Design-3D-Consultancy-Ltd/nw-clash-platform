@@ -1183,3 +1183,161 @@ Impact:
 No production code changes.
 No investigation reopened.
 No release behavior affected.
+
+---
+
+# INV-008: IndexedDB Reset Reliability Investigation
+
+Date:
+
+2026-08-15
+
+Role:
+
+QA Investigator / Architect (combined discovery + root-cause pass)
+
+Status:
+
+Open — Root Cause Confirmed. STOPPED at "Implementation Required" decision gate (WORKFLOW_ROUTING.md, Workflow A). Awaiting human authorization to proceed to Developer Assessment.
+
+Primary Scope:
+
+- tests/selective-reset-idb-reliability.spec.js
+- tests/wipe-verify.spec.js
+- working.html: openIDB(), _closeSharedIdb(), _deleteIdbDatabase(), _clearIdbStores(), _wipeIdbWithVerify(), initNwImages(), initPlans()
+
+Trigger:
+
+Repeated residual "deleteDatabase blocked by another connection" / IndexedDB-timing observations logged under MI-002/KI-005 across INV-006 (22 pre-existing intermittent failures) and INV-007 (6 residual failures, all in these two spec files) — never individually root-caused. Escalated as highest-priority remaining technical issue by the Repository Hygiene review.
+
+---
+## Executive Summary
+
+Two independent, evidence-confirmed problems were found:
+
+1. Environment/harness issue (not an application defect): running Playwright from the repository root throws `Playwright Test did not expect test.describe() to be called here`, because the repository has two separate `@playwright/test` installations resolved into the same run (the ambient npx/global cache copy that launches the CLI, and the pinned copy at `tests/node_modules/@playwright/test` that the spec files' own imports resolve to). Running from `tests/` (the documented, intended working directory) works correctly.
+
+2. Application defect (confirmed via direct instrumentation): `openIDB()` in `working.html` has a check-then-act race on the module-level `_idb` singleton. `window.onload` calls `initNwImages()` and `initPlans()` concurrently, both reaching `openIDB()` before either resolves, producing two independent `IDBDatabase` connections while only one is retained in `_idb`. The orphaned connection's own `onversionchange` handler closes over the shared `_idb` variable instead of its own connection, so it never self-closes correctly — leaving it open and blocking subsequent `deleteDatabase` calls up to the 15-second ceiling, exactly matching the `selective-reset-idb-reliability.spec.js` / `wipe-verify.spec.js` failure signatures previously logged (unexplained) under INV-006/INV-007/MI-002/KI-005.
+
+---
+## Environment and Test Harness Discovery
+
+Facts (directly observed):
+
+- `tests/package.json` declares `"scripts": {"test": "playwright test"}` and its description states `"... Run: cd tests && npm install && npm test."` — the intended working directory for test execution is `tests/`, not the repository root.
+- `tests/playwright.config.js` sets `testDir: '.'` (relative to the config file's own directory), confirming `tests/` is the Playwright project root.
+- There is no `package.json` at the repository root; `node_modules` exists only at `tests/node_modules` (contains `@playwright/test`, `playwright`, `playwright-core`, all pinned at v1.62.1 per `tests/package-lock.json`).
+- Running `npx playwright test tests/wipe-verify.spec.js` from the repository root reproduces the exact reported error, pointing at `tests\wipe-verify.spec.js:59` (`test.describe('WIPE-VERIFY', ...)`), with the message explicitly naming "two different versions of @playwright/test" as a common cause.
+- `npx playwright --version` from the repo root reports `Version 1.62.1` — the same version string as `tests/node_modules`, but this does not guarantee the same loaded module instance. A `DEBUG=pw:*` trace of the same repo-root invocation showed the CLI process itself running out of `C:\Users\...\AppData\Local\npm-cache\_npx\e41f203b7505f1fb\node_modules\playwright`, while `node -e "console.log(require.resolve('@playwright/test'))"` run from the repo root fails with `MODULE_NOT_FOUND`, and the same command run from `tests/` resolves to `tests/node_modules/@playwright/test/index.js`. Two separate `@playwright/test` module graphs are active in the repo-root invocation — the CLI's `test` singleton (npx-cache copy) never observes the `describe()` call registered by the spec file against the `tests/node_modules` copy's singleton.
+- Running the identical command from inside `tests/` (`cd tests; npx playwright test wipe-verify.spec.js`) succeeds with no describe-registration error, because both the CLI and the spec file now resolve the same `tests/node_modules/@playwright/test` instance.
+
+Conclusion: This is not a defect. It results from invoking the test runner from the wrong working directory, causing Node module resolution to load two independent `@playwright/test` instances. The repository's own `tests/package.json` and `tests/playwright.config.js` already document/require the correct invocation. No repository change is required for this half of the investigation.
+
+---
+## Reproduction Results
+
+Executed via the confirmed-correct workflow (`cd tests; npx playwright test <file> --workers=1`):
+
+- `wipe-verify.spec.js` (4 tests, single run): 3 passed, 1 failed — the happy-path test (`_wipeAllStorage` deletes `NWClashImages`, verify returns empty) timed out at 30s inside `page.evaluate(() => _wipeAllStorage(true))`.
+- `selective-reset-idb-reliability.spec.js` (17 tests × `--repeat-each=5` = 85 runs): 69 passed, 16 failed. Every failure was one of exactly three tests, each failing 4 of its 5 repetitions:
+  - `SELECTIVE-RESET-IDB-VERIFY › _verifyIdbFreshVersion returns ok:true after a real deleteDatabase`
+  - `SELECTIVE-RESET-IDB-VERIFY › _wipeIdbWithVerify("full") retries once when the first delete stub is a no-op`
+  - `SELECTIVE-RESET-IDB-CLOSE — partial-clear timeout parity › _verifyIdbEmpty succeeds within the 5000ms default used by _wipeIdbWithVerify`
+- All captured failures share the identical error text: `deleteDatabase blocked by another connection — timed out after 15000ms. Close every other browser tab open on this file, then try again.` (thrown from `working.html:15706`, inside `_deleteIdbDatabase`) — matching the signature already documented under INV-006/INV-007.
+
+Direct instrumentation (isolated `node` scripts driving the same Playwright/Chromium install against `working.html`, bypassing the test files entirely) reproduced the mechanism deterministically:
+
+- Loading `working.html` and waiting for the documented bootstrap gate (`S.clashes`/`S.projName` populated, then `nw:dedupInitialScan==='1'`) leaves 2 successful `NWClashImages` connections open from a single page load (both from `working.html:3440`'s `indexedDB.open('NWClashImages',2)` call site — one via `initNwImages()`'s downstream `openIDB()` call, one via `initPlans()`'s `openIDB()` call, fired concurrently by `window.onload`).
+- A direct, unmediated `indexedDB.deleteDatabase('NWClashImages')` issued immediately after that bootstrap (no `_closeSharedIdb()` call) reported `blocked: true` and did not resolve within 3 seconds.
+- Manufacturing the race explicitly (`_idb = null; Promise.all([openIDB(), openIDB()])`) confirmed: the two returned `IDBDatabase` objects are different instances (`connA !== connB`); the module-level `_idb` ends up aliasing only whichever resolved last (`connB`); firing `connA`'s own `onversionchange` handler does not close `connA` — it nulls the shared `_idb` variable (dropping the last reachable reference to `connB`) while `connA` itself remains fully open and usable (`connA.transaction(...)` still succeeds afterward). `connB` was independently verified to still be open and blocking a subsequent `deleteDatabase` call.
+
+---
+## Failure Frequency
+
+| Test file | Command | Result |
+|---|---|---|
+| `wipe-verify.spec.js` | single run, `--workers=1` | 1 of 4 tests failed (25%) |
+| `selective-reset-idb-reliability.spec.js` | `--repeat-each=5`, `--workers=1` | 16 of 85 runs failed (~19% overall); the 3 affected tests failed 4/5 repetitions each (80%), the other 14 tests 0% across all 5 repetitions |
+| Direct instrumentation (bypassing spec files) | isolated `node` + Playwright driver | Race and orphaned-connection condition reproduced 3/3 attempts when two concurrent `openIDB()` calls were driven; the naturally-occurring 2-connection state was observed 1/1 times on a plain bootstrap with no synthetic race forced |
+
+Environmental dependencies identified:
+
+- Single-worker (`--workers=1`) sequential execution still exhibits the failure — this is not a cross-worker/cross-process contention issue; it occurs within a single page/single test-file run.
+- Failure rate correlates with tests that perform a real, unmediated `deleteDatabase`/verify cycle shortly after page bootstrap — the narrow window where `initNwImages()`'s and `initPlans()`'s concurrent `openIDB()` calls have just resolved. The 14 consistently-passing tests in the same file either mock `indexedDB.deleteDatabase`/`indexedDB.open` (never touching the real orphaned connection) or run later in the file after the shared `_idb` slot has already cycled.
+- No dependency on headless vs headed mode, OS, or CI vs local was tested in this investigation (all evidence used the local headless Chromium bundled with `tests/node_modules/playwright-core`); no evidence contradicts prior investigations' findings that this reproduces identically in CI.
+
+---
+## IndexedDB Lifecycle Analysis
+
+Traced flows (`working.html`):
+
+- openDatabase (`openIDB()`, line ~3433): guards with `if(_idb)return res(_idb);` then calls `indexedDB.open('NWClashImages',2)`. This guard is check-then-act, not atomic — if `openIDB()` is invoked twice before the first call's `req.onsuccess` fires, both calls see `_idb` as falsy and both proceed to `indexedDB.open()`. There is no in-flight-promise de-duplication (no cached "opening" promise returned to the second caller).
+- Connection ownership: `_idb` is a single module-level variable intended to hold "the" shared connection. With the race above, it can only ever hold one of the connections actually opened. Ownership of the other connection(s) is lost the moment the module-level variable is reassigned by a later `onsuccess`.
+- onversionchange handler (line ~3466): installed per-connection inside `req.onsuccess`, but its body (`try{_idb.close();}catch(_e){} _idb=null;`) references the shared mutable `_idb` variable, not the specific connection the handler is attached to. Confirmed by direct instrumentation: firing connection A's own `onversionchange` handler does not close connection A; if `_idb` currently aliases connection B, it closes B and nulls the shared slot, leaving A fully open and connectable.
+- Connection close behavior: `_closeSharedIdb()` (line ~15679) only closes/nulls whatever `_idb` currently references; it has no visibility into orphaned connections created by the race above.
+- deleteDatabase requests (`_deleteIdbDatabase`, line ~15682): calls `_closeSharedIdb()` first (closing only the currently-aliased connection), then `indexedDB.deleteDatabase(name)`. Per spec, `deleteDatabase` fires `onblocked` and stays pending while any open connection (including an orphaned same-page connection) has not closed — confirmed via the reproduced `wasBlocked:true` timeout.
+- blocked events: correctly wired (`req.onblocked` sets `wasBlocked` and logs a warning) but there is no mechanism to discover or force-close the specific orphaned connection causing the block — it can only wait out the 15-second ceiling.
+- Singleton database references: the `_idb` singleton pattern is architecturally sound in intent (one connection, auto-closing on versionchange) but is not safely enforced under concurrent callers — exactly the shape of `window.onload=()=>{initAuth();initNwImages();initPlans();}` at real-world startup.
+
+Paths capable of leaving open, unreferenced connections: any two (or more) near-simultaneous calls to `openIDB()` before the first has resolved. In production this occurs on every page load (`initNwImages()` + `initPlans()` racing). In tests it additionally occurs whenever a test operation (raw `indexedDB.open`/`deleteDatabase` probe, or an app-level reset call) executes during that same narrow startup window.
+
+---
+## Root Cause Analysis
+
+Facts:
+- Running Playwright from the repo root loads two separate `@playwright/test` module instances, causing the reported `test.describe()` error (confirmed via `require.resolve` divergence and `DEBUG=pw:*` trace).
+- `tests/package.json` and `tests/playwright.config.js` both establish `tests/` as the intended project root.
+- `openIDB()`'s `_idb` guard is check-then-act with no promise caching.
+- `window.onload` calls `initNwImages()` and `initPlans()` without sequencing, both reaching `openIDB()`.
+- The `onversionchange` handler closure references the shared `_idb` variable, not its own connection.
+- Direct instrumentation reproduced two live connections from one bootstrap, and reproduced an orphaned, still-open, unreachable connection blocking `deleteDatabase`.
+- The failure signatures collected in this investigation are textually identical to those already logged under INV-006/INV-007/MI-002/KI-005.
+
+Observations:
+- Failure rate for the three affected tests was ~80% under `--repeat-each=5`, while the other 14 tests in the same file were 0% — consistent with the defect being narrowly timing-dependent on the bootstrap-race window rather than a general IndexedDB instability.
+- No failures were observed in tests that mock `indexedDB.open`/`deleteDatabase` (they never exercise the real orphaned-connection path).
+
+Hypotheses (not directly confirmed, offered as candidate contributing factors, not conclusions):
+- CI or slower-hardware environments may see a wider or narrower race window than local hardware, changing observed frequency (untested in this investigation — no CI access was exercised).
+- Additional deferred `setTimeout`-based one-shot migrations (per INV-007 findings) could occasionally also open `NWClashImages` during the same window, independently increasing the number of orphaned connections; this was not directly instrumented in this investigation.
+
+Conclusions:
+1. The `test.describe()` error is an environment/invocation issue, not an application or test-file defect. No code change is required; the fix is procedural (always invoke Playwright from `tests/`, per the repository's own documented workflow).
+2. The intermittent `deleteDatabase blocked by another connection` failures are a real, confirmed application defect in `openIDB()`'s connection-singleton management in `working.html` — a check-then-act race that can create orphaned, unreferenced `IDBDatabase` connections, compounded by an `onversionchange` handler that closes the wrong connection due to closing over shared mutable state instead of its own connection reference. This is a persistence-defect classification (Workflow A) affecting application code, not test-harness design — the existing tests are behaving correctly by surfacing a real, reproducible race condition; they are not the source of non-determinism.
+3. This is a newly root-caused defect distinct from MI-002/KI-005 (which was specifically the test-bootstrap-vs-deferred-migration race, remediated under INV-007). The residual failures those investigations left unexplained in these two files are explained by this separate defect.
+
+---
+## Test Architecture Review
+
+- The existing tests in both files do not rely on arbitrary/unjustified timing assumptions for their core logic — they use deterministic `waitForFunction` gates (per the INV-007 pattern) for bootstrap, and drive the real, unmocked `deleteDatabase`/verify cycle intentionally by design (e.g., `selective-reset-idb-reliability.spec.js`'s own comments note the authors already avoid arranging a real peer-open race in headless Chromium where possible, and direct-fire the handler instead).
+- The three specific tests that fail are exactly the ones that cannot avoid the real connection lifecycle (they assert on the real post-`deleteDatabase` schema/version state), so they are not test-only defects — they are legitimately exposing a real, intermittent race in the code under test.
+- Additional synchronization is required, but in the application code (`openIDB()`), not the test harness — a test-side workaround (e.g., adding more waits) would mask the defect rather than fix it, and would not protect production users who hit the same startup race on every real page load.
+- Recommendation: do not modify test timing/waits as a "fix" for this defect; the root cause lives in `working.html`.
+
+---
+## Remediation Options
+
+### Option A — De-duplicate concurrent openIDB() calls with a cached in-flight promise
+
+Description: Change `openIDB()` to cache the pending Promise itself (not just the resolved `_idb` value) in a module-level variable, so a second concurrent caller receives the same in-flight promise instead of issuing a second `indexedDB.open()`. Clear the cached promise alongside `_idb=null` in the `onversionchange` handler and in `_closeSharedIdb()`. This eliminates the possibility of orphaned duplicate connections at the source.
+
+Risk: Low-to-Medium. Requires care that the cached-promise variable is reset in every path that currently nulls `_idb` (the `onversionchange` handler and `_closeSharedIdb()`), or a stale rejected/resolved promise could be handed out after a close. All existing callers (`idbPut`, `idbGet`, `idbGetAll`, `idbGetAllKeys`, `idbClear`, `planPut/Get/List/Delete`, `initPlans`) already `await openIDB()` and would be unaffected by the interface. Regression tests should specifically assert only one connection is opened when `initNwImages()`/`initPlans()` run concurrently.
+
+### Option B — Fix the onversionchange closure to close its own connection, not the shared variable
+
+Description: Change the handler installed in `openIDB()`'s `req.onsuccess` to close over the specific connection it was attached to (e.g., capture `const db=e.target.result;` and reference `db` inside the handler) and only null the module-level `_idb` if `_idb===db` at the time the handler fires. This ensures any orphaned connection created by the Option-A race (if not also fixed) still self-closes correctly when a peer requests a version change, rather than silently leaving it open.
+
+Risk: Low. Narrowly scoped, behavior-preserving for the common (non-raced) single-connection case; only changes behavior in the multi-connection edge case this investigation identified. Should be paired with Option A for a complete fix — Option B alone still permits the race to create the orphan in the first place, it only reduces how long the orphan survives once a versionchange event happens to be triggered.
+
+### Option C — Do nothing (accept as documented monitoring item)
+
+Description: Continue tracking under MI-002/KI-005-style monitoring, relying on `_deleteIdbDatabase`'s existing 15-second timeout, retry-once logic in `_wipeIdbWithVerify`, and the user-facing "close all other tabs" guidance to eventually succeed or fail loudly.
+
+Risk: Medium-High. The defect is confirmed to reproduce on every real page load (two connections opened by `initNwImages()`/`initPlans()`), not just under test. Production users performing a Selective Reset, Clear All Data, or Factory Reset shortly after loading the page could intermittently hit the same 15-second-then-fail path already seen in tests — the exact production incident class `WIPE-VERIFY`'s own code comments (line ~15660) describe having previously occurred. Leaving this unfixed carries real user-facing risk, not just test flakiness.
+
+---
+## Recommendation
+
+Proceed to Developer Assessment for Option A + Option B together (complementary, not alternatives) under Workflow A (Persistence Defect). This is a QA Investigator / Architect finding only — per WORKFLOW_ROUTING.md this investigation STOPS at the "Implementation Required" decision gate. No code changes have been made to `working.html` or the test suite as part of this investigation.
+
+---
