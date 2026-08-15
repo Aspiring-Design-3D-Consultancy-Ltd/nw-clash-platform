@@ -603,3 +603,18 @@ Resolution:
 - File removed.
 - No application defect identified.
 - No investigation reopened.
+
+---
+
+### Release Snapshot Capability (DEC-012)
+
+Date: 2026-08-15
+
+The Release Snapshot capability was designed and implemented per DEC-012.
+
+Summary:
+- New ledger file `docs/governance/RELEASE_SNAPSHOTS.md` records dated, immutable, point-in-time snapshots of repository state, governance state, investigation state, and test baseline at release closure.
+- New automation script `scripts/generate-release-snapshot.mjs` mechanically captures repository-state facts (branch, HEAD, working-tree/sync state) for each new snapshot.
+- `RS-001` was generated using the already-released INV-008 as the first reference implementation (release commit `6995a0e`, HEAD `5720adf` at capture time).
+
+This is a documentation/tooling capability only. No `working.html` changes were made and no investigation was reopened.

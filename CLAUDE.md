@@ -6,7 +6,7 @@
 
 ## Governance framework
 
-This repository follows a role-based governance framework recorded in `docs/governance/` (decisions `DEC-001`–`DEC-011`, `WORKFLOW_ROUTING.md`, `WORKFLOW_TEMPLATES.md`, `GOVERNANCE_ORCHESTRATOR.md`) and `.cline/bootstrap.md` / `.cline/roles/*`. Investigation before implementation, evidence before conclusions, minimal-change principle. When work resembles a defect investigation rather than a direct instruction, follow that workflow instead of editing directly.
+This repository follows a role-based governance framework recorded in `docs/governance/` (decisions `DEC-001`–`DEC-012`, `WORKFLOW_ROUTING.md`, `WORKFLOW_TEMPLATES.md`, `GOVERNANCE_ORCHESTRATOR.md`, `RELEASE_SNAPSHOTS.md`) and `.cline/bootstrap.md` / `.cline/roles/*`. Investigation before implementation, evidence before conclusions, minimal-change principle. When work resembles a defect investigation rather than a direct instruction, follow that workflow instead of editing directly.
 
 **Released:** INV-008 (IndexedDB Reset Reliability) has been implemented, QA-verified, and released — `openIDB()` now de-duplicates concurrent callers via a cached in-flight promise (Option A) and its `onversionchange` handler closes over its own connection rather than the shared `_idb` variable (Option B), per `WORKFLOW_ROUTING.md` Workflow A. QA Retest passed (`selective-reset-idb-reliability.spec.js`, `wipe-verify.spec.js`, and the full suite — see `docs/governance/INVESTIGATION_LOG.md` and `docs/governance/CURRENT_STATUS.md`). Committed and pushed to `main` (commit `6995a0e`). Investigation closed.
 

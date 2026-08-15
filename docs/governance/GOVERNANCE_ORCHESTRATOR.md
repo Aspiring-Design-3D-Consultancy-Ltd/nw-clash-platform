@@ -11,11 +11,13 @@ Related Documents:
 - DEC-009
 - DEC-010
 - DEC-011
+- DEC-012
 - WORKFLOW_ROUTING.md
 - TESTING_STRATEGY.md
 - CURRENT_STATUS.md
 - KNOWN_ISSUES.md
 - INVESTIGATION_LOG.md
+- RELEASE_SNAPSHOTS.md
 
 ---
 
@@ -205,6 +207,7 @@ Examples:
 - DEC-009
 - DEC-010
 - DEC-011
+- DEC-012
 
 The Orchestrator may not bypass approved governance requirements.
 
@@ -220,4 +223,17 @@ Per DEC-011, whenever an investigation establishes a reproducible defect, a vali
 - require the investigation to identify a preferred corrective action, alternative options (where viable), associated risks/trade-offs, and a recommended implementation path
 - ensure `Monitoring` is used only per DEC-011 Rule 2 (incomplete evidence, unknown root cause, uncertain feasibility, or approved-but-not-yet-implemented remediation) and not as a substitute for a remediation recommendation
 - stop at the `Implementation Required` decision gate (DEC-009) for human authorization of the preferred remediation; this decision gate is unchanged by DEC-011
+
+---
+
+## Responsibility 8
+
+Release Snapshot Generation
+
+Per DEC-012, once an investigation reaches the `Closed` workflow state (DEC-010) with a recorded release commit, the Orchestrator shall recommend generating a Release Snapshot per RELEASE_SNAPSHOTS.md:
+
+- run `scripts/generate-release-snapshot.mjs` to capture repository-state facts
+- source governance-state, investigation-state, and test-baseline fields from CURRENT_STATUS.md, KNOWN_ISSUES.md, and INVESTIGATION_LOG.md (never fabricate these — DEC-012 Rule 3)
+- append the completed entry to RELEASE_SNAPSHOTS.md as the next sequential `RS-XXX` ID; never edit a prior entry (DEC-012 Rule 2)
+- treat Release Snapshot generation as a documentation step, not a release gate (DEC-012 Rule 4) — it does not block or substitute for the `Commit / Push Required` / `Release Approved` decision gates
 

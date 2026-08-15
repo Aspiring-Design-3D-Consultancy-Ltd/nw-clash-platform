@@ -11,8 +11,10 @@ Related Documents:
 - DEC-009
 - DEC-010
 - DEC-011
+- DEC-012
 - GOV_ORCHESTRATOR.md
 - WORKFLOW_ROUTING.md
+- RELEASE_SNAPSHOTS.md
 
 Purpose:
 
@@ -756,6 +758,26 @@ Automatic progression or human action.
 ## Workflow Status
 
 Active / Waiting / Closed
+
+---
+
+# Release Snapshot Template
+
+Reference:
+
+DEC-012
+
+Use whenever an investigation reaches the `Closed` workflow state (DEC-010) with a recorded release commit.
+
+The full template lives in RELEASE_SNAPSHOTS.md ("Template" section) and is reproduced there rather than duplicated here to avoid documentation drift between the two files.
+
+Summary of required sections:
+
+- Repository State (branch, release commit, HEAD, working-tree/sync state)
+- Governance State (active investigations, closed/released investigations, monitoring items)
+- Investigation State (closure summary per INVESTIGATION_LOG.md)
+- Test Baseline (total/passed/known failures)
+- Release Status (released commit, approval reference, Closed/Released)
 
 ---
 

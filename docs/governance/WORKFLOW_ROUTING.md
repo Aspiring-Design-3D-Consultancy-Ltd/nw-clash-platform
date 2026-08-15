@@ -11,6 +11,7 @@ Related Decisions:
 - DEC-009
 - DEC-010
 - DEC-011
+- DEC-012
 
 Purpose:
 
@@ -77,6 +78,8 @@ STOP
 Decision Gate:
 
 Commit / Push Required
+
+After the investigation reaches `Closed` (DEC-010) with a recorded release commit, generate a Release Snapshot per RELEASE_SNAPSHOTS.md / DEC-012 (documentation step, not a release gate).
 
 ---
 
@@ -357,3 +360,5 @@ The Governance Orchestrator owns workflow progression.
 Human intervention is required only at decision gates defined by DEC-009.
 
 Confirmed defects remain governed by DEC-011: `Do Nothing`, `Monitor Only`, and `Accept the Risk` are not acceptable primary recommendations once a defect is reproducible, root-caused, and has a feasible remediation path.
+
+Closed/released investigations remain governed by DEC-012: generate a Release Snapshot (RELEASE_SNAPSHOTS.md) recording repository state, governance state, investigation state, and test baseline at closure.
