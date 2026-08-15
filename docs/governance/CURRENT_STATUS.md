@@ -491,3 +491,21 @@ Future investigations should originate from:
 - Newly discovered defects
 - Enhancement requests
 - Monitoring-item escalation if new evidence emerges
+
+### Repository Hygiene
+
+Date: 2026-08-15
+
+Repository Steward review identified an undocumented test artifact
+(`tests/zz-repro.spec.js`) introduced in commit `00b7086`.
+
+Findings:
+- Not referenced in governance records.
+- Duplicated coverage already provided by `tests/dedup-queue.spec.js`.
+- Used deprecated fixed-delay synchronization (`waitForTimeout(2500)`).
+- Contained investigation-era debug instrumentation.
+
+Resolution:
+- File removed.
+- No application defect identified.
+- No investigation reopened.

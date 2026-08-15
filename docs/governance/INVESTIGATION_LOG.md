@@ -1164,3 +1164,22 @@ Status:
 Committed and pushed.
 
 Investigation closed.
+
+## Repository Hygiene Review – 2026-08-15
+
+Finding:
+Undocumented test artifact `tests/zz-repro.spec.js`.
+
+Evidence:
+- Introduced in commit `00b7086`.
+- Not referenced in governance documentation.
+- Coverage duplicated by `tests/dedup-queue.spec.js`.
+- Included fixed-delay synchronization and debug logging.
+
+Disposition:
+Removed as repository-hygiene cleanup.
+
+Impact:
+No production code changes.
+No investigation reopened.
+No release behavior affected.
