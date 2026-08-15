@@ -462,22 +462,77 @@ Note: a full repository-wide suite run surfaced 22 pre-existing intermittent fai
 
 ## Current Priority
 
-No active investigations.
+### INV-008 (Implemented — Pending Commit / Push Authorization)
 
-All confirmed defects identified through INV-002, R1, INV-005, INV-006, and INV-007 have been remediated, verified, committed, pushed, and released.
+Title:
+
+IndexedDB Reset Reliability Investigation
+
+Status:
+
+Implemented. Human authorization was granted to proceed to Developer Assessment and Developer Implementation for the combined Option A + Option B remediation. QA Retest has passed (see "INV-008 Regression Coverage" below). STOPPED at the "Commit / Push Required" decision gate (WORKFLOW_ROUTING.md, Workflow A), awaiting human authorization to commit and push.
+
+Summary:
+
+Opened following completion of INV-002/R1/INV-005/INV-006/INV-007 and the Repository Hygiene review, to root-cause the residual `selective-reset-idb-reliability.spec.js` / `wipe-verify.spec.js` "deleteDatabase blocked by another connection" failures left unexplained under MI-002/KI-005. Confirmed two independent findings: (1) the reported `test.describe()` error is an environment/invocation issue (two `@playwright/test` module instances loaded when Playwright is run from the repository root instead of `tests/`) — no code defect; (2) a real, confirmed application defect in `openIDB()`'s connection-singleton management in `working.html` — a check-then-act race on the module-level `_idb` variable (triggered every page load by `window.onload`'s concurrent `initNwImages()`/`initPlans()` calls) that can create an orphaned, unreferenced `IDBDatabase` connection, compounded by an `onversionchange` handler that closes over the shared `_idb` variable instead of its own connection and therefore fails to close the orphan when a peer requests a version change. Full findings, evidence, and remediation options in `INVESTIGATION_LOG.md` (INV-008).
+
+Implemented Remediation:
+
+- Option A: `openIDB()` now caches the in-flight `indexedDB.open()` promise in a new module-level `_idbOpenPromise` variable. Concurrent callers arriving before the first `openIDB()` call resolves now share that single in-flight promise instead of each issuing their own `indexedDB.open()` request, eliminating the source of orphaned duplicate connections. The cached promise is cleared on open success, open failure, and everywhere `_idb` is already nulled (`onversionchange` handler, `_closeSharedIdb()`).
+- Option B: the `onversionchange` handler installed in `openIDB()`'s `req.onsuccess` now captures its own connection (`const db=e.target.result`) and calls `db.close()` directly, only nulling the shared `_idb` if `_idb===db` at the time the handler fires — so a connection superseded by a later `openIDB()` call still self-closes correctly instead of silently leaving the true orphan open.
+- `_closeSharedIdb()` also clears `_idbOpenPromise`, so a caller racing a close can never be handed a resolved reference to the connection just closed.
+
+Files Modified:
+
+- working.html (`openIDB()`, `_closeSharedIdb()`)
+- tests/selective-reset-idb-reliability.spec.js (4 new regression tests)
+
+Next Action:
+
+Human authorization required to commit and push. No further code changes should be made to `openIDB()`/`_closeSharedIdb()` under this investigation.
+
+---
+
+### INV-008 Regression Coverage
+
+Test:
+
+- tests/selective-reset-idb-reliability.spec.js (new tests added within the existing `SELECTIVE-RESET-IDB-CLOSE` describe block)
+
+Coverage:
+
+- Concurrent `openIDB()` callers de-duplicate into a single `indexedDB.open()` call and resolve to the same connection (Option A)
+- An orphaned connection's own `onversionchange` handler closes only itself, leaving a different, currently-active `_idb` untouched (Option B)
+- `openIDB()` clears the cached in-flight promise when the open request errors, so a subsequent retry succeeds instead of hanging on a stale rejected promise
+- `_closeSharedIdb()` clears the cached in-flight promise in addition to `_idb`
+
+Results:
+
+- selective-reset-idb-reliability.spec.js → 21/21 Passed (single run); 105/105 Passed under `--repeat-each=5` (the exact regime that previously showed 16/85 intermittent failures under INV-008's own investigation run — now fully eliminated)
+- wipe-verify.spec.js → 4/4 Passed
+- Full repository-wide suite (`--workers=1`) → 286/288 Passed. The 2 residual failures (`frozen-week-and-chart-year.spec.js`, `CHART-PERIOD-YEAR-AWARE` ×2) were independently reproduced on the unmodified baseline via `git stash`, confirming pre-existing, date-boundary-dependent chart-range flakiness unrelated to this change.
+
+Outcome:
+
+PASS
+
+---
+
+All confirmed defects identified through INV-002, R1, INV-005, INV-006, and INV-007 have been remediated, verified, committed, pushed, and released. INV-008 has been remediated and QA-verified; commit/push authorization is outstanding.
 
 Remaining Activities:
 
+- Commit and push the INV-008 remediation upon authorization.
 - Continue normal application development.
 - Monitor MI-001 (Migration Complexity).
-- Monitor MI-002 residual test-infrastructure observations.
+- Monitor MI-002 residual test-infrastructure observations (the IndexedDB-timing subset separately tracked under INV-008 has now been remediated; see KI-006).
 - Use real-world project workflows to identify future enhancements or defects.
 
 Repository Status:
 
 Healthy.
 
-No outstanding remediation actions.
+INV-008 remediation implemented and QA-verified locally; not yet committed or pushed.
 
 ---
 
@@ -491,3 +546,21 @@ Future investigations should originate from:
 - Newly discovered defects
 - Enhancement requests
 - Monitoring-item escalation if new evidence emerges
+
+### Repository Hygiene
+
+Date: 2026-08-15
+
+Repository Steward review identified an undocumented test artifact
+(`tests/zz-repro.spec.js`) introduced in commit `00b7086`.
+
+Findings:
+- Not referenced in governance records.
+- Duplicated coverage already provided by `tests/dedup-queue.spec.js`.
+- Used deprecated fixed-delay synchronization (`waitForTimeout(2500)`).
+- Contained investigation-era debug instrumentation.
+
+Resolution:
+- File removed.
+- No application defect identified.
+- No investigation reopened.

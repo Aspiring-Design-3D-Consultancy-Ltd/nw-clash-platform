@@ -4,6 +4,14 @@
 
 ---
 
+## Governance framework
+
+This repository follows a role-based governance framework recorded in `docs/governance/` (decisions `DEC-001`–`DEC-011`, `WORKFLOW_ROUTING.md`, `WORKFLOW_TEMPLATES.md`, `GOVERNANCE_ORCHESTRATOR.md`) and `.cline/bootstrap.md` / `.cline/roles/*`. Investigation before implementation, evidence before conclusions, minimal-change principle. When work resembles a defect investigation rather than a direct instruction, follow that workflow instead of editing directly.
+
+**Remediated, pending commit/push authorization:** INV-008 (IndexedDB Reset Reliability) has been implemented — `openIDB()` now de-duplicates concurrent callers via a cached in-flight promise (Option A) and its `onversionchange` handler closes over its own connection rather than the shared `_idb` variable (Option B), per `WORKFLOW_ROUTING.md` Workflow A. QA Retest passed (`selective-reset-idb-reliability.spec.js`, `wipe-verify.spec.js`, and the full suite — see `docs/governance/INVESTIGATION_LOG.md` and `docs/governance/CURRENT_STATUS.md`). The investigation is stopped at the `Commit / Push Required` decision gate awaiting human authorization.
+
+---
+
 ## Project at a glance
 
 - **Owner:** Shane (BIM Space Planning Manager, Exyte Ireland) — ESMC project, Muratec AMHS scope, Dresden.

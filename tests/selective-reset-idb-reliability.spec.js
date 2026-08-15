@@ -45,6 +45,117 @@ test.describe('SELECTIVE-RESET-IDB-CLOSE', () => {
     expect(state.idbNulled).toBe(true);
   });
 
+  /* INV-008 regression coverage start. Root cause: openIDB() had a
+     check-then-act race on the module-level _idb singleton — two
+     concurrent callers (e.g. initNwImages()/initPlans() on window.onload)
+     could both see _idb as falsy and each issue their own
+     indexedDB.open(), producing an orphaned second connection whose own
+     onversionchange handler closed over the shared _idb variable instead
+     of itself and therefore never self-closed. Remediated with Option A
+     (cache the in-flight openIDB() promise so concurrent callers share
+     one indexedDB.open() request) and Option B (the onversionchange
+     handler now closes its own captured connection and only nulls _idb
+     if _idb still aliases that exact connection). */
+  test('concurrent openIDB() callers de-duplicate into a single indexedDB.open() call and share one connection (INV-008 Option A)', async ({ page }) => {
+    await bootstrap(page);
+    const result = await page.evaluate(async () => {
+      _closeSharedIdb();
+      const orig = indexedDB.open.bind(indexedDB);
+      let openCalls = 0;
+      indexedDB.open = (name, ver) => { openCalls++; return orig(name, ver); };
+      const [dbA, dbB] = await Promise.all([openIDB(), openIDB()]);
+      indexedDB.open = orig;
+      return { openCalls, sameConnection: dbA === dbB };
+    });
+    expect(result.openCalls).toBe(1);
+    expect(result.sameConnection).toBe(true);
+  });
+
+  test('an orphaned connection\'s own onversionchange handler closes only itself, leaving a different active _idb untouched (INV-008 Option B)', async ({ page }) => {
+    await bootstrap(page);
+    const result = await page.evaluate(async () => {
+      const dbA = await openIDB();
+      // Manufacture the pre-Option-A race shape directly: reset the
+      // singleton bookkeeping WITHOUT closing dbA, so dbA becomes a
+      // genuinely orphaned (still open, unreferenced) connection — this
+      // reproduces the exact defect scenario from the investigation
+      // (two live connections, _idb able to alias only one of them).
+      _idb = null;
+      _idbOpenPromise = null;
+      const dbB = await openIDB();
+      const distinctConnections = dbA !== dbB;
+      let aCloseCalled = false, bCloseCalled = false;
+      const realCloseA = dbA.close.bind(dbA);
+      const realCloseB = dbB.close.bind(dbB);
+      dbA.close = () => { aCloseCalled = true; realCloseA(); };
+      dbB.close = () => { bCloseCalled = true; realCloseB(); };
+      // Fire dbA's own onversionchange handler — the orphan scenario:
+      // dbA is superseded, but its handler must still close ITS OWN
+      // connection without disturbing the currently active dbB.
+      dbA.onversionchange();
+      return {
+        distinctConnections,
+        aCloseCalled,
+        bCloseCalled,
+        idbStillAliasesB: _idb === dbB,
+      };
+    });
+    expect(result.distinctConnections).toBe(true);
+    expect(result.aCloseCalled).toBe(true);
+    expect(result.bCloseCalled).toBe(false);
+    expect(result.idbStillAliasesB).toBe(true);
+  });
+
+  test('openIDB() clears the cached in-flight promise when the open request errors, allowing a fresh retry to succeed', async ({ page }) => {
+    await bootstrap(page);
+    const result = await page.evaluate(async () => {
+      _closeSharedIdb();
+      const orig = indexedDB.open.bind(indexedDB);
+      let calls = 0;
+      indexedDB.open = (name, ver) => {
+        calls++;
+        if (calls === 1) {
+          const req = { onerror: null, onsuccess: null, onupgradeneeded: null };
+          setTimeout(() => {
+            try { req.onerror && req.onerror({ target: { error: new Error('SYNTHETIC_OPEN_FAILURE') } }); } catch (_) {}
+          }, 5);
+          return req;
+        }
+        return orig(name, ver);
+      };
+      let firstError = null;
+      try { await openIDB(); } catch (e) { firstError = e.message; }
+      const promiseClearedAfterFailure = _idbOpenPromise === null;
+      let secondSucceeded = false, secondError = null;
+      try { secondSucceeded = !!(await openIDB()); } catch (e) { secondError = e.message; }
+      indexedDB.open = orig;
+      return { calls, firstError, promiseClearedAfterFailure, secondSucceeded, secondError };
+    });
+    expect(result.calls).toBe(2);
+    expect(result.firstError).toBe('SYNTHETIC_OPEN_FAILURE');
+    expect(result.promiseClearedAfterFailure).toBe(true);
+    expect(result.secondSucceeded).toBe(true);
+    expect(result.secondError).toBeNull();
+  });
+
+  test('_closeSharedIdb() clears the cached in-flight openIDB() promise, not just _idb', async ({ page }) => {
+    await bootstrap(page);
+    const result = await page.evaluate(async () => {
+      await idbPut(1, 'seed'); // ensure the singleton is populated
+      const preIdb = !!_idb;
+      _closeSharedIdb();
+      return {
+        preIdb,
+        idbNulledAfterClose: _idb === null,
+        promiseNulledAfterClose: _idbOpenPromise === null,
+      };
+    });
+    expect(result.preIdb).toBe(true);
+    expect(result.idbNulledAfterClose).toBe(true);
+    expect(result.promiseNulledAfterClose).toBe(true);
+  });
+  /* INV-008 regression coverage end */
+
   test('_deleteIdbDatabase default timeout is 15000ms (not 3000ms)', async ({ page }) => {
     await bootstrap(page);
     const info = await page.evaluate(() => {
