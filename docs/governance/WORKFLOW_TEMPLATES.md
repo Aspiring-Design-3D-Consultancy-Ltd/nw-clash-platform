@@ -10,6 +10,7 @@ Related Documents:
 - DEC-008
 - DEC-009
 - DEC-010
+- DEC-011
 - GOV_ORCHESTRATOR.md
 - WORKFLOW_ROUTING.md
 
@@ -568,6 +569,50 @@ Commit / Push / Documentation
 
 ---
 
+# Confirmed Defect Remediation Recommendation Template
+
+Reference:
+
+DEC-011
+
+Use whenever an investigation establishes a reproducible defect, a validated root cause, and a feasible remediation path (i.e. reaches the `Confirmed` workflow state (DEC-010) and stops at the `Implementation Required` decision gate (DEC-009)).
+
+## Investigation
+
+ID and title.
+
+---
+
+## Root Cause Summary
+
+Confirmed findings only.
+
+---
+
+## Preferred Remediation
+
+The recommended corrective action, with supporting rationale.
+
+---
+
+## Alternative Remediation Options
+
+For each viable alternative: description, risks, and benefits.
+
+---
+
+## Risk Assessment
+
+Risks and trade-offs of the preferred option versus alternatives, and of leaving the defect unremediated.
+
+---
+
+## Disposition
+
+Implementation Approved / Deferred / Monitoring (Monitoring valid only per DEC-011 Rule 2)
+
+---
+
 # Documentation Update Template
 
 ## Executive Summary
@@ -697,6 +742,8 @@ Examples:
 - Implementation Required
 - Repository Evidence Required
 - Release Approval Required
+
+If the gate is Implementation Required, apply DEC-011 (Confirmed Defect Remediation): the investigation must identify a preferred corrective action, viable alternatives with risks/trade-offs, and a recommended implementation path — `Do Nothing`, `Monitor Only`, and `Accept the Risk` are not acceptable primary recommendations once a reproducible defect, validated root cause, and feasible remediation path exist.
 
 ---
 

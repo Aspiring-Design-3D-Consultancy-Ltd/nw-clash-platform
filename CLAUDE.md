@@ -4,6 +4,14 @@
 
 ---
 
+## Governance framework
+
+This repository follows a role-based governance framework recorded in `docs/governance/` (decisions `DEC-001`–`DEC-011`, `WORKFLOW_ROUTING.md`, `WORKFLOW_TEMPLATES.md`, `GOVERNANCE_ORCHESTRATOR.md`) and `.cline/bootstrap.md` / `.cline/roles/*`. Investigation before implementation, evidence before conclusions, minimal-change principle. When work resembles a defect investigation rather than a direct instruction, follow that workflow instead of editing directly.
+
+**Confirmed defect awaiting authorization:** INV-008 (IndexedDB Reset Reliability) is `Confirmed` — root cause identified in `openIDB()`'s connection-singleton management — and stopped at the `Implementation Required` decision gate per `WORKFLOW_ROUTING.md` Workflow A. No `working.html` changes have been made. Do not implement a fix without explicit authorization; see `docs/governance/KNOWN_ISSUES.md` and `docs/governance/CURRENT_STATUS.md` for current disposition before proceeding. Per DEC-011 (Confirmed Defect Remediation), because INV-008 has a reproducible defect, a validated root cause, and feasible remediation options, "Do Nothing" / "Monitor Only" / "Accept the Risk" are not acceptable primary dispositions — a preferred remediation (Option A + Option B combined, per `INVESTIGATION_LOG.md`) has already been identified and awaits human authorization.
+
+---
+
 ## Project at a glance
 
 - **Owner:** Shane (BIM Space Planning Manager, Exyte Ireland) — ESMC project, Muratec AMHS scope, Dresden.

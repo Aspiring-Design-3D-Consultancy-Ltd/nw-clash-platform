@@ -107,6 +107,12 @@ Autonomous agents are not currently in use.
 
 All work follows the governance workflow unless explicitly changed by project documentation.
 
+## Confirmed Defects Awaiting Authorization
+
+Check `docs/governance/KNOWN_ISSUES.md` ("Confirmed Issues") and `docs/governance/CURRENT_STATUS.md` ("Current Priority") at session start for any investigation in the `Confirmed` workflow state (DEC-010) that is stopped at a decision gate.
+
+As of this writing: INV-008 (IndexedDB Reset Reliability Investigation) is `Confirmed` and stopped at the `Implementation Required` decision gate, awaiting human authorization to proceed to Developer Assessment. Do not implement a fix without explicit authorization. Per DEC-011 (Confirmed Defect Remediation), because INV-008 has a reproducible defect, a validated root cause, and feasible remediation options (Option A + Option B, per `INVESTIGATION_LOG.md`), "Do Nothing" / "Monitor Only" / "Accept the Risk" are not acceptable primary dispositions for it — human authorization of a remediation path is the outstanding decision gate.
+
 ## General Behaviour
 
 Be methodical.

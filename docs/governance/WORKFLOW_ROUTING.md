@@ -9,6 +9,8 @@ Related Decisions:
 - DEC-007
 - DEC-008
 - DEC-009
+- DEC-010
+- DEC-011
 
 Purpose:
 
@@ -61,6 +63,8 @@ STOP
 Decision Gate:
 
 Implementation Required
+
+While stopped at this gate, the investigation is in the `Confirmed` workflow state (DEC-010) and is subject to the Confirmed Defect Remediation requirements of DEC-011: `Do Nothing`, `Monitor Only`, and `Accept the Risk` are not acceptable primary recommendations. The investigation must identify a preferred corrective action, viable alternatives with risks/trade-offs, and a recommended implementation path, resolving to `Implementation Approved`, `Deferred`, or `Monitoring` (only where DEC-011 Rule 2 conditions apply).
 
 After implementation:
 
@@ -351,3 +355,5 @@ to classify the issue before selecting a workflow.
 The Governance Orchestrator owns workflow progression.
 
 Human intervention is required only at decision gates defined by DEC-009.
+
+Confirmed defects remain governed by DEC-011: `Do Nothing`, `Monitor Only`, and `Accept the Risk` are not acceptable primary recommendations once a defect is reproducible, root-caused, and has a feasible remediation path.

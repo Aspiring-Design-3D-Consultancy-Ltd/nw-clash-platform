@@ -22,6 +22,10 @@ Related Decisions:
 - DEC-008
 - DEC-009
 
+Extended By:
+
+- DEC-011 (governs the required content of remediation recommendations once an investigation in the `Confirmed` state defined below has a reproducible defect, a validated root cause, and a feasible remediation path; DEC-010 remains Approved and unmodified)
+
 Related Documents:
 
 - GOV_ORCHESTRATOR.md
@@ -166,6 +170,10 @@ Permitted Next States:
 Implementation Approved
 Closed
 ```
+
+Governance Requirement:
+
+While in this state, DEC-011 (Confirmed Defect Remediation) applies: since a reproducible defect, validated root cause, and feasible remediation path are all present by definition of this state, `Do Nothing`, `Monitor Only`, and `Accept the Risk` are not acceptable primary recommendations. The investigation must identify a preferred corrective action, any viable alternatives with risks/trade-offs, and a recommended implementation path before this state may resolve to `Implementation Approved`, `Deferred` (DEC-010 Special Workflow State), or `Monitoring` (DEC-010 Special Workflow State, valid only per DEC-011 Rule 2).
 
 ---
 
@@ -504,6 +512,8 @@ Required:
 - issue classification
 - resolution state
 - monitoring state
+
+For `Confirmed` defects specifically, see DEC-011 (Confirmed Defect Remediation) for the requirement that a preferred remediation recommendation (not indefinite monitoring) be produced.
 
 ---
 

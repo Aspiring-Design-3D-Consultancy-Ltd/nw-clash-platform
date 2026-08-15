@@ -9,6 +9,8 @@ Related Documents:
 - DEC-007
 - DEC-008
 - DEC-009
+- DEC-010
+- DEC-011
 - WORKFLOW_ROUTING.md
 - TESTING_STRATEGY.md
 - CURRENT_STATUS.md
@@ -201,6 +203,21 @@ Examples:
 - DEC-007
 - DEC-008
 - DEC-009
+- DEC-010
+- DEC-011
 
 The Orchestrator may not bypass approved governance requirements.
+
+---
+
+## Responsibility 7
+
+Confirmed Defect Remediation
+
+Per DEC-011, whenever an investigation establishes a reproducible defect, a validated root cause, and a feasible remediation path (i.e. reaches the `Confirmed` workflow state per DEC-010), the Orchestrator shall:
+
+- treat `Do Nothing`, `Monitor Only`, and `Accept the Risk` as unacceptable primary recommendations
+- require the investigation to identify a preferred corrective action, alternative options (where viable), associated risks/trade-offs, and a recommended implementation path
+- ensure `Monitoring` is used only per DEC-011 Rule 2 (incomplete evidence, unknown root cause, uncertain feasibility, or approved-but-not-yet-implemented remediation) and not as a substitute for a remediation recommendation
+- stop at the `Implementation Required` decision gate (DEC-009) for human authorization of the preferred remediation; this decision gate is unchanged by DEC-011
 
