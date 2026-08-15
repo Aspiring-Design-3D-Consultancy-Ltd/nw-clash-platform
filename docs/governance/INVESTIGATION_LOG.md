@@ -1198,7 +1198,7 @@ QA Investigator / Architect (combined discovery + root-cause pass)
 
 Status:
 
-Open — Root Cause Confirmed. STOPPED at "Implementation Required" decision gate (WORKFLOW_ROUTING.md, Workflow A). Awaiting human authorization to proceed to Developer Assessment.
+Implemented — QA Retest Passed. STOPPED at "Commit / Push Required" decision gate (WORKFLOW_ROUTING.md, Workflow A). Awaiting human authorization to commit and push. (Originally: Open — Root Cause Confirmed, stopped at "Implementation Required"; authorization to proceed to Developer Assessment was subsequently granted — see Developer Assessment / Developer Implementation / QA Retest / Repository Steward Review sections below.)
 
 Primary Scope:
 
@@ -1339,5 +1339,122 @@ Risk: Medium-High. The defect is confirmed to reproduce on every real page load 
 ## Recommendation
 
 Proceed to Developer Assessment for Option A + Option B together (complementary, not alternatives) under Workflow A (Persistence Defect). This is a QA Investigator / Architect finding only — per WORKFLOW_ROUTING.md this investigation STOPS at the "Implementation Required" decision gate. No code changes have been made to `working.html` or the test suite as part of this investigation.
+
+---
+## Developer Assessment
+
+Date:
+
+2026-08-15
+
+Role:
+
+Developer
+
+Executive Summary:
+
+Independently reviewed `openIDB()`, `_closeSharedIdb()`, and all downstream callers (`idbPut`, `idbGet`, `idbGetAll`, `idbGetAllKeys`, `idbClear`, `planPut/Get/List/Delete`, `initPlans`, `initNwImages`, `_deleteIdbDatabase`, `_clearIdbStores`, `_wipeIdbWithVerify`). Confirms the QA Investigator / Architect findings without qualification: `openIDB()`'s check-then-act guard (`if(_idb)return res(_idb);`) is not atomic across concurrent invocations, and the `onversionchange` handler installed in `req.onsuccess` closes over the shared, reassignable `_idb` variable rather than the specific connection it is attached to.
+
+Root Cause Confirmation:
+
+Agree with both findings in the Root Cause Analysis section above. No new evidence contradicts the investigation.
+
+Technical Analysis:
+
+- Option A and Option B are complementary, not competing: Option A prevents the orphan from ever being created; Option B ensures that if a connection is ever superseded by a later one for any reason, its own `onversionchange` handler still closes it correctly rather than closing the wrong connection or none at all.
+- All ten existing callers of `openIDB()` already `await` its return value and only use the resolved `IDBDatabase` object — none inspect `_idb` directly except test files and `_closeSharedIdb()`, so changing `openIDB()`'s internal caching strategy does not change its external contract.
+- The two paths that already null `_idb` (`onversionchange` handler, `_closeSharedIdb()`) are the exact two paths identified by the investigation as needing to also clear the new cached-promise variable; a third path (open failure via `req.onerror`) was identified during implementation review as needing the same treatment, since a rejected cached promise would otherwise be handed to every subsequent caller until a successful open cleared it — Requirement 3 ("cache clearing on open failure") added to the approved scope for this reason.
+
+Alternative Options Considered:
+
+None beyond Option C ("Do nothing"), already rejected by the investigation per DEC-011 (confirmed defect, validated root cause, feasible remediation path — monitoring is not an acceptable primary disposition).
+
+Risk Assessment:
+
+Low. Both changes are internal to `openIDB()`/`_closeSharedIdb()`; no external call signature changes. The only new module-level state (`_idbOpenPromise`) is fully encapsulated and cleared on every exit path (success, failure, explicit close, versionchange).
+
+Disposition:
+
+Implementation Approved.
+
+---
+## Developer Implementation
+
+Date:
+
+2026-08-15
+
+Role:
+
+Developer
+
+Change Plan:
+
+1. Add a module-level `_idbOpenPromise` cache alongside `_idb`.
+2. `openIDB()`: if `_idb` is already set, resolve immediately (unchanged fast path). Otherwise, if an open request is already in flight, return the cached promise instead of issuing a new `indexedDB.open()`. Otherwise, start a new open request, cache its promise, and clear the cache on every settle path (success, error).
+3. `onversionchange` handler: capture the connection as `db` (`e.target.result`) instead of relying on the shared `_idb`; close `db` directly and only null `_idb` if it still aliases `db`; also clear `_idbOpenPromise`.
+4. `_closeSharedIdb()`: additionally clear `_idbOpenPromise`.
+5. Add regression tests to `tests/selective-reset-idb-reliability.spec.js` covering promise de-duplication, connection-owned `onversionchange`, cache clearing on open failure, and cache clearing on `_closeSharedIdb()`.
+
+Files Affected:
+
+- working.html (`openIDB()`, `_closeSharedIdb()`)
+- tests/selective-reset-idb-reliability.spec.js (4 new tests added to the existing `SELECTIVE-RESET-IDB-CLOSE` describe block)
+
+Implementation Summary:
+
+Implemented exactly as planned. No other functions were modified; `_deleteIdbDatabase`, `_clearIdbStores`, `_wipeIdbWithVerify`, `initNwImages`, `initPlans`, and all `idbPut`/`idbGet`/`planPut`/etc. callers are unchanged — they continue to `await openIDB()` and receive the same `IDBDatabase` interface as before. No unrelated refactoring was introduced.
+
+Risks:
+
+None beyond those already identified in the Developer Assessment. Verified via regression tests and full-suite QA Retest below.
+
+---
+## QA Retest
+
+Date:
+
+2026-08-15
+
+Role:
+
+QA Investigator (retest)
+
+Test Methodology:
+
+Ran the two spec files named in the investigation scope, then the same file under the `--repeat-each=5` regime the original investigation used to surface the intermittent failures, then the full repository-wide suite — all via `cd tests; npx playwright test ... --workers=1` (the documented, correct invocation).
+
+Results:
+
+- `selective-reset-idb-reliability.spec.js` (single run, `--workers=1`): 21/21 Passed (17 pre-existing + 4 new INV-008 regression tests).
+- `selective-reset-idb-reliability.spec.js` (`--repeat-each=5`, `--workers=1`, 105 runs): 105/105 Passed. This is the identical regime that previously produced 16/85 failures (three tests failing ~80% of their repetitions) during this investigation's own reproduction phase — the intermittent failure is now fully eliminated.
+- `wipe-verify.spec.js` (single run, `--workers=1`): 4/4 Passed (previously 3/4, with the happy-path test timing out at 30s inside `_wipeAllStorage(true)`).
+- Full repository-wide suite (`--workers=1`, 288 tests): 286/288 Passed. The 2 residual failures (`frozen-week-and-chart-year.spec.js`, `CHART-PERIOD-YEAR-AWARE` — "default range spans a year boundary correctly" and "resetChartRange restores full range and clears manual narrowing") were independently re-run against the unmodified baseline via `git stash` and reproduced identically (same test names, same assertion values), confirming pre-existing, date-boundary-dependent chart-range flakiness unrelated to the `openIDB()` change. `git stash pop` restored the implementation afterward.
+
+Reproduction Results:
+
+The specific `deleteDatabase blocked by another connection` failure signature that this investigation root-caused did not occur in any of the above runs, including under the repeat-each regime that previously reproduced it reliably.
+
+Recommendation:
+
+PASS. No regressions detected. Residual failures are confirmed pre-existing and out of scope, consistent with the disposition pattern already established under INV-006/INV-007.
+
+---
+## Repository Steward Review
+
+Date:
+
+2026-08-15
+
+Findings:
+
+- Scope remained limited to `working.html` (`openIDB()`, `_closeSharedIdb()`) and `tests/selective-reset-idb-reliability.spec.js` (new regression tests only), plus governance documentation updates.
+- No scope creep detected: `_deleteIdbDatabase`, `_clearIdbStores`, `_wipeIdbWithVerify`, `initNwImages`, `initPlans`, and all IDB-consuming callers were left untouched, consistent with the minimal-change principle and the Developer role's "no scope expansion" rule.
+- No unrelated modifications detected.
+- Governance documentation (`CURRENT_STATUS.md`, `KNOWN_ISSUES.md`, `.cline/bootstrap.md`, `CLAUDE.md`) updated to reflect the `Implemented — Commit / Push Required` state, consistent with Workflow A.
+
+Result:
+
+APPROVED WITH OBSERVATIONS — repository state now matches governance state; remaining action is human authorization to commit and push.
 
 ---

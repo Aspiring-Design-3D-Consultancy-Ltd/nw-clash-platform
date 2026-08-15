@@ -3429,10 +3429,22 @@ const _nwImgByTest={};      // testName -> { firstIdx, count, filenames:[] }
 let _pendingImgTest=null;   // set by the load-images modal before the folder picker fires
 /* IMG-FIX end */
 let _idb=null;
+/* INV-008 start: cached in-flight openIDB() promise. window.onload fires
+   initNwImages() and initPlans() back-to-back, both calling openIDB()
+   before either has resolved — without this cache each call issued its
+   own indexedDB.open(), producing a second, unreferenced IDBDatabase
+   connection that outlived _idb and blocked later deleteDatabase calls
+   (root cause confirmed in INV-008). Concurrent callers now share this
+   single in-flight promise instead of racing separate connections.
+   Cleared on every path that also nulls _idb (open failure, and the
+   onversionchange handler / _closeSharedIdb() below) so a stale
+   resolved/rejected promise can never be handed out after a close. */
+let _idbOpenPromise=null;
 
 function openIDB(){
-  return new Promise((res,rej)=>{
-    if(_idb)return res(_idb);
+  if(_idb)return Promise.resolve(_idb);
+  if(_idbOpenPromise)return _idbOpenPromise;
+  _idbOpenPromise=new Promise((res,rej)=>{
     /* PLAN-BG start: bump DB version 1→2 to add the 'plans' object store
        alongside 'images'. Existing image data is preserved; onupgradeneeded
        fires from any lower version up so create-only-if-missing works for
@@ -3452,7 +3464,8 @@ function openIDB(){
       /* PLAN-BG end */
     };
     req.onsuccess=e=>{
-      _idb=e.target.result;
+      const db=e.target.result;
+      _idb=db;
       /* SELECTIVE-RESET-IDB-CLOSE start: onversionchange fires whenever a
          peer connection (another tab, or a same-tab deleteDatabase /
          open-with-higher-version request) asks to change the schema.
@@ -3461,19 +3474,34 @@ function openIDB(){
          "deleteDatabase timeout" reports Shane was hitting three
          times in one session. Null-out AFTER close so the next
          openIDB() call re-opens fresh rather than handing back a
-         closed reference. */
+         closed reference.
+         INV-008 Option B fix: this handler now closes over its OWN
+         connection (`db`, captured above) instead of the shared,
+         reassignable `_idb` variable, and only clears `_idb` if it is
+         still aliasing this exact connection. Previously, if a second
+         concurrent openIDB() call had since overwritten `_idb` with a
+         different connection, firing this handler closed the wrong
+         connection (or none at all) and left the true orphan open,
+         blocking deleteDatabase indefinitely. */
       try{
-        _idb.onversionchange=function(){
-          try{_idb.close();}catch(_e){}
-          _idb=null;
+        db.onversionchange=function(){
+          try{db.close();}catch(_e){}
+          if(_idb===db)_idb=null;
+          _idbOpenPromise=null;
         };
       }catch(_e){}
       /* SELECTIVE-RESET-IDB-CLOSE end */
-      res(_idb);
+      _idbOpenPromise=null;
+      res(db);
     };
-    req.onerror=e=>rej(e.target.error);
+    req.onerror=e=>{
+      _idbOpenPromise=null;
+      rej(e.target.error);
+    };
   });
+  return _idbOpenPromise;
 }
+/* INV-008 end */
 
 async function idbPut(key,value){
   const db=await openIDB();
@@ -15678,6 +15706,10 @@ async function chgPin(){
                                  second attempt also fails to verify. */
 function _closeSharedIdb(){
   try{if(typeof _idb!=='undefined'&&_idb){try{_idb.close();}catch(e){}_idb=null;}}catch(e){}
+  /* INV-008: also drop any in-flight openIDB() promise so a caller that
+     raced this close doesn't get handed a resolved reference to the
+     connection we just closed. */
+  try{_idbOpenPromise=null;}catch(e){}
 }
 function _deleteIdbDatabase(name,timeoutMs){
   return new Promise((resolve,reject)=>{

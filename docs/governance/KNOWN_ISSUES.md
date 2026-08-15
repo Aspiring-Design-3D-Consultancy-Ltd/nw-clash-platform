@@ -375,6 +375,60 @@ The remediation has been committed, pushed, and released under INV-006.
 
 ---
 
+## KI-006
+
+Title:
+
+IndexedDB `openIDB()` Check-Then-Act Race / Wrong-Connection `onversionchange`
+
+Status:
+
+Implemented — QA Retest passed, pending Commit / Push authorization.
+
+Severity:
+
+High (confirmed to reproduce on every real page load, not just under test).
+
+Related Investigation:
+
+- INV-008
+
+Summary:
+
+`openIDB()`'s module-level `_idb` singleton had a check-then-act race: `window.onload`'s concurrent `initNwImages()`/`initPlans()` calls could both observe `_idb` as falsy and each issue their own `indexedDB.open()`, producing an orphaned second `IDBDatabase` connection. That orphan's own `onversionchange` handler closed over the shared, reassignable `_idb` variable instead of its own connection, so it never self-closed correctly when a peer requested a version change — leaving it open and blocking subsequent `deleteDatabase` calls up to the 15-second ceiling. This matched the intermittent `deleteDatabase blocked by another connection` failures previously observed (unexplained) in `selective-reset-idb-reliability.spec.js` / `wipe-verify.spec.js` under MI-002/KI-005/INV-006/INV-007.
+
+Root Cause:
+
+Check-then-act race on `_idb` (no in-flight-promise de-duplication) combined with an `onversionchange` closure that referenced the shared mutable `_idb` variable instead of the specific connection it was attached to.
+
+Approved Remediation (Option A + Option B combined, per `INVESTIGATION_LOG.md`):
+
+- Option A: `openIDB()` now caches the in-flight `indexedDB.open()` promise in a module-level `_idbOpenPromise` variable; concurrent callers before the first resolves share that single promise instead of racing separate connections. Cleared on open success, open failure, `_closeSharedIdb()`, and the `onversionchange` handler.
+- Option B: the `onversionchange` handler installed in `openIDB()`'s `req.onsuccess` now captures its own connection (`db`) and closes that connection directly, only nulling the shared `_idb` if `_idb` still aliases that exact connection.
+
+Implementation Status:
+
+✅ Completed
+
+QA Retest Status:
+
+✅ PASS — `selective-reset-idb-reliability.spec.js` (21/21, including under `--repeat-each=5` → 105/105), `wipe-verify.spec.js` (4/4), full suite (286/288 — the 2 residual failures are the pre-existing, independently-reproduced-on-baseline `frozen-week-and-chart-year.spec.js` `CHART-PERIOD-YEAR-AWARE` date-boundary flakiness, unrelated to this change).
+
+Regression Protection:
+
+Added to `tests/selective-reset-idb-reliability.spec.js`:
+
+- concurrent `openIDB()` callers de-duplicate into a single `indexedDB.open()` call and share one connection (Option A)
+- an orphaned connection's own `onversionchange` handler closes only itself, leaving a different active `_idb` untouched (Option B)
+- `openIDB()` clears the cached in-flight promise when the open request errors, allowing a fresh retry to succeed
+- `_closeSharedIdb()` clears the cached in-flight promise, not just `_idb`
+
+Outcome:
+
+The defect has been resolved and verified. Concurrent `openIDB()` callers no longer produce orphaned connections, and any connection superseded by a later one still self-closes correctly on `onversionchange`. Pending human authorization to commit and push.
+
+---
+
 # Monitoring
 
 ## MI-001
@@ -474,6 +528,7 @@ Resolved Issues:
 - KI-003 — Migration Gate / Persistence Write Divergence (Review Queue Migrations) ✅
 - KI-004 — Residual Migration Gate / Persistence Divergence (Dedup Initial Scan + Review Queue Delta Analysis Migration) ✅
 - KI-005 — Test-Harness Startup-Sequencing Race (MI-002 root cause) ✅
+- KI-006 — IndexedDB `openIDB()` Check-Then-Act Race / Wrong-Connection `onversionchange` (INV-008 root cause) ✅
 
 Monitoring Items:
 
@@ -482,8 +537,8 @@ Monitoring Items:
 
 Confirmed Issues:
 
-- IndexedDB `openIDB()` check-then-act race producing orphaned connections that block `deleteDatabase` (see INV-008 in `INVESTIGATION_LOG.md`) — root cause confirmed, remediation not yet authorized/implemented.
+None outstanding.
 
 Active Investigations:
 
-- INV-008 — IndexedDB Reset Reliability Investigation (Open — Root Cause Confirmed, stopped at Implementation Required decision gate).
+- INV-008 — IndexedDB Reset Reliability Investigation (Implemented — QA Retest passed, stopped at Commit / Push Required decision gate).
