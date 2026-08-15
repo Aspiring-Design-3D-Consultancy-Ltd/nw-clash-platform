@@ -39,11 +39,11 @@ Repository Health:
 - Governance framework committed and pushed
 - Project memory established in repository
 - No known governance gaps requiring immediate action
-- INV-002, R1, INV-005, INV-006, and INV-007 remediations committed and pushed
+- INV-002, R1, INV-005, INV-006, INV-007, and INV-008 remediations committed and pushed
 
 Current Working Tree:
 
-INV-002 (680cfd5), R1 (a0526bf), INV-005 (3f37f72), INV-006 (136c397), and INV-007 (b471e5c) remediations are committed and pushed to main.
+INV-002 (680cfd5), R1 (a0526bf), INV-005 (3f37f72), INV-006 (136c397), INV-007 (b471e5c), and INV-008 (6995a0e, merging ec6af50/326a93d/f444cfa) remediations are committed and pushed to main.
 
 ---
 
@@ -462,7 +462,13 @@ Note: a full repository-wide suite run surfaced 22 pre-existing intermittent fai
 
 ## Current Priority
 
-### INV-008 (Implemented — Pending Commit / Push Authorization)
+No active investigations.
+
+All confirmed defects identified through INV-002, R1, INV-005, INV-006, INV-007, and INV-008 have been remediated, verified, committed, pushed, and released.
+
+---
+
+### INV-008 (Closed - Released)
 
 Title:
 
@@ -470,7 +476,7 @@ IndexedDB Reset Reliability Investigation
 
 Status:
 
-Implemented. Human authorization was granted to proceed to Developer Assessment and Developer Implementation for the combined Option A + Option B remediation. QA Retest has passed (see "INV-008 Regression Coverage" below). STOPPED at the "Commit / Push Required" decision gate (WORKFLOW_ROUTING.md, Workflow A), awaiting human authorization to commit and push.
+Released / Closed. Human authorization was granted to proceed to Developer Assessment and Developer Implementation for the combined Option A + Option B remediation. QA Retest passed (see "INV-008 Regression Coverage" below). Repository Steward Review and Release Manager Review both approved. Human authorization to commit and push was subsequently granted; the remediation branch (`repo-hygiene-remove-zz-repro`, commits `f444cfa`/`326a93d`/`ec6af50`) was merged into `main` via `6995a0e` and pushed to `origin/main` (fast-forward-verified, no conflicts). Full-suite QA Retest re-run post-merge on `main`: 286/288 Passed, identical residual failures to the pre-merge QA Retest (see "Final Release Verification" below). Investigation closed.
 
 Summary:
 
@@ -489,7 +495,17 @@ Files Modified:
 
 Next Action:
 
-Human authorization required to commit and push. No further code changes should be made to `openIDB()`/`_closeSharedIdb()` under this investigation.
+None. Released. No further code changes should be made to `openIDB()`/`_closeSharedIdb()` under this investigation without opening a new investigation.
+
+Release:
+
+Commit: 6995a0e4b37c7cd499ae042e7d7e71640e3bf8ff (merge of `repo-hygiene-remove-zz-repro`, containing `f444cfa`/`326a93d`/`ec6af50`)
+
+Commit Message: "Merge branch 'repo-hygiene-remove-zz-repro' into main (INV-008 release)"
+
+Branch: main
+
+Status: Committed and pushed.
 
 ---
 
@@ -518,21 +534,44 @@ PASS
 
 ---
 
-All confirmed defects identified through INV-002, R1, INV-005, INV-006, and INV-007 have been remediated, verified, committed, pushed, and released. INV-008 has been remediated and QA-verified; commit/push authorization is outstanding.
+### INV-008 Final Release Verification
+
+Date:
+
+2026-08-15
+
+Repository State vs. Governance Records:
+
+- `main` fast-forwarded from `3a69a1b`/`origin/main` `42730ee` to include the INV-008 branch via merge commit `6995a0e`, then fast-forwarded again to `4f86e0b` (automated `chore: stamp build 6995a0e` from `.github/workflows/stamp-build.yml`).
+- Merge was clean (`git merge --no-ff repo-hygiene-remove-zz-repro`) — no conflict markers, no manual conflict resolution required.
+- `working.html` confirmed post-merge to contain the Option A (`_idbOpenPromise`) and Option B (self-closing `onversionchange`) remediation intact.
+- `git status` confirms working tree clean and `main` up to date with `origin/main` after push.
+
+QA Retest (post-merge, on `main`):
+
+- `selective-reset-idb-reliability.spec.js` + `wipe-verify.spec.js` (`--workers=1`): 25/25 Passed.
+- Full repository-wide suite (`--workers=1`, 288 tests): 286/288 Passed. The 2 residual failures (`frozen-week-and-chart-year.spec.js`, `CHART-PERIOD-YEAR-AWARE` ×2) are the same pre-existing, independently-confirmed date-boundary chart-range failures already documented under the pre-merge QA Retest — no new failures introduced by the merge.
+
+Outcome:
+
+PASS. Repository state matches governance records. Release verified.
+
+---
+
+All confirmed defects identified through INV-002, R1, INV-005, INV-006, INV-007, and INV-008 have been remediated, verified, committed, pushed, and released.
 
 Remaining Activities:
 
-- Commit and push the INV-008 remediation upon authorization.
 - Continue normal application development.
 - Monitor MI-001 (Migration Complexity).
-- Monitor MI-002 residual test-infrastructure observations (the IndexedDB-timing subset separately tracked under INV-008 has now been remediated; see KI-006).
+- Monitor MI-002 residual test-infrastructure observations (the IndexedDB-timing subset separately tracked under INV-008 has now been remediated and released; see KI-006).
 - Use real-world project workflows to identify future enhancements or defects.
 
 Repository Status:
 
 Healthy.
 
-INV-008 remediation implemented and QA-verified locally; not yet committed or pushed.
+INV-008 remediation committed, pushed, and released on `main` (commit `6995a0e`).
 
 ---
 

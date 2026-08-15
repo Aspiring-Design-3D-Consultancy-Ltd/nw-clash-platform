@@ -1198,7 +1198,7 @@ QA Investigator / Architect (combined discovery + root-cause pass)
 
 Status:
 
-Implemented — QA Retest Passed. STOPPED at "Commit / Push Required" decision gate (WORKFLOW_ROUTING.md, Workflow A). Awaiting human authorization to commit and push. (Originally: Open — Root Cause Confirmed, stopped at "Implementation Required"; authorization to proceed to Developer Assessment was subsequently granted — see Developer Assessment / Developer Implementation / QA Retest / Repository Steward Review sections below.)
+Closed - Released. (Originally: Open — Root Cause Confirmed, stopped at "Implementation Required"; authorization to proceed to Developer Assessment was subsequently granted, followed by QA Retest and Repository Steward Review, stopping at "Commit / Push Required"; human authorization to commit and push was then granted — see Developer Assessment / Developer Implementation / QA Retest / Repository Steward Review / Release Manager Review / Final Release Status sections below.)
 
 Primary Scope:
 
@@ -1455,6 +1455,93 @@ Findings:
 
 Result:
 
-APPROVED WITH OBSERVATIONS — repository state now matches governance state; remaining action is human authorization to commit and push.
+APPROVED WITH OBSERVATIONS — repository state now matches governance state; remaining action was human authorization to commit and push.
+
+---
+## Release Manager Review
+
+Date:
+
+2026-08-15
+
+Executive Summary:
+
+Implementation complete, QA-verified, approved, released, and in production.
+
+Implementation Review:
+
+Completed — Option A (in-flight `openIDB()` promise de-duplication) + Option B (self-closing `onversionchange`) applied to `working.html`'s `openIDB()`/`_closeSharedIdb()`.
+
+QA Review:
+
+PASS — 21/21 on `selective-reset-idb-reliability.spec.js` (105/105 under `--repeat-each=5`), 4/4 on `wipe-verify.spec.js`, 286/288 on the full suite (2 residual failures confirmed pre-existing and unrelated).
+
+Repository Steward Review:
+
+APPROVED WITH OBSERVATIONS.
+
+Release Risk Assessment:
+
+Low. Change is minimal and scoped to two functions (`openIDB()`, `_closeSharedIdb()`) already covered by 4 new regression tests plus the full pre-existing `selective-reset-idb-reliability.spec.js` / `wipe-verify.spec.js` coverage. No other call sites of `openIDB()` were modified.
+
+Approval Status:
+
+APPROVED
+
+Next Actions:
+
+Commit and push authorized. Human authorization subsequently granted.
+
+---
+
+## Release Verification
+
+Date:
+
+2026-08-15
+
+Repository State vs. Governance Records:
+
+- Verified `f444cfa`/`326a93d`/`ec6af50` existed and were pushed on branch `repo-hygiene-remove-zz-repro` (`origin/repo-hygiene-remove-zz-repro` identical), but `main`/`origin/main` (at `3a69a1b`/`42730ee`) did not yet contain them — a discrepancy from every prior closed investigation (INV-002/R1/INV-005/INV-006/INV-007), each of which was released via a direct commit to `main`.
+- Per DEC-007 (repository documentation is authoritative workflow state) and the Release Manager's "may block release if evidence is insufficient" rule, closure was held pending human decision on how to reconcile this discrepancy.
+- Human decision: merge `repo-hygiene-remove-zz-repro` into `main` (fast-forward `main` to `origin/main` first, then merge, then push).
+- Local `main` fast-forwarded to `origin/main` (`42730ee`), then merged with `repo-hygiene-remove-zz-repro` via `git merge --no-ff` — merge completed cleanly with no conflicts (`Auto-merging working.html`; `Merge made by the 'ort' strategy`).
+- Merge commit: `6995a0e4b37c7cd499ae042e7d7e71640e3bf8ff`.
+- Pushed to `origin/main`; CI's `stamp-build.yml` workflow then added an automatic `chore: stamp build 6995a0e` commit (`4f86e0b`), fast-forwarded into local `main`.
+- Post-merge, `git status` reports "On branch main / Your branch is up to date with 'origin/main' / nothing to commit, working tree clean" — repository state now matches governance records.
+- Confirmed `working.html` retains both the Option A (`_idbOpenPromise`) and Option B (self-closing `onversionchange`) code intact after the merge, with no conflict markers anywhere in the file.
+
+QA Retest (post-merge, on `main`):
+
+- `selective-reset-idb-reliability.spec.js` + `wipe-verify.spec.js` (`--workers=1`): 25/25 Passed.
+- Full repository-wide suite (`--workers=1`, 288 tests): 286/288 Passed. The 2 residual failures (`frozen-week-and-chart-year.spec.js`, `CHART-PERIOD-YEAR-AWARE` — "default range spans a year boundary correctly" and "resetChartRange restores full range and clears manual narrowing") are the identical pre-existing, date-boundary-dependent failures already documented in this investigation's pre-merge QA Retest — no regressions introduced by the merge.
+
+Outcome:
+
+PASS. Repository state matches governance records. Release verified.
+
+---
+
+## Final Release Status
+
+APPROVED
+
+Commit:
+
+6995a0e4b37c7cd499ae042e7d7e71640e3bf8ff
+
+Commit Message:
+
+"Merge branch 'repo-hygiene-remove-zz-repro' into main (INV-008 release)"
+
+Branch:
+
+main
+
+Status:
+
+Committed and pushed.
+
+Investigation closed.
 
 ---

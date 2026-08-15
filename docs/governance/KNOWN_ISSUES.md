@@ -383,7 +383,7 @@ IndexedDB `openIDB()` Check-Then-Act Race / Wrong-Connection `onversionchange`
 
 Status:
 
-Implemented — QA Retest passed, pending Commit / Push authorization.
+Resolved
 
 Severity:
 
@@ -425,7 +425,9 @@ Added to `tests/selective-reset-idb-reliability.spec.js`:
 
 Outcome:
 
-The defect has been resolved and verified. Concurrent `openIDB()` callers no longer produce orphaned connections, and any connection superseded by a later one still self-closes correctly on `onversionchange`. Pending human authorization to commit and push.
+The defect has been resolved and verified. Concurrent `openIDB()` callers no longer produce orphaned connections, and any connection superseded by a later one still self-closes correctly on `onversionchange`.
+
+The remediation has been committed, pushed, and released under INV-008 (commit `6995a0e`, merged into `main`).
 
 ---
 
@@ -541,4 +543,4 @@ None outstanding.
 
 Active Investigations:
 
-- INV-008 — IndexedDB Reset Reliability Investigation (Implemented — QA Retest passed, stopped at Commit / Push Required decision gate).
+None currently recorded.

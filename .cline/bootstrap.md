@@ -111,7 +111,7 @@ All work follows the governance workflow unless explicitly changed by project do
 
 Check `docs/governance/KNOWN_ISSUES.md` ("Confirmed Issues") and `docs/governance/CURRENT_STATUS.md` ("Current Priority") at session start for any investigation in the `Confirmed` workflow state (DEC-010) that is stopped at a decision gate.
 
-As of this writing: INV-008 (IndexedDB Reset Reliability Investigation) has been implemented (Option A + Option B combined) and is `Implemented — Pending QA Sign-off / Commit-Push Required` per Workflow A. QA Retest passed (see `INVESTIGATION_LOG.md`). The investigation is now stopped at the `Commit / Push Required` decision gate, awaiting human authorization to commit and push. No further code changes should be made to `openIDB()`/`_closeSharedIdb()` under this investigation without opening a new investigation.
+As of this writing: none. INV-008 (IndexedDB Reset Reliability Investigation) has been implemented (Option A + Option B combined), QA-verified, and released — commit `6995a0e` merged into `main` and pushed to `origin/main`. See `INVESTIGATION_LOG.md` / `CURRENT_STATUS.md` for the full closure record. No further code changes should be made to `openIDB()`/`_closeSharedIdb()` under this investigation without opening a new investigation.
 
 ## General Behaviour
 
