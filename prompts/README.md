@@ -114,6 +114,8 @@ architect-review
 ↓
 qa-investigation
 ↓
+environment-steward-review   (when required)
+↓
 developer-assessment
 ↓
 developer-implementation
@@ -190,7 +192,36 @@ reproduction before anyone reasons about remediation.
 `CONVERT TO MONITORING ITEM`, or `CLOSE`.
 
 **Typical next step.** `developer-assessment.md` when root cause is
-sufficiently understood.
+sufficiently understood — or `environment-steward-review.md` first, if
+environmental factors may be influencing the result.
+
+### `environment-steward-review.md`
+
+**Purpose.** Establish a trustworthy environmental baseline, and separate
+environment-caused symptoms from application defects. Covers repository
+state, toolchain, dependencies, test environment, runtime, and deployment.
+
+**When to use.** Conditional — invoke when environmental factors may
+influence outcomes: before a test-dependent stage, after a toolchain or
+dependency change, when results differ between machines, or when a failure
+may be environmental rather than a code defect. Not every investigation
+needs it.
+
+**Expected outputs.** `Executive Summary`, `Environment Summary`,
+`Repository State Review`, `Toolchain Review`, `Dependency Review`,
+`Test Environment Review`, `Runtime Environment Review`,
+`Deployment Environment Review`, `Historical Environment Review`,
+`Environment Risks`, `Findings`, and a recommendation of
+`ENVIRONMENT READY`, `ENVIRONMENT READY WITH CONDITIONS`, or
+`ENVIRONMENT REMEDIATION REQUIRED`.
+
+**Typical next step.** `developer-assessment.md` on READY; otherwise resolve
+the named conditions first.
+
+> This prompt is the reason INV-008 split cleanly in two: its
+> `test.describe()` failure was an environment/invocation issue requiring no
+> code change, while the IndexedDB race beneath it was a genuine application
+> defect. Separating the two is this stage's whole purpose.
 
 > Reported behaviour must be split into Confirmed Facts, Assumptions and
 > Unknowns, and root-cause confidence stated as High / Medium / Low. Where
