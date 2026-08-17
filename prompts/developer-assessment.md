@@ -10,17 +10,17 @@ Evaluate a confirmed issue, investigation finding, enhancement proposal, or reme
 The purpose of this assessment is to:
 
 
-- Review evidence
+- Review evidence.
 
-- Validate technical conclusions
+- Validate technical conclusions.
 
-- Evaluate remediation options
+- Evaluate remediation options.
 
-- Assess implementation risk
+- Assess implementation risk.
 
-- Define testing requirements
+- Define testing requirements.
 
-- Recommend a preferred solution
+- Recommend a preferred solution.
 
 
 This stage occurs after investigation and root-cause analysis, but before implementation.
@@ -59,7 +59,7 @@ Review:
 
 - INVESTIGATION_LOG.md
 
-- Applicable decisions (DEC-009, DEC-010, DEC-011, DEC-012)
+- Applicable Decisions (DEC-009, DEC-010, DEC-011, DEC-012)
 
 - Relevant source code
 
@@ -257,3 +257,152 @@ Classify each risk:
 
 
 ### Expected File Changes
+
+
+Identify:
+
+
+#### Application Files
+
+
+Files expected to require modification.
+
+
+#### Test Files
+
+
+Files expected to require modification.
+
+
+#### Governance Files
+
+
+Files expected to require updates.
+
+
+For each file:
+
+
+- Why it may change
+
+- Scope of expected change
+
+
+---
+
+
+### Regression Test Requirements
+
+
+Define:
+
+
+#### Existing Tests To Run
+
+
+Identify:
+
+
+- Targeted tests
+
+- Reliability tests
+
+- Related feature tests
+
+- Full-suite requirements
+
+
+#### New Tests Required
+
+
+Identify:
+
+
+- Missing coverage
+
+- New edge cases
+
+- Regression safeguards
+
+
+---
+
+
+## Deliverables
+
+
+Provide:
+
+
+### Executive Summary
+
+
+### Root Cause Confirmation
+
+
+### Options Evaluated
+
+
+### Preferred Remediation
+
+
+### Technical Rationale
+
+
+### Risk Assessment
+
+
+### Expected File Changes
+
+
+### Required Regression Tests
+
+
+### Residual Risks
+
+
+### Alternative Options Considered
+
+
+### Go / No-Go Recommendation
+
+
+Provide one of:
+
+
+#### GO
+
+
+Implementation recommended.
+
+
+or
+
+
+#### NO-GO
+
+
+Additional investigation required.
+
+
+Include supporting rationale.
+
+
+---
+
+
+## Constraints
+
+
+- Do not modify files.
+
+- Do not implement fixes.
+
+- Do not update governance records.
+
+- Do not create commits.
+
+- Assessment and recommendation only.
+
+
+The purpose of this stage is to determine the best implementation approach before development begins.
