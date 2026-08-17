@@ -112,6 +112,8 @@ project-analyst-review
 ↓
 architect-review
 ↓
+qa-investigation
+↓
 developer-assessment
 ↓
 developer-implementation
@@ -168,7 +170,32 @@ architectural constraints. The Architect does not implement.
 `Architectural Constraints`, and a recommendation of
 `APPROVED FOR DEVELOPER ASSESSMENT` or `FURTHER ANALYSIS REQUIRED`.
 
-**Typical next step.** `developer-assessment.md`.
+**Typical next step.** `qa-investigation.md`.
+
+### `qa-investigation.md`
+
+**Purpose.** Establish facts. Reproduce the issue, gather and grade evidence,
+determine scope and impact, and identify the likely root cause — without
+designing a fix.
+
+**When to use.** After Architect Review, before Developer Assessment. Also for
+a test failure, regression, monitoring escalation, or user report that needs
+reproduction before anyone reasons about remediation.
+
+**Expected outputs.** `Executive Summary`, `Reported Behaviour`,
+`Reproduction Results`, `Evidence Collected`, `Scope Assessment`,
+`Historical Analysis`, `Root Cause Analysis`, `Risk Assessment`,
+`Investigation Findings`, `Confidence Assessment`, and a recommendation of
+`PROCEED TO DEVELOPER ASSESSMENT`, `RETURN FOR ADDITIONAL INVESTIGATION`,
+`CONVERT TO MONITORING ITEM`, or `CLOSE`.
+
+**Typical next step.** `developer-assessment.md` when root cause is
+sufficiently understood.
+
+> Reported behaviour must be split into Confirmed Facts, Assumptions and
+> Unknowns, and root-cause confidence stated as High / Medium / Low. Where
+> runtime behaviour is involved, `CLAUDE.md` requires DevTools console output
+> and a Playwright reproduction — static analysis alone is insufficient.
 
 ### `developer-assessment.md`
 
