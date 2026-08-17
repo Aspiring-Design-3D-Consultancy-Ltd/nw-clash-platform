@@ -122,8 +122,16 @@ qa-retest-review
 ↓
 repository-steward-review
 ↓
-release-readiness-review
+release-manager-review
+↓
+release-snapshot-generation
+↓
+Released / Closed
 ```
+
+`release-readiness-review.md` is a shorter operational check on a single
+investigation reaching `Release Approved`. It does not replace
+`release-manager-review.md`, which is the full final governance assessment.
 
 ### `project-analyst-review.md`
 
@@ -267,8 +275,49 @@ standalone audit. Also whenever documentation is suspected of having drifted —
 `Release Risk`, `Verdict`, `Post-Release Actions`.
 
 **Typical next step.** Human authorisation at the DEC-009
-`Commit / Push Required` gate, then governance documentation updates and
-generation of the next `RS-XXX` Release Snapshot per DEC-012.
+`Commit / Push Required` gate, then `release-manager-review.md` for the full
+final assessment.
+
+### `release-manager-review.md`
+
+**Purpose.** The final governance, repository, testing and release assessment
+before a release is approved. Broader than
+`release-readiness-review.md`: it assesses every associated investigation,
+repository state, governance consistency across the five living documents,
+testing, known issues, release scope, and snapshot readiness together.
+
+**When to use.** After Repository Steward Review, as the last approval stage
+before a Release Snapshot is generated.
+
+**Expected outputs.** `Executive Summary`, `Investigation Review`,
+`Repository State Review`, `Governance Consistency Review`, `Testing Review`,
+`Known Issues Review`, `Release Scope Review`, `Risk Assessment`,
+`Outstanding Concerns`, `Release Snapshot Readiness`, and a recommendation of
+`GO`, `CONDITIONAL GO`, or `NO-GO`. Governance findings are individually
+classified Blocking / Non-Blocking / Informational.
+
+**Typical next step.** `release-snapshot-generation.md` on GO, after the
+commit and push are authorised at the DEC-009 gate.
+
+### `release-snapshot-generation.md`
+
+**Purpose.** Create the formal, immutable `RS-XXX` record capturing repository,
+governance, investigation and test state at the point of release.
+
+**When to use.** After Release Manager Review returns GO and the release is
+actually closed. Per DEC-012, do not snapshot a release still sitting at the
+`Release Approved` / `Commit / Push Required` gate.
+
+**Expected outputs.** `Executive Summary`, `Repository Facts`,
+`Investigation Facts`, `Test Facts`, `Governance Facts`,
+`Generated Release Snapshot` (ready for insertion into
+`docs/governance/RELEASE_SNAPSHOTS.md`), `Validation Results`,
+`Outstanding Concerns`, and a recommendation of `SNAPSHOT READY` or
+`SNAPSHOT BLOCKED`.
+
+**Typical next step.** Insertion of the entry as the next sequential `RS-XXX`,
+then `Released / Closed`. Snapshot generation documents a release; it never
+approves one (DEC-012 Rule 4), and prior entries are never edited (Rule 2).
 
 ---
 
