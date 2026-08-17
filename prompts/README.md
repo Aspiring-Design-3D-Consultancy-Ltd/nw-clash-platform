@@ -120,6 +120,8 @@ implementation-manager-review
 ↓
 qa-retest-review
 ↓
+investigation-closure-review
+↓
 repository-steward-review
 ↓
 release-manager-review
@@ -247,7 +249,28 @@ Review.
 `PASS - PROCEED TO REPOSITORY STEWARD REVIEW` or
 `FAIL - RETURN FOR FURTHER WORK`.
 
+**Typical next step.** `investigation-closure-review.md`.
+
+### `investigation-closure-review.md`
+
+**Purpose.** Formal closure assessment — confirm the investigation genuinely
+satisfies every requirement before it progresses toward release. Tests six
+closure criteria: root cause confirmed, fix implemented, QA passed,
+documentation complete, governance consistent, risk acceptable.
+
+**When to use.** After QA Retest Review, before Repository Steward Review.
+
+**Expected outputs.** `Executive Summary`, `Investigation Summary`,
+`Root Cause Review`, `Remediation Review`, `QA Validation Review`,
+`Governance Review`, `Residual Risks`, `Closure Criteria Assessment`,
+`Findings`, and a recommendation of
+`READY FOR REPOSITORY STEWARD REVIEW` or `RETURN FOR FURTHER WORK`.
+
 **Typical next step.** `repository-steward-review.md`.
+
+> Documentation and governance completeness are pass/fail criteria here, not
+> soft factors. An investigation whose fix is released but whose record is
+> missing fails closure.
 
 ### `repository-steward-review.md`
 
@@ -338,6 +361,63 @@ cause appears architectural rather than local.
 
 **Typical next step.** If defect risk is found, `project-analyst-review.md` to
 open formal work. Otherwise the recommendation stands as a strategic record.
+
+### `governance-consistency-audit.md`
+
+**Purpose.** Comprehensive audit of governance integrity and repository
+truthfulness — record inventory, reference validation, status consistency,
+and repository-state alignment.
+
+**When to use.** Periodically, before a release, or whenever governance
+records are suspected of having drifted from repository reality.
+
+**Expected outputs.** Eleven review sections spanning
+`Governance Record Inventory` through `Repository-State Alignment Review`,
+`Findings` classified High / Medium / Low, `Recommended Actions` marked
+Immediate / Future / No Action, and an overall health verdict of `HEALTHY`,
+`HEALTHY WITH IMPROVEMENTS RECOMMENDED`, `REMEDIATION RECOMMENDED`, or
+`GOVERNANCE INVESTIGATION RECOMMENDED`.
+
+**Typical next step.** Route findings by classification — Workflow E for
+documentation drift, Workflow F for hygiene, `project-analyst-review.md`
+for anything classified an Investigation Candidate.
+
+### `monitoring-item-review.md`
+
+**Purpose.** Determine the correct lifecycle outcome for an active Monitoring
+Item, so monitoring stays evidence-based rather than becoming indefinite.
+
+**When to use.** Periodically per open `MI-XXX`, or whenever new evidence
+touches a monitored area.
+
+**Expected outputs.** `Executive Summary`, `Monitoring Item Summary`,
+`Historical Context`, `Evidence Review`, `Risk Assessment`,
+`Trend Analysis`, `Monitoring Effectiveness Assessment`,
+`Governance Consistency Review`, `Findings`, and one of
+`CONTINUE MONITORING`, `INCREASE MONITORING`, `REDUCE MONITORING`,
+`CONVERT TO KNOWN ISSUE`, `ESCALATE TO INVESTIGATION`, or
+`CLOSE MONITORING ITEM`.
+
+**Typical next step.** `project-analyst-review.md` on escalation; otherwise a
+Workflow E documentation update recording the outcome. DEC-011 Rule 2 governs
+whether monitoring remains a valid disposition at all.
+
+### `enhancement-assessment.md`
+
+**Purpose.** Evaluate a proposed enhancement with the same discipline applied
+to defects — business value, scope, architecture, risk, testing, governance
+impact and effort.
+
+**When to use.** A feature request, usability or workflow improvement, or
+strategic initiative. Not for defect remediation: an enhancement should never
+be a disguised defect investigation.
+
+**Expected outputs.** Twelve sections from `Enhancement Definition` through
+`Effort Assessment`, closing with `PROCEED`, `DEFER`,
+`REQUIRES FURTHER ANALYSIS`, or `REJECT`.
+
+**Typical next step.** On PROCEED, `architect-review.md` then
+`developer-assessment.md` under Workflow H.
 
 ---
 
