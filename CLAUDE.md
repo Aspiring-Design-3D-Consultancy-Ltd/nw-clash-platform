@@ -12,6 +12,40 @@ This repository follows a role-based governance framework recorded in `docs/gove
 
 ---
 
+## Prompt Library
+
+Reusable governance workflow prompts are maintained in:
+
+`prompts/`
+
+For prompt selection guidance, workflow coverage, and usage information review:
+
+`prompts/README.md`
+
+Use the prompt library when performing:
+
+- Repository context establishment
+- Issue assessment
+- Investigation scoping
+- Project analysis
+- Architecture reviews
+- QA investigations
+- Developer assessments
+- Developer implementation planning
+- Implementation reviews
+- QA retest reviews
+- Investigation closure reviews
+- Environment stewardship reviews
+- Repository stewardship activities
+- Governance audits
+- Enhancement assessments
+- Release reviews
+- Release snapshot generation
+
+The prompt library provides structured workflows aligned with repository governance and should be preferred over ad-hoc review processes where an appropriate prompt exists.
+
+---
+
 ## Project at a glance
 
 - **Owner:** Shane (BIM Space Planning Manager, Exyte Ireland) — ESMC project, Muratec AMHS scope, Dresden.
