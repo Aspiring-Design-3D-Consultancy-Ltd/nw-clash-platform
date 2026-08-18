@@ -69,3 +69,57 @@ Notes:
 Documentation only. No application code changes. No `working.html` changes. No test changes. No deployment impact. No investigation opened.
 
 DEC-013 records and constrains an existing asset; it creates no new role, workflow or decision gate. DEC-009 gates, DEC-010 workflow states, DEC-011 remediation requirements and DEC-012 snapshot rules are unchanged.
+
+---
+
+### 2026-08-18
+
+Summary:
+
+Configurable Dedup Queue Proximity Threshold implemented. The hardcoded 500mm Dedup Queue distance cutoff is replaced by a user-configurable tolerance.
+
+Changes:
+
+- Modified: `working.html` — new setting `nw:dedupToleranceMm` (default 50mm, minimum 5mm, maximum 500mm), accessors `_dedupGetTolMm()` / `_dedupSetTolMm()` / `_dedupWithinTol()`, and a Settings UI control. Markers: `DEDUP-TOLERANCE-SETTING`, `DEDUP-TOLERANCE-FILTER`
+- Added: `tests/dedup-tolerance.spec.js`
+
+Applied to:
+
+- Dedup candidate generation
+- Dedup Queue rendering
+- Dedup Queue badge counts
+
+All three consume a single shared predicate so the badge count and the rendered view cannot drift.
+
+Queue behaviour:
+
+- Existing queue entries remain preserved
+- No queue migration performed
+- No review history altered
+- Hidden candidates reappear when the tolerance is increased
+
+Lowering the tolerance filters at render time only. Entries remain in `S.dedupQueue` and in `nw:dedupQueue` with their skipped, resolved, detectedAt and distMm fields intact.
+
+Testing:
+
+- Dedicated Dedup tolerance test coverage added (12 tests)
+- Boundary testing at 49mm, 50mm and 51mm — the upper bound is inclusive, so a 50mm pair is retained and a 51mm pair is not
+- Badge/view parity validation added across five tolerance steps
+- Full suite: 298 passed, 2 failed. Both failures are pre-existing `CHART-PERIOD-YEAR-AWARE` cases in `frozen-week-and-chart-year.spec.js`, reproduced on the unmodified base and unrelated to this change
+
+Impact:
+
+- Reduces review noise from implausible candidate pairs
+- Removes large-distance candidates from the visible queue using the configured tolerance
+- Improves reviewer confidence in Dedup Queue suggestions
+
+Files:
+
+- `working.html`
+- `tests/dedup-tolerance.spec.js`
+
+Notes:
+
+Application change. `DATA_VERSION` unchanged. No governance records altered. No investigation opened. `nw:dedupToleranceMm` is a protected audit key and is deliberately not wired into any Selective Reset category, matching the existing `republishToleranceMm` treatment.
+
+Reviewers holding queues generated under the previous 500mm rule will see the awaiting-review count fall on first load after deployment. Nothing is deleted; raising the tolerance restores the hidden entries.
