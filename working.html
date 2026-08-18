@@ -1431,7 +1431,10 @@ function updSB(){
        resolved orphans at render time — the two drifted (44 vs 5) until
        ORPHAN-CLEANUP + RESOLVE-PERSIST + this filter converged them. */
     const _dqAll=Array.isArray(S.dedupQueue)?S.dedupQueue:[];
-    const _dqN=_dqAll.filter(p=>p&&!p.resolved&&!p.skipped).length;
+    /* DEDUP-TOLERANCE-FILTER start: same predicate as both rDedup()
+       filters so badge and view cannot drift (see incident note above). */
+    const _dqN=_dqAll.filter(p=>p&&!p.resolved&&!p.skipped&&_dedupWithinTol(p)).length;
+    /* DEDUP-TOLERANCE-FILTER end */
     /* DEDUP-QUEUE-BADGE-FILTER end */
     _dqBadge.textContent=String(_dqN);
     if(_dqN>0)_dqBadge.removeAttribute('hidden');else _dqBadge.setAttribute('hidden','');
@@ -1839,6 +1842,55 @@ function backfillStatusHistory(){
    Settings UI surface is intentionally deferred to Step 3 of this
    feature; this block owns storage + accessors + live-reclass hook
    ONLY. */
+/* DEDUP-TOLERANCE-SETTING start: configurable Dedup Queue proximity
+   tolerance (nw:dedupToleranceMm). Mirrors the republishToleranceMm
+   pattern in SETTINGS-DESIGNED-CONDITION-PATTERNS: same clamped
+   get/set shape, same asymmetric fallback (below-min returns DEFAULT,
+   above-max returns MAX) so both millimetre tolerances behave
+   identically under invalid input.
+
+   Replaces the hardcoded 500mm cutoff in scanForDedupCandidates().
+   That value had no recorded governance rationale and surfaced
+   candidate pairs at 283-470mm that reviewers judged implausible as
+   duplicates.
+
+   _dedupWithinTol is deliberately a SHARED predicate: the badge count
+   and both rDedup() display filters must agree. DEDUP-QUEUE-BADGE-FILTER
+   records a production incident where the badge read raw .length while
+   the view filtered at render time and the two drifted (44 vs 5).
+   One definition, three consumers, no drift.
+
+   Null-safe: a pair with missing/non-numeric distMm is SHOWN, not
+   hidden — suppressing on a data gap rather than a proximity decision
+   would hide candidates for the wrong reason. */
+const _DEDUP_TOL_MIN=5;
+const _DEDUP_TOL_MAX=500;
+const _DEDUP_TOL_DEFAULT=50;
+function _dedupGetTolMm(){
+  const raw=localStorage.getItem('nw:dedupToleranceMm');
+  const v=raw==null?_DEDUP_TOL_DEFAULT:parseFloat(raw);
+  if(!isFinite(v)||v<_DEDUP_TOL_MIN)return _DEDUP_TOL_DEFAULT;
+  if(v>_DEDUP_TOL_MAX)return _DEDUP_TOL_MAX;
+  return v;
+}
+function _dedupSetTolMm(v){
+  const n=parseFloat(v);
+  if(!isFinite(n))return;
+  const clamped=Math.max(_DEDUP_TOL_MIN,Math.min(_DEDUP_TOL_MAX,n));
+  localStorage.setItem('nw:dedupToleranceMm',String(clamped));
+  /* Re-render rather than re-scan. Unlike _rqdaSetTolMm's
+     _rqdaReclassifyAll() hook, dedup has no live re-generation path:
+     scanForDedupCandidates() runs only on the one-shot dedupInitialScan
+     gate and on import. Visibility updates now; generation filtering
+     applies from the next import. */
+  try{if(typeof rDedup==='function'&&document.getElementById('v-dedup'))rDedup();}catch(_e){}
+  try{if(typeof updNav==='function')updNav();}catch(_e){}
+}
+function _dedupWithinTol(p){
+  const d=(p&&typeof p.distMm==='number'&&isFinite(p.distMm))?p.distMm:null;
+  return d===null?true:d<=_dedupGetTolMm();
+}
+/* DEDUP-TOLERANCE-SETTING end */
 const _RQDA_TOL_MIN=5;
 const _RQDA_TOL_MAX=500;
 const _RQDA_TOL_DEFAULT=25;
@@ -2011,6 +2063,20 @@ function _rqdaUiSaveTol(){
   showToast('✓ Tolerance saved · re-classified pending clashes');
   nav('settings');
 }
+/* DEDUP-TOLERANCE-SETTING start: Settings-tab handler. Validates against
+   the same 5..500 bounds the input element declares, then delegates to
+   _dedupSetTolMm which clamps, persists and re-renders. nav('settings')
+   re-renders the Settings tab so the live queue counts update in place. */
+function _dedupUiSaveTol(){
+  const el=document.getElementById('dedup-tol-mm');
+  if(!el){showToast('Dedup tolerance input not found');return;}
+  const v=parseFloat(el.value);
+  if(!isFinite(v)||v<_DEDUP_TOL_MIN||v>_DEDUP_TOL_MAX){showToast('Dedup tolerance must be '+_DEDUP_TOL_MIN+'\u2013'+_DEDUP_TOL_MAX+' mm');return;}
+  _dedupSetTolMm(v);
+  showToast('\u2713 Dedup tolerance saved \u00b7 queue visibility updated');
+  nav('settings');
+}
+/* DEDUP-TOLERANCE-SETTING end */
 function _rqdaUiToggleEnabled(idx,checked){
   const patterns=_rqdaGetPatterns();
   if(!patterns[idx])return;
@@ -7522,7 +7588,12 @@ function scanForDedupCandidates(batchUids,baselineTestNames){
         const a=list[i],b=list[j];
         const dx=a.x-b.x,dy=a.y-b.y,dz=a.z-b.z;
         const d=Math.sqrt(dx*dx+dy*dy+dz*dz);
-        if(d<=1.0||d>500)continue;
+        /* DEDUP-TOLERANCE-FILTER start: upper bound is now the configurable
+           nw:dedupToleranceMm (default 50mm) instead of a hardcoded 500.
+           Lower bound stays 1.0mm — near-identical points are the same
+           clash, not a duplicate pair, and that is out of scope here. */
+        if(d<=1.0||d>_dedupGetTolMm())continue;
+        /* DEDUP-TOLERANCE-FILTER end */
         const uidA=a.ref.uid,uidB=b.ref.uid;
         /* WEEKLY-DEDUP-SCOPE start: gate on batchUids when provided.
            A pair only surfaces if at least one side was imported this
@@ -11750,8 +11821,13 @@ function rDedup(){
      never render in either bucket — they're the audit trail only. The
      empty-state card shows only when BOTH buckets are empty; when there's
      skipped-only content the toggle button still needs to appear. */
-  const activeQueue=live.filter(p=>!p.resolved&&!p.skipped);
-  const skippedQueue=live.filter(p=>p.skipped&&!p.resolved);
+  /* DEDUP-TOLERANCE-FILTER start: hide out-of-tolerance pairs at render
+     time only. Entries stay in S.dedupQueue and in nw:dedupQueue with
+     skipped/resolved/detectedAt intact, so raising the tolerance brings
+     them straight back. Nothing is deleted and no migration runs. */
+  const activeQueue=live.filter(p=>!p.resolved&&!p.skipped&&_dedupWithinTol(p));
+  const skippedQueue=live.filter(p=>p.skipped&&!p.resolved&&_dedupWithinTol(p));
+  /* DEDUP-TOLERANCE-FILTER end */
   /* DEDUP-QUEUE-SKIP-FILTER end */
   /* DEDUP-AUDIT-LOG-VIEWER header button — hoisted above the empty-state
      branch so the "View action history" affordance is available even when
@@ -14753,6 +14829,42 @@ function rSet(){
   </div>
   <!-- SETTINGS-DESIGNED-CONDITION-PATTERNS end -->
 
+  <!-- DEDUP-TOLERANCE-SETTING start: Settings UI for nw:dedupToleranceMm.
+       Placed directly after the republish-tolerance section because the two
+       are easily confused — they are both millimetre proximity settings but
+       govern different subsystems (Review Queue delta analysis vs Dedup
+       Queue candidate pairing). Adjacency plus the explicit "not the same
+       as" note in the ibox is the mitigation.
+       Thin shell over _dedupGetTolMm / _dedupSetTolMm; the setter owns
+       re-render, this UI owns validation messaging only. -->
+  <div class="ss-sec"><div class="ss-tit">Dedup Queue proximity tolerance</div>
+    <div class="ibox" style="margin-bottom:10px">
+      Governs how close two clashes must be before the Dedup Queue offers them as a possible duplicate pair. Lower values mean fewer, tighter candidates.
+      <br><strong>Queue visibility updates immediately</strong> — existing queue entries outside the tolerance are hidden, not deleted, and reappear if you raise the tolerance again. Review decisions (Merge / Keep separate / Skip) are preserved either way.
+      <br><strong>Generation filtering applies to future imports</strong> — candidate pairs are created during import, so a lower tolerance only stops new out-of-range pairs being generated from the next import onward.
+      <br><span style="color:#64748B">Not the same as the Republish tolerance above, which governs Review Queue delta analysis.</span>
+    </div>
+    <div class="fg2" style="margin-bottom:10px;grid-template-columns:180px 1fr">
+      <div class="fg"><label>Dedup tolerance (mm)</label>
+        <input class="fi" id="dedup-tol-mm" type="number" min="5" max="500" step="1" value="${(typeof _dedupGetTolMm==='function')?_dedupGetTolMm():50}">
+        <span style="font-size:8px;color:#94A3B8">Range 5–500. Default 50.</span>
+      </div>
+      <div class="fg" style="justify-content:flex-end;align-items:flex-end">
+        <button class="btn p sm" onclick="_dedupUiSaveTol()" style="align-self:flex-end">Save tolerance</button>
+      </div>
+    </div>
+    <div style="margin-top:8px;padding:8px;background:#EFF6FF;border-left:2px solid #006BA6;border-radius:0 4px 4px 0;font-size:10px;color:#334155">
+      ${(function(){
+        const q=Array.isArray(S.dedupQueue)?S.dedupQueue:[];
+        const pending=q.filter(p=>p&&!p.resolved&&!p.skipped);
+        const shown=(typeof _dedupWithinTol==='function')?pending.filter(_dedupWithinTol).length:pending.length;
+        const hidden=pending.length-shown;
+        return `Queue: <strong>${q.length}</strong> stored · <strong>${pending.length}</strong> awaiting review · <strong>${shown}</strong> visible at current tolerance`+(hidden>0?` · <strong>${hidden}</strong> hidden (retained, not deleted)`:'');
+      })()}
+    </div>
+  </div>
+  <!-- DEDUP-TOLERANCE-SETTING end -->
+
   <!-- ── ROLE MANAGEMENT — Admin only ─────────────────────────────────── -->
   ${rRoleCard()}
 
@@ -16614,7 +16726,15 @@ async function _executeSelectiveReset(cats,modalId){
     'designedConditionPatterns',
     'designedConditionPatternsV2Seeded',
     'republishToleranceMm',
-    'reviewQueueDeltaAnalysisMigrated'
+    'reviewQueueDeltaAnalysisMigrated',
+    /* DEDUP-TOLERANCE-SETTING start: user-authored workflow config, same
+       class as republishToleranceMm above. Deliberately NOT added to any
+       category's lsKeys — resetting the Dedup Queue should clear the queue,
+       not silently revert the reviewer's tolerance to 50mm and re-expose
+       pairs they had tuned out. Protection here means a category that
+       later wires it into lsKeys still cannot destroy it. */
+    'dedupToleranceMm'
+    /* DEDUP-TOLERANCE-SETTING end */
   ];
   _protectedAuditKeys.forEach(k=>lsKill.delete(k));
   /* SELECTIVE-RESET-PROTECT-AUDIT-LOG end */
