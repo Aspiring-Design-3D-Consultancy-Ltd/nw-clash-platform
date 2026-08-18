@@ -1801,9 +1801,114 @@ repository. It does not block remediation.
 
 ---
 
+## Architect Review (2026-08-17)
+
+### System Analysis
+
+`sv()`/`lv()` (lines 968-969) are the entire localStorage abstraction, with
+no error surface in either direction. 164 `sv()` calls across 26 keys;
+`sv('clashes', ...)` alone at 42 call sites, each rewriting the whole
+register.
+
+`_appendStatusHistory()` (line 7704) carries a SCHEMA-GUARD that rejects
+malformed entries but imposes no size or count guard.
+
+**Key dependency identified:** `_platformWeeks()` (~line 1548) derives the
+chart week **axis** by scanning every `statusHistory` entry for `week` and
+`year`. The scoped chart reconstruction (~line 5696) reads
+`{week, year, status}`; when `scope == 'all'` it uses the `S.weekly`
+aggregates instead. Trimming old history entries would therefore remove
+weeks from the chart axis entirely, not merely alter counts.
+
+Precedent noted: `WK_MAX=6` with `_reportWds.slice(-WK_MAX)` (line 17039)
+shows the codebase already bounds a window in reporting — but nothing
+bounds anything in persistence.
+
+### Measured Compression Headroom
+
+The Review Queue writes a fat entry: `reviewedAt`, `reviewedInBatch`,
+`source`, `status`, `matchedPattern`, `week`, `year`. The charts read only
+`{week, year, status}`.
+
+| Entry shape | Bytes | At 14 entries/clash, 2,253 clashes |
+|---|---|---|
+| Fat (Review Queue) | 147 | **5.98 MB — over quota** |
+| Lean (chart requirement) | 43 | **2.85 MB — under quota** |
+
+71% reduction per entry. At 20 entries/clash: 7.87 MB fat vs 3.40 MB lean.
+
+Audit metadata is riding inside a structure the charts read on every
+render. Separating the two roughly doubles headroom with no loss of
+function.
+
+### Options Evaluated
+
+- **A - Surface write failure.** `sv()` returns success, logs, raises a
+  persistent warning. Low-Medium complexity. Necessary but **not
+  sufficient**: a user at quota sees a warning and still cannot save.
+- **B - Cap/trim statusHistory.** **Rejected.** Removes weeks from the
+  chart axis via the `_platformWeeks()` dependency, degrading the
+  STATUS-HIST feature.
+- **C - Separate audit metadata from chart data.** Retain
+  `{week, year, status}`; relocate or drop the audit fields. Medium
+  complexity. Recovers the headroom B would have bought, without the loss.
+- **D - Migrate register to IndexedDB.** **Rejected for this defect.**
+  Requires `openIDB('NWClashImages', 3)`, reopening INV-008, and converts
+  42 synchronous call sites to async on the hottest path.
+- **E - Delta writes.** **Rejected as disproportionate.** Restructures
+  persistence semantics across 42 call sites.
+
+### Preferred Architecture
+
+**Option A + Option C.** They address the two distinct defects the QA
+Investigation separated: A makes failure visible, C removes the condition
+causing it. Neither alone suffices — A leaves the user stuck at a visible
+dead end, C leaves the next ceiling silent.
+
+### Data Impact
+
+Data-loss risk is **High** — the fix for a data-loss defect itself carries
+migration risk, and migrations are this repository's most defect-prone area
+(MI-001; three investigations). A pre-migration JSON backup is mandatory,
+mirroring the existing `PAIR-ID-BACKFILL` pre-backfill backup.
+
+### Architectural Constraints (binding on implementation)
+
+1. `sv()`'s signature must remain backward-compatible — 164 callers ignore
+   the return value today.
+2. `statusHistory` must retain `{week, year, status}` on every entry.
+3. Audit fields must be migrated, not discarded, unless Developer
+   Assessment proves nothing reads them.
+4. A pre-migration JSON backup is mandatory.
+5. Any migration gate must use the INV-003/005/006 pattern — throwing write
+   before gate flag, same try block.
+6. `openIDB()` / `_closeSharedIdb()` remain out of scope.
+7. `DATA_VERSION` must not be bumped.
+8. Marker discipline; the file stands at 192/192 balanced.
+9. No new persistence layer.
+10. Failure UX must not auto-dismiss. `showToast` is `pointer-events:none`
+    with a 2-second lifetime — inadequate for a message requiring action.
+
+### Architect Decision
+
+**APPROVED FOR DEVELOPER ASSESSMENT**, preferred architecture A + C.
+
+Three questions flagged for Developer Assessment to test hardest:
+
+1. Does anything read `reviewedAt`, `source`, `matchedPattern` or
+   `reviewedInBatch`? This determines whether C is a compression or a
+   restructure.
+2. Is a migration warranted at all? New entries could adopt the lean shape
+   while existing fat entries are left untouched — no migration, no
+   migration risk, headroom recovered gradually.
+3. What is the live register's actual size today? All figures here are
+   measured against a synthetic 2,253-clash register.
+
+---
+
 ## Next Action
 
-**PROCEED TO DEVELOPER ASSESSMENT** via Architect review, per Workflow A.
+**PROCEED TO DEVELOPER ASSESSMENT** per Workflow A.
 
 Per DEC-011, this investigation is now in the `Confirmed` state with a
 reproducible defect, a validated root cause and a feasible remediation
