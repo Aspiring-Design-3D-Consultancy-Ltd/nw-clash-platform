@@ -1743,23 +1743,101 @@ function _weekYearCmp(a,b){
   if(a.week!==b.week)return a.week<b.week?-1:1;
   return 0;
 }
-function pushStatusHistory(c,status,wkYr){
+/* STATUS-PROVENANCE start: INV-010 C1. Records WHO wrote each
+   statusHistory entry so an automated writer can be told apart from a
+   human one.
+
+   Shape: a single-character `s` key on the entry, present ONLY on
+   import-written entries.
+
+     {week, year, status}          -> human, backfilled, or legacy
+     {week, year, status, s:'i'}   -> import-derived
+
+   Two values, not four. Nothing in C1 or C2 needs to distinguish a
+   register dropdown from a Review Queue action from a backfill — all
+   three sit on the protected side of the rule. The Review Queue and
+   Approve audit entries already carry a fuller `source` field if the
+   finer distinction is ever wanted.
+
+   ABSENT MEANS PROTECTED. That inversion is deliberate and is what
+   removes the migration: the ~2,253 existing clashes carry no `s` key,
+   so they are treated as human-set and protected from the first load,
+   with no gate, no backfill and no one-shot migration. It also fails
+   closed, per Architect Constraint 4.
+
+   Only automated writers pass an origin — two call sites, both marked
+   STATUS-PROVENANCE below. Cost is 8 bytes per import-written entry
+   (43 -> 51 serialised); human entries are unchanged at 43. */
+const _SH_ORIGIN_IMPORT='i';
+function pushStatusHistory(c,status,wkYr,origin){
   if(!c)return;
   if(!Array.isArray(c.statusHistory))c.statusHistory=[];
   const wy=wkYr||_weekYearNow();
   const last=c.statusHistory[c.statusHistory.length-1];
   // De-dupe consecutive same-status entries within same week
-  if(last&&last.week===wy.week&&last.year===wy.year&&last.status===status)return;
-  // Same-week status change: replace last entry rather than append
-  if(last&&last.week===wy.week&&last.year===wy.year){
-    last.status=status;return;
+  if(last&&last.week===wy.week&&last.year===wy.year&&last.status===status){
+    /* A human re-affirming a value an import wrote is not a no-op for
+       provenance even though it is one for status: clear the marker so
+       the entry reads as human-set. Nothing is appended and no status
+       changes, so the de-dupe contract is unaffected. */
+    if(origin!==_SH_ORIGIN_IMPORT&&last.s===_SH_ORIGIN_IMPORT)delete last.s;
+    return;
   }
+  /* STATUS-PROVENANCE-GUARD start: INV-010 C2. Stops an automated
+     writer replacing a human-written same-week entry in place.
+
+     The pre-C2 code below read `last.status=status` unconditionally.
+     INV-010 reproduced the consequence: a clash approved in W28 and
+     re-imported in W28 had its {W28, Approved} entry rewritten to
+     {W28, New}, so clashStatusAt(28,2026) reported "New" and the
+     approval left no trace anywhere. Same-week collisions are the
+     NORMAL case, not the corner case — importToRegister() derives the
+     week from the batch's weekDate, which lands in the same ISO week
+     as that week's review activity.
+
+     Three cases when the incoming write falls in the last entry's week:
+
+       human writer                -> replace, exactly as before. If the
+                                      entry it replaces was import-written,
+                                      clear the marker: it is now human-set.
+       import over its OWN entry   -> replace. An import correcting its
+                                      own prior value is not a conflict,
+                                      and replacing caps the growth that
+                                      appending every week would cause
+                                      (INV-009 measured the ceiling at 14
+                                      entries/clash on the production
+                                      register).
+       import over a human/legacy  -> APPEND. The human decision is kept.
+                                      This is the whole of C2.
+
+     SCOPE, stated plainly: this preserves the evidence, it does not
+     restore reporting. clashStatusAt() keeps the LAST entry at or before
+     the target week, so with {W28,Approved} then {W28,New} it still
+     returns "New". No chart, export or Review Queue display changes.
+     Correcting that is C3/C4. See INV-010 "What C1 + C2 Do Not Fix".
+
+     The de-dupe branch above is deliberately NOT gated on origin —
+     it fires only when the status already matches, so it destroys
+     nothing, and bypassing it would append identical entries on every
+     repeat import for zero information. */
+  if(last&&last.week===wy.week&&last.year===wy.year){
+    const _lastFromImport=(last.s===_SH_ORIGIN_IMPORT);
+    if(origin!==_SH_ORIGIN_IMPORT){
+      last.status=status;
+      if(_lastFromImport)delete last.s;
+      return;
+    }
+    if(_lastFromImport){last.status=status;return;}
+    // automated writer over a human or legacy entry: fall through to append
+  }
+  /* STATUS-PROVENANCE-GUARD end */
   /* PR-0-SCHEMA-GUARD: route the primary status stamp through the
-     schema-guard helper. De-dupe / same-week-replace above are
+     schema-guard helper. The de-dupe / same-week-replace paths above are
      in-place mutations of an existing entry — they don't push, so
      they legitimately bypass the guard. */
-  _appendStatusHistory(c,{week:wy.week,year:wy.year,status:status});
+  _appendStatusHistory(c,{week:wy.week,year:wy.year,status:status},origin);
 }
+/* STATUS-PROVENANCE end */
 function clashStatusAt(c,week,year){
   // Status of clash c at the END of (year, week). Returns null if clash didn't
   // exist yet (no history entry at or before that point).
@@ -7772,7 +7850,7 @@ function _appendDedupAuditEvent(evt){
    preventing — fix the call site if a required field is missing;
    never relax the guard. Located near _appendDedupAuditEvent to
    mirror the established audit-helper naming pattern. */
-function _appendStatusHistory(clash,entry){
+function _appendStatusHistory(clash,entry,origin){
   if(typeof entry!=='object'||entry===null){
     console.error('[SCHEMA-GUARD] _appendStatusHistory rejected non-object entry:',entry);
     return;
@@ -7786,6 +7864,15 @@ function _appendStatusHistory(clash,entry){
     return;
   }
   if(!Array.isArray(clash.statusHistory))clash.statusHistory=[];
+  /* STATUS-PROVENANCE start: single stamping point, per Architect
+     Constraint 3 as refined at Implementation Manager Review. Origin is
+     supplied by the caller because only the caller knows its own
+     identity; normalisation lives here so the rule exists in one place
+     rather than at each of the ten writers. Human callers pass nothing
+     and the key stays absent — see the accessor block above for why
+     absent means protected. */
+  if(origin===_SH_ORIGIN_IMPORT&&entry.s===undefined)entry.s=_SH_ORIGIN_IMPORT;
+  /* STATUS-PROVENANCE end */
   clash.statusHistory.push(entry);
 }
 /* PR-0-SCHEMA-GUARD end */
@@ -9488,7 +9575,11 @@ function _xtResolveSkip(modalId, mode){
       try {
         var wy = (typeof _weekYearFromISO === 'function' && _weekYearFromISO(c.weekDate)) ||
                  (typeof _weekYearNow === 'function' && _weekYearNow()) || null;
-        if(wy && typeof pushStatusHistory === 'function') pushStatusHistory(ex, c.mappedSt, wy);
+        /* STATUS-PROVENANCE start: automated writer — the status value
+           originates in the XML, not in the user's click. The user chose
+           which records to import, not what status they hold. */
+        if(wy && typeof pushStatusHistory === 'function') pushStatusHistory(ex, c.mappedSt, wy, _SH_ORIGIN_IMPORT);
+        /* STATUS-PROVENANCE end */
       } catch(e){}
       ex.status = c.mappedSt;
     }
@@ -10049,7 +10140,10 @@ function importToRegister(mode){
          (_xtResolveSkip) below. */
       if(stChanged){
         const wy=_weekYearFromISO(c.weekDate)||_weekYearNow();
-        pushStatusHistory(exist,c.mappedSt,wy);
+        /* STATUS-PROVENANCE start: automated writer — Navisworks-mapped
+           status arriving through the import merge loop. */
+        pushStatusHistory(exist,c.mappedSt,wy,_SH_ORIGIN_IMPORT);
+        /* STATUS-PROVENANCE end */
       }
       /* PR-03-CLOCK2-STATUS-TRANSITIONS end */
       exist.status=c.mappedSt;// NW is the authoritative source for clash status
