@@ -532,11 +532,22 @@ functions and two call sites, **no migration**, no `DATA_VERSION` change,
 no reader affected. NO-GO on the C2-first split, which would accelerate
 INV-009 quota exhaustion.
 
+Implementation Manager Result:
+
+CONDITIONAL GO on C1 + C2, five conditions. Decisions recorded:
+`_xtResolveSkip()` classified AUTOMATED; provenance architecture APPROVED
+with Architect Constraint 3 confirmed as refined; implementation order
+INV-010 C1 + C2 before INV-009 Option C. The review found and corrected one
+error in the Developer Assessment — see the scope note below. Conditions 1
+to 4 are applied in the INVESTIGATION_LOG.md record; condition 5 (pre-change
+JSON backup and pre-edit verification) is an implementation-stage
+obligation.
+
 Next Action:
 
-Implementation Manager review, then the DEC-009 `Implementation Required`
-decision gate (a human decision gate). DEC-011 applies: monitoring is not
-an acceptable primary recommendation.
+**Held at the DEC-009 `Implementation Required` decision gate.** All five
+Workflow B stages are complete. The gate is a human decision gate. DEC-011
+applies: monitoring is not an acceptable primary recommendation.
 
 Severity:
 
@@ -550,9 +561,28 @@ same-week imports continue to erase the evidence of approval. Nothing in
 the current build warns the user. Recording this investigation is not a
 mitigation.
 
-Note on scope: C1 + C2 stop the history falsification. **They do not stop
-the current-status overwrite** — that is C3. Any release note must say so
-plainly.
+Note on scope (corrected 2026-08-18 by the Implementation Manager Review):
+
+C1 + C2 **preserve historical evidence but do not change current historical
+reporting behaviour.** Verified by probe:
+
+- Approved entries survive in `statusHistory`, so automated overwrites
+  become recoverable rather than destroyed.
+- `clashStatusAt()` still returns the latest same-week value — `New`, not
+  `Approved`.
+- There is no user-facing render of the full `statusHistory` array anywhere
+  in `working.html`, so the preserved entry is not surfaced.
+- Charts, PPTX / PDF / CSV reporting, the current-status overwrite, the
+  `Approved` to `New` reset, and status ownership conflicts all remain
+  C3 / C4 scope.
+
+C1 + C2 convert irreversible erasure into recoverable-but-unsurfaced
+history. That is the one INV-010 harm with no workaround. It is not a
+reporting fix and must not be released as one.
+
+Interim mitigation available now: a JSON backup before each weekly import,
+using the existing `JSON-BACKUP-RESTORE` capability. No code change
+required.
 
 ---
 

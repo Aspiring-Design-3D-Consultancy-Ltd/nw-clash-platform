@@ -2068,7 +2068,7 @@ Roles Completed:
 - QA Investigator ✅ (2026-08-18)
 - Architect ✅ (2026-08-18)
 - Developer Assessment ✅ (2026-08-18)
-- Implementation Manager — pending
+- Implementation Manager ✅ (2026-08-18) — CONDITIONAL GO on C1 + C2
 
 Note on stage order: as with INV-009, QA Investigation was executed before
 the Architect Review, transposing stages 2 and 3 of the sequence recorded
@@ -2619,22 +2619,137 @@ expands.
 
 **Explicitly out of scope:** lines 10055, 9493 and 6332 — the current-status
 writes. Those are C3. **After C1 + C2 ship, imports still reset reviewed
-status.** What changes is that the reversal becomes visible and permanent
-in history instead of erasing the prior decision. The release note must say
-so in plain terms.
+status.** What changes is that the prior decision is recorded and retained
+rather than destroyed. It is not surfaced anywhere in the UI and it does not
+change what the charts report — see "Scope Correction" below. The release
+note must say so in plain terms.
+
+### Scope Correction (Implementation Manager Review, 2026-08-18)
+
+The Implementation Manager Review verified this assessment's claims against
+`working.html` and found one wrong. The correction is recorded here rather
+than left in the reviewing stage, because under DEC-007 this record is the
+specification implementation will be written against.
+
+**Verified finding:** C1 + C2 **preserve historical evidence but do not
+change current historical reporting behaviour.**
+
+`clashStatusAt()` walks the array and keeps the *last* entry at or before
+the target week:
+
+```js
+for(const e of hist){
+  if(_weekYearCmp({week:e.week,year:e.year},target)<=0)result=e.status;
+  else break;
+}
+```
+
+With the post-C2 array shape — the human `{W28, Approved}` entry preserved
+and the import's `{W28, New}` entry appended — the probe returns:
+
+```json
+{ "clashStatusAt_W28": "New",
+  "rqLastStatusChange": "W28 2026 · New",
+  "platformWeeks": ["2026W27", "2026W28"] }
+```
+
+Explicitly, after C1 + C2:
+
+- **Approved entries survive in `statusHistory`.** The entry is present in
+  memory, in `nw:clashes`, and in a JSON export.
+- **Automated overwrites become recoverable.** The prior decision can be
+  read back, audited and restored. Before C1 + C2 it was destroyed.
+- **`clashStatusAt()` still returns the latest same-week value** — `New`,
+  not `Approved`.
+- **Charts and reporting remain C3 / C4 scope.** No chart, no PPTX / PDF /
+  CSV export and no Review Queue display changes as a result of C1 + C2.
+
+A further constraint on the benefit, verified in the same review: there is
+**no user-facing render of the full `statusHistory` array anywhere in
+`working.html`.** The only surfaces are `_rqLastStatusChange()` (last entry
+only) and the charts via `clashStatusAt()`. Both report `New`.
+
+C1 + C2 therefore convert **irreversible erasure** into
+**recoverable-but-unsurfaced history**. That is the one INV-010 harm with no
+workaround, and it is worth fixing — but it is not a reporting fix, and must
+not be released as one.
+
+`_platformWeeks()` is confirmed unaffected: the duplicate week is
+deduplicated into a single axis entry.
+
+### De-dupe branch retained (Implementation Manager Review, 2026-08-18)
+
+`pushStatusHistory()` has two same-week branches, and only the second is in
+scope for C2:
+
+```js
+if(last&&last.week===wy.week&&last.year===wy.year&&last.status===status)return;  // de-dupe — no-op
+if(last&&last.week===wy.week&&last.year===wy.year){last.status=status;return;}   // replace — destructive
+```
+
+This assessment originally described automated writers as appending
+unconditionally, which would have bypassed both. **The de-dupe branch
+destroys nothing** — it fires only when the incoming status already matches
+the last entry — and must be **retained for all writers**, automated
+included. Bypassing it would append identical entries on every repeat
+import, spending INV-009 quota headroom for zero information.
+
+### Marker names
+
+- **C1:** `STATUS-PROVENANCE`
+- **C2:** `STATUS-PROVENANCE-GUARD`
+
+Both verified unused in `working.html`. The earlier working name for C2
+shared a prefix with the existing `STATUS-HIST` inline comment tag; the
+CLAUDE.md balance check appends ` start` / ` end` so the two would not have
+collided under that command, but a looser grep would have matched both.
+
+### What C1 + C2 Do Not Fix
+
+| Not fixed | Scope |
+|---|---|
+| Current status overwrite on import | C3 |
+| Import resetting `Approved` to `New` | C3 |
+| Historical chart interpretation | C3 / C4 |
+| Reporting based on `clashStatusAt()` | C3 / C4 |
+| Status ownership conflicts | C3 / C4 |
+
+**These remain C3 / C4 scope.** After C1 + C2 ship, every import still
+resets reviewed status, the charts still report the import's value for the
+affected week, and no conflict is surfaced to the coordinator. What changes
+is that the prior decision is no longer destroyed.
+
+Any release note for C1 + C2 must state this in plain terms. A reader who
+takes "INV-010 remediation shipped" to mean "imports no longer reset
+reviewed status" will be wrong.
 
 ### Testing
 
-New spec `tests/status-provenance.spec.js`, 12 tests: human same-week
-replace unchanged; human same-week same-status de-dupe unchanged; human
-cross-week append unchanged; **import in the same ISO week as a human
-approval appends rather than overwrites**; **`clashStatusAt()` still returns
-`Approved` for the approval week after that import**; provenance present on
-import entries and absent on human entries; import replacing its own
-same-week entry does not grow history; `_xtResolveSkip` stamps and appends;
-legacy entries never replaced by an automated writer; schema guard still
-rejects malformed entries with provenance present; `_platformWeeks()` axis
-unchanged; JSON round-trip preserves provenance.
+New spec `tests/status-provenance.spec.js`, **13 tests**:
+
+| # | Test |
+|---|---|
+| 1 | Human same-week status change replaces the last entry (unchanged behaviour) |
+| 2 | Human same-week same-status is de-duped (unchanged behaviour) |
+| 3 | Human cross-week change appends (unchanged behaviour) |
+| 4 | Import in the same ISO week as a human approval **appends** rather than overwriting |
+| 5 | **Corrected — see note below.** After that import: the original `Approved` entry remains present in `statusHistory`; the imported `New` entry is appended; `clashStatusAt(week, year)` still returns `New` |
+| 6 | Import-written entries carry provenance; human-written entries do not |
+| 7 | Import replacing its own same-week entry does not grow history (the C1 cap) |
+| 8 | **New — de-dupe.** Automated writer, same week, same status: **must de-dupe rather than append** |
+| 9 | `_xtResolveSkip` path stamps provenance and appends |
+| 10 | Legacy entries with no provenance are never replaced by an automated writer |
+| 11 | `_appendStatusHistory` still rejects missing `status` / `week` / `year` with provenance present |
+| 12 | `_platformWeeks()` axis unchanged by the extra key and the duplicate week |
+| 13 | JSON export to restore round-trip preserves provenance |
+
+**Note on Test #5.** The `clashStatusAt()` assertion returns `New`, not
+`Approved`. **This is intentional and documents current behaviour.** C1 + C2
+preserve the approval entry in the array; they do not change how
+`clashStatusAt()` selects among same-week entries. Correcting historical
+reporting is C3 / C4 scope. The assertion is written explicitly, rather than
+omitted, so that a future reader cannot infer from its absence that
+reporting was fixed.
 
 Existing specs assessed, not assumed:
 
@@ -2666,6 +2781,96 @@ Three items for the Implementation Manager:
 2. Confirm the refinement to Architect Constraint 3 — the constraint as
    written is not literally satisfiable.
 3. Confirm ordering with INV-009 Option C — C1 + C2 first.
+
+---
+
+## Implementation Manager Review (2026-08-18)
+
+Scope: C1 + C2 only. C3 and C4 not reviewed.
+
+### Decisions
+
+| # | Decision | Outcome |
+|---|---|---|
+| 1 | `_xtResolveSkip()` classification | **AUTOMATED** |
+| 2 | Provenance architecture | **APPROVED** |
+| 3 | Implementation order | **INV-010 C1 + C2 before INV-009 Option C** |
+
+**Decision 1 rationale.** The human's click in the cross-test modal is a
+decision about which records to import, not about what status they hold.
+Three supporting points: the written value originates in the XML and is
+never shown to or alterable by the user; the guard at line 9493
+(`if(ex.status !== c.mappedSt)`) is a change gate, not a consent gate, and
+cannot distinguish agreement from difference; and the sibling handler
+`_xtResolveKeepAll()` writes no status at all, which establishes that the
+modal's semantic is record selection rather than status assignment.
+Classifying it `HUMAN` would grant an XML-sourced value the protection
+reserved for human decisions and let it pass the C3 gate unchallenged.
+
+**Decision 2 rationale.** Provenance-keyed rather than value-keyed is
+correct: a coordinator who deliberately returns a clash to `Active` has made
+a decision as real as an approval, and a value-keyed rule would leave it
+unprotected while pointlessly protecting a `Reviewed` that an earlier import
+wrote. Two provenance values rather than four is right — nothing in C1 or C2
+reads the finer distinction. Architect Constraint 3 is confirmed as refined:
+as literally written it is not satisfiable, because only the caller knows
+its own identity. An ambient module-level "current writer" variable was
+considered and **rejected** — implicit global state across a path with early
+returns is a worse defect than the one being fixed.
+
+**Decision 3 rationale.** C1 requires no migration and INV-009 Option C
+does; sequencing the migration-free change first means the migration is
+authored once against the final entry shape rather than written, invalidated
+and re-reasoned (the MI-001 pattern). INV-010 is `Critical` against INV-009's
+`High`, and INV-010's harm is irreversible where INV-009's is at least
+visible on the next load. The corollary — C1 and C2 ship together — is
+upheld.
+
+### Findings
+
+1. **Developer Assessment test #5 was wrong.** It asserted `clashStatusAt()`
+   would return `Approved` for the approval week after C1 + C2. Verified by
+   probe: it returns `New`. Corrected in the Developer Assessment record
+   above.
+2. **The de-dupe branch was not addressed** and must be retained for
+   automated writers. Corrected above.
+3. **Marker name prefix collision** with the existing `STATUS-HIST` inline
+   tag. Corrected above.
+4. Claims verified and upheld: six readers consume only
+   `{week, year, status}`; `_platformWeeks()` unaffected by the duplicate
+   week; `pr03` specs unaffected; ten writers with two automated; no
+   migration required; the ~14-line estimate is plausible.
+5. **JSON restore dedupe consequence recorded, not fixed.** The cross-test
+   merge at line 9585 dedupes on `year:week:status`, so a human
+   `{W28, New}` and an import `{W28, New, provenance}` share a key and one
+   is dropped. Informationally harmless — same week, same status — but
+   provenance is not guaranteed to survive a cross-test merge.
+
+### Conditions
+
+| # | Condition | Status |
+|---|---|---|
+| 1 | Rewrite test #5 to assert entry survival and `clashStatusAt() === "New"` | **Applied** — Testing section above |
+| 2 | Retain the de-dupe branch; add the automated same-week same-status test | **Applied** — Testing section, test 8 |
+| 3 | Correct the scope statement in this record before implementation | **Applied** — Scope Correction section above |
+| 4 | Use `STATUS-PROVENANCE` and `STATUS-PROVENANCE-GUARD` | **Applied** — Marker names section above |
+| 5 | Pre-change JSON backup and standard pre-edit verification | Outstanding — for the implementation stage |
+
+### Outcome
+
+**CONDITIONAL GO** on C1 + C2. Conditions 1 to 4 are applied in this record
+as of 2026-08-18. Condition 5 is an implementation-stage obligation.
+
+This review does not authorise implementation. INV-010 remains at the
+DEC-009 `Implementation Required` decision gate, which is a human decision
+gate.
+
+### Interim mitigation available now
+
+C1 + C2 do not stop imports resetting reviewed status, and C3 is not yet
+assessed. The practical interim mitigation is a JSON backup taken before
+each weekly import, using the existing `JSON-BACKUP-RESTORE` capability. It
+requires no code change and is available today.
 
 ---
 
@@ -2704,10 +2909,15 @@ Out of scope unless evidence redirects:
 
 ## Next Action
 
-**PROCEED TO IMPLEMENTATION MANAGER REVIEW** for C1 + C2 per Workflow B.
+**HELD AT THE DEC-009 `Implementation Required` DECISION GATE.**
 
-Investigation stops at the DEC-009 `Implementation Required` decision gate,
-which is a human decision gate. No stage output authorises implementation.
+All five Workflow B stages are complete. The Implementation Manager Review
+returned CONDITIONAL GO on C1 + C2; conditions 1 to 4 are applied in this
+record and condition 5 is an implementation-stage obligation.
+
+The gate is a human decision gate. No stage output authorises
+implementation, and per DEC-013 Rule 4 only `developer-implementation.md`
+may modify the repository, after the gate.
 
 Per DEC-011, this investigation is in the `Confirmed` state with a
 reproducible defect, a validated root cause and a feasible remediation
