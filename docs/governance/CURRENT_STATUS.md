@@ -462,7 +462,49 @@ Note: a full repository-wide suite run surfaced 22 pre-existing intermittent fai
 
 ## Current Priority
 
-No active investigations.
+### INV-009 (Under Investigation)
+
+Title:
+
+Silent Persistence Write Failure
+
+Status:
+
+Under Investigation (DEC-010 State 2). Opened 2026-08-17 from the
+"Session Persistence and Crash Recovery" Enhancement Assessment.
+
+Workflow:
+
+Workflow A (Persistence Defect).
+
+Summary:
+
+`sv()` (working.html line 968) discards every write failure via a trailing
+`catch(e){}`. Quota, serialisation and storage errors are all swallowed:
+the UI updates, the user believes the change persisted, and nothing reached
+storage. This is the defect class remediated under INV-003, INV-005 and
+INV-006, but only at three one-shot migration gate sites; ordinary user
+edits still route through the swallowing helper.
+
+Static analysis measured two amplifying factors: whole-register writes at
+42 `sv('clashes')` call sites, and an unbounded `statusHistory` with no cap
+or trim anywhere in the file. A 2,253-clash register (the production size
+recorded in the PR-0-RESOLVE-STAMP comment) serialises to 1.59 MB at two
+history entries per clash and 4.64 MB at twelve, against a typical ~5 MB
+Chrome/Edge localStorage quota.
+
+Next Action:
+
+Architect review, then QA Investigation to obtain runtime evidence. Per
+CLAUDE.md, DevTools console output and a Playwright reproduction are
+required before any fix is proposed. Investigation stops at the DEC-009
+`Implementation Required` decision gate.
+
+Severity:
+
+Provisional High, pending runtime confirmation.
+
+---
 
 All confirmed defects identified through INV-002, R1, INV-005, INV-006, INV-007, and INV-008 have been remediated, verified, committed, pushed, and released.
 

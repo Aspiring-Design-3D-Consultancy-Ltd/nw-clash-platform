@@ -517,7 +517,47 @@ None currently recorded.
 
 # Under Investigation
 
-None currently recorded.
+## INV-009
+
+Title:
+
+Silent Persistence Write Failure
+
+Status:
+
+Under Investigation
+
+Severity:
+
+Provisional High (pending runtime confirmation)
+
+Opened:
+
+2026-08-17
+
+Related Records:
+
+- Enhancement Assessment — "Session Persistence and Crash Recovery" (origin)
+- INV-003, INV-005, INV-006 (same defect class, remediated at gate sites only)
+- MI-001 (Migration Complexity — related persistence risk area)
+
+Summary:
+
+`sv()` swallows every persistence write failure via a trailing `catch(e){}`.
+A failed write leaves the UI showing a change that never reached storage,
+surfacing as apparent data loss on the next load.
+
+Static analysis established two amplifying factors: the entire clash
+register is rewritten on every field edit (42 call sites), and
+`statusHistory` grows without any cap. A production-size register
+(2,253 clashes) measures 1.59 MB at two history entries per clash and
+4.64 MB at twelve, against a typical ~5 MB localStorage quota.
+
+Outstanding:
+
+Runtime evidence. No reproduction has been performed and no user report
+exists in any governance record. The mechanism is established by code
+inspection; its occurrence in practice is not yet confirmed.
 
 ---
 
@@ -543,4 +583,4 @@ None outstanding.
 
 Active Investigations:
 
-None currently recorded.
+- INV-009 — Silent Persistence Write Failure (Under Investigation)

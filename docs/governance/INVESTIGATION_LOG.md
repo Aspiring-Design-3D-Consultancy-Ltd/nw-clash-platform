@@ -1545,3 +1545,170 @@ Committed and pushed.
 Investigation closed.
 
 ---
+# INV-009: Silent Persistence Write Failure
+
+Date:
+
+2026-08-17
+
+Status:
+
+Under Investigation (DEC-010 State 2)
+
+Source:
+
+Enhancement Assessment — "Session Persistence and Crash Recovery" (2026-08-17). The enhancement as requested was found to address a failure mode that does not exist; this investigation was opened for the mechanism that does.
+
+Workflow:
+
+Workflow A (Persistence Defect) per WORKFLOW_ROUTING.md.
+
+Roles Completed:
+
+- Project Analyst (via Enhancement Assessment intake) ✅
+- Architect — pending
+- QA Investigator — pending
+- Developer Assessment — pending
+- Implementation Manager — pending
+
+---
+
+## Origin
+
+A "Session Persistence and Crash Recovery" enhancement was assessed on
+2026-08-17. It proposed auto-save, manual save, and crash recovery to
+prevent work being lost when the application crashes "before all state
+changes have been persisted."
+
+Assessment found no such window exists. The application is fully
+synchronous write-through:
+
+- `sv()` (working.html line 968) calls `localStorage.setItem` directly,
+  which is synchronous and blocking.
+- 164 `sv()` call sites plus 28 direct `localStorage.setItem` calls.
+- Zero deferred-save machinery: 0 `setTimeout`-wrapped saves, 0 dirty
+  flags, 0 `beforeunload` handlers, 0 `visibilitychange` handlers.
+- Mutation functions persist inline. `uf()` (line 7008) writes
+  `sv('clashes', S.clashes)` in the same statement that mutates the field.
+
+Auto-save cannot improve on synchronous write-through, and crash recovery
+has nothing to recover. The enhancement was returned as REQUIRES FURTHER
+ANALYSIS, with this investigation opened in its place.
+
+---
+
+## Suspected Defect
+
+`sv()` in full:
+
+```js
+function sv(k,v){try{localStorage.setItem('nw:'+k,JSON.stringify(v));}catch(e){}}
+```
+
+The trailing `catch(e){}` discards every write failure — quota exceeded,
+serialisation error, storage disabled. No toast, no console warning, no
+retry, no return value. The UI updates, the user believes the change was
+saved, and nothing reached storage. The loss becomes visible only on the
+next load, at which point a user would reasonably attribute it to a crash.
+
+`lv()` on the same line has the symmetric problem on read: a parse failure
+silently returns the default, which for `clashes` is an empty register.
+
+This is the defect class already remediated under INV-003, INV-005 and
+INV-006 — but only at three one-shot migration gate sites, where a gate
+flag could diverge from its data. Ordinary user edits still route through
+the swallowing helper. INV-006's Architect explicitly scoped `sv()` out
+because it is called from many contexts where error tolerance may be
+intentional. That scoping was correct for INV-006 and leaves this gap open.
+
+---
+
+## Quota Exposure (static analysis, 2026-08-17)
+
+Two amplifying factors were measured.
+
+**1. Whole-register writes.** `sv('clashes', S.clashes)` appears at 42 call
+sites. Every single-field edit re-serialises and rewrites the entire clash
+register as one JSON blob.
+
+**2. Unbounded statusHistory.** `_appendStatusHistory()` (line 7704) appends
+per status change. There is no cap, trim or rotation anywhere in the file
+(0 occurrences of `statusHistory.slice` or a length guard). Review Queue
+actions append the fatter entry shape carrying `reviewedAt`, `source` and
+`matchedPattern`.
+
+Serialised size of a representative clash record, measured:
+
+| statusHistory entries | Per clash | At 2,253 clashes |
+|---|---|---|
+| 2 | 739 bytes | 1.59 MB |
+| 12 | 2,158 bytes | 4.64 MB |
+
+2,253 is the production register size recorded in the PR-0-RESOLVE-STAMP
+comment (working.html ~line 11053, 17-Jul-2026 audit).
+
+Typical Chrome/Edge localStorage quota is approximately 5 MB per origin.
+`nw:clashes` is one of 26 distinct `sv()` keys plus 13 direct-write keys;
+`weekly`, `dedupQueue`, `dedupActionHistory` and the audit logs consume
+further headroom.
+
+The register therefore grows toward the quota ceiling as a function of
+review activity, and `sv()` is silent at the moment it is crossed.
+
+---
+
+## Open Questions
+
+Runtime evidence is required before root cause can be confirmed. Per
+CLAUDE.md, DevTools console output and a Playwright reproduction are
+mandatory before any fix is proposed; static analysis alone is
+insufficient.
+
+1. Is `sv()` failing in practice? Requires a console session against a
+   production-size register.
+2. What is the actual current serialised size of all `nw:*` keys combined,
+   against the browser's real quota?
+3. Has any reported "crash loss" in fact been silent write failure? No user
+   report exists in any governance record; the risk is currently theorised,
+   not observed.
+
+---
+
+## Severity Assessment (provisional)
+
+Provisional High, pending confirmation. The failure is silent, affects the
+primary persistence path for all user work, and its trigger grows
+monotonically with normal use. Provisional because no runtime reproduction
+has yet been performed.
+
+---
+
+## Scope Boundaries (provisional)
+
+In scope:
+
+- `sv()` / `lv()` failure visibility (working.html line 968-969)
+
+Out of scope unless evidence redirects:
+
+- `openIDB()` / `_closeSharedIdb()` — closed under INV-008; not to be
+  changed without a new investigation
+- The three remediated gate sites (INV-003 / INV-005 / INV-006)
+- Reducing write volume at the 42 `sv('clashes')` call sites — a separate
+  architectural question, noted as Option F in the Enhancement Assessment
+- `DATA_VERSION` — must not be bumped
+
+---
+
+## Next Action
+
+Architect review, then QA Investigation to obtain the runtime evidence
+named in Open Questions. Investigation stops at the DEC-009
+`Implementation Required` decision gate.
+
+Per DEC-011, if this investigation reaches the `Confirmed` state with a
+reproducible defect, validated root cause and feasible remediation path,
+`Do Nothing`, `Monitor Only` and `Accept the Risk` are not acceptable
+primary recommendations.
+
+---
