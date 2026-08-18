@@ -514,9 +514,22 @@ Implemented. Human authorization was granted to proceed with the INV-007 remedia
 ## INV-009 — Silent Persistence Write Failure
 
 Confirmed 2026-08-17. High severity. See the "Under Investigation" section
-above for the full record and INVESTIGATION_LOG.md for probe evidence.
-Awaiting Architect review and Developer Assessment at the DEC-009
-`Implementation Required` decision gate.
+below for the full record and INVESTIGATION_LOG.md for probe evidence.
+QA Investigation, Architect Review and Developer Assessment are complete
+(2026-08-17 / 2026-08-18). Awaiting Implementation Manager review, then the
+DEC-009 `Implementation Required` decision gate.
+
+---
+
+## INV-010 — Import Overwrites Reviewed Clash Status
+
+Confirmed 2026-08-18. **Critical** severity. See the "Under Investigation"
+section below for the full record and INVESTIGATION_LOG.md for probe
+evidence. QA Investigation, Architect Review and Developer Assessment are
+complete (2026-08-18). Awaiting Implementation Manager review, then the
+DEC-009 `Implementation Required` decision gate.
+
+First use of the `Critical` severity tier defined in WORKFLOW_TEMPLATES.md.
 
 ---
 
@@ -575,6 +588,84 @@ repository and does not block remediation.
 
 ---
 
+## INV-010
+
+Title:
+
+Import Overwrites Reviewed Clash Status
+
+Status:
+
+Confirmed
+
+Severity:
+
+Critical (confirmed by runtime reproduction 2026-08-18)
+
+Opened:
+
+2026-08-18
+
+Workflow:
+
+Workflow B (Application Defect)
+
+Related Records:
+
+- Project Analyst Review — "Status Persistence Failure and Save Capability Assessment" (origin)
+- INV-009 (independent defect producing the same user-facing symptom)
+- MI-001 (Migration Complexity — relevant to remediation risk)
+
+Summary:
+
+Every append-mode import overwrites `status` on every matched clash with
+the Navisworks-mapped value, unconditionally and with no warning. The
+behaviour is intentional and documented in the code at `working.html:9781`
+and `:10055`, on the assumption that Navisworks status is authoritative.
+That assumption is false for this deployment: the platform exists to manage
+review status outside Navisworks, and Navisworks is not updated with the
+outcome.
+
+Where the import lands in the same ISO week as the review activity —
+the normal case, since the import week is derived from the batch date —
+`pushStatusHistory()` rewrites the existing history entry in place. The
+approval is then absent from current status, from history, and from
+everything `clashStatusAt()` reports.
+
+Runtime Evidence:
+
+Reproduced 2026-08-18. Across all 35 register-status x XML-status
+combinations, **28 overwrite the register**; only the seven where both
+already agreed survive. Deterministic across three identical runs. A clash
+approved in W28 and re-imported in W28 reports
+`clashStatusAt(28, 2026) === "New"` — the register asserts the clash was
+never approved. Three overwrite
+paths exist (`importToRegister()`, `_xtResolveSkip()`, BCF import); two are
+reproduced. `PAIR-KEY-COORD-TIER` isolated as a sufficient independent
+trigger at 0 / 0.5 / 0.99 mm with a clean negative control at 1.01 / 5 mm.
+Full probe evidence in INVESTIGATION_LOG.md (INV-010).
+
+Classification:
+
+Latent design defect — confirmed. Regression — unproven and untestable from
+this repository: `working.html` entered version control at `8a93b74`
+(2026-07-31) already containing both the overwrite and the coordinate
+match tier.
+
+Outstanding:
+
+Historical extent in the production register, and whether user-reported
+losses were this defect, INV-009, or both. Neither is answerable from the
+repository.
+
+Standing Exposure:
+
+Unmitigated. Every import continues to reset reviewed statuses, and
+same-week imports continue to erase the evidence of approval. Nothing in
+the current build warns the user.
+
+---
+
 # Summary
 
 Resolved Issues:
@@ -594,7 +685,15 @@ Monitoring Items:
 Confirmed Issues:
 
 - INV-009 — Silent Persistence Write Failure (High, awaiting remediation)
+- INV-010 — Import Overwrites Reviewed Clash Status (Critical, awaiting remediation)
 
 Active Investigations:
 
-- INV-009 — Silent Persistence Write Failure (Under Investigation)
+- INV-009 — Silent Persistence Write Failure (Confirmed, DEC-010 State 3)
+- INV-010 — Import Overwrites Reviewed Clash Status (Confirmed, DEC-010 State 3)
+
+Note: both entries above previously read "Under Investigation" for INV-009,
+which contradicted the `Confirmed` state recorded elsewhere in this document
+and in INVESTIGATION_LOG.md. Corrected 2026-08-18. `Confirmed Issues` lists
+severity; `Active Investigations` lists DEC-010 workflow state. The two are
+different fields and both apply.

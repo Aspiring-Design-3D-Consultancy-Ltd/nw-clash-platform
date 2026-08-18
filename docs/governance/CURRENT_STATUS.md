@@ -31,19 +31,26 @@ The governance framework has been validated through execution of real-world inve
 
 Current Branch:
 
-main
+`claude/governance-review-xjrgfm` (20 commits ahead of `main`; not merged)
 
 Repository Health:
 
 - Repository healthy
 - Governance framework committed and pushed
 - Project memory established in repository
-- No known governance gaps requiring immediate action
-- INV-002, R1, INV-005, INV-006, INV-007, and INV-008 remediations committed and pushed
+- INV-002, R1, INV-005, INV-006, INV-007, and INV-008 remediations committed and pushed to `main`
+- Two confirmed defects outstanding and unremediated: INV-009 (High) and INV-010 (Critical)
+
+Known Governance Gaps:
+
+- Stage-order divergence: WORKFLOW_ROUTING.md specifies Architect (stage 2) before QA Investigator (stage 3). INV-009 and INV-010 both executed QA before Architect, because the Architect Review depended on runtime evidence the QA stage produced. Twice is practice, not accident. Recorded, not resolved — amending the sanctioned workflow is a decision-level change and cannot be made by a workflow stage.
+- DEC-014 (Clash Status Ownership Model) is recommended by the INV-010 Architect Review and not yet raised. It is required before INV-010 C3, not before C1 + C2.
 
 Current Working Tree:
 
-INV-002 (680cfd5), R1 (a0526bf), INV-005 (3f37f72), INV-006 (136c397), INV-007 (b471e5c), and INV-008 (6995a0e, merging ec6af50/326a93d/f444cfa) remediations are committed and pushed to main.
+INV-002 (680cfd5), R1 (a0526bf), INV-005 (3f37f72), INV-006 (136c397), INV-007 (b471e5c), and INV-008 (6995a0e, merging ec6af50/326a93d/f444cfa) remediations are committed and pushed to `main`.
+
+Work on `claude/governance-review-xjrgfm` not yet merged to `main`: the prompt library and DEC-013, the configurable Dedup Queue proximity threshold (b19a676), and governance records for INV-009 and INV-010. Merge to `main` is a separate DEC-009 decision gate.
 
 ---
 
@@ -462,6 +469,93 @@ Note: a full repository-wide suite run surfaced 22 pre-existing intermittent fai
 
 ## Current Priority
 
+Two confirmed defects are open at the DEC-009 `Implementation Required`
+decision gate. Both produce the same user-facing symptom — clash statuses
+reverting to older values — by independent mechanisms, and a user cannot
+distinguish them.
+
+Recommended order: **INV-010 C1 + C2 first**, then INV-009 Option A + C.
+Both touch `statusHistory`; INV-010 C1 requires no migration while INV-009
+Option C does, so authoring the migration once, knowing the provenance key
+exists, avoids two passes over the same array (the MI-001 pattern).
+
+### INV-010 (Confirmed — Critical)
+
+Title:
+
+Import Overwrites Reviewed Clash Status
+
+Status:
+
+Confirmed (DEC-010 State 3). Opened 2026-08-18 from the Project Analyst
+Review "Status Persistence Failure and Save Capability Assessment";
+reproduced end-to-end the same day.
+
+Workflow:
+
+Workflow B (Application Defect).
+
+Summary:
+
+Every append-mode import overwrites `status` on every matched clash with
+the Navisworks-mapped value, unconditionally. The behaviour is intentional
+and documented in the code (`working.html:9781`, `:10055`) on the
+assumption that Navisworks status is authoritative — an assumption
+falsified by this deployment, in which review status is maintained on the
+platform and never written back to Navisworks.
+
+Where the import lands in the same ISO week as the review activity — the
+normal case, since the import week derives from the batch date —
+`pushStatusHistory()` rewrites the history entry in place, so the approval
+disappears from current status, from history, and from `clashStatusAt()`.
+
+QA Investigation Result:
+
+Reproduced. 28 of 35 register-status x XML-status combinations overwrite
+the register; deterministic across three runs. A clash approved in W28 and
+re-imported in W28 reports `clashStatusAt(28, 2026) === "New"`. Three
+overwrite paths exist; two are reproduced. `PAIR-KEY-COORD-TIER` isolated
+as a sufficient independent trigger with a clean negative control. Full
+probe evidence in INVESTIGATION_LOG.md (INV-010).
+
+Architect Result:
+
+Option C (conditional ownership, keyed on provenance rather than status
+value), routed through the existing Review Queue. Decomposed C1-C4;
+C1 + C2 approved for Developer Assessment. Fifteen architectural
+constraints recorded.
+
+Developer Assessment Result:
+
+GO on C1 + C2 implemented together — approximately 14 lines across three
+functions and two call sites, **no migration**, no `DATA_VERSION` change,
+no reader affected. NO-GO on the C2-first split, which would accelerate
+INV-009 quota exhaustion.
+
+Next Action:
+
+Implementation Manager review, then the DEC-009 `Implementation Required`
+decision gate (a human decision gate). DEC-011 applies: monitoring is not
+an acceptable primary recommendation.
+
+Severity:
+
+Critical (confirmed). First use of the `Critical` tier defined in
+WORKFLOW_TEMPLATES.md.
+
+Standing Exposure:
+
+Unmitigated. Every import continues to reset reviewed statuses, and
+same-week imports continue to erase the evidence of approval. Nothing in
+the current build warns the user. Recording this investigation is not a
+mitigation.
+
+Note on scope: C1 + C2 stop the history falsification. **They do not stop
+the current-status overwrite** — that is C3. Any release note must say so
+plainly.
+
+---
+
 ### INV-009 (Confirmed)
 
 Title:
@@ -505,11 +599,27 @@ Every status change and every Review Queue action appends one entry, and
 `statusHistory` has no cap anywhere in the file. Full probe evidence in
 INVESTIGATION_LOG.md (INV-009).
 
+Architect Result:
+
+Preferred architecture Option A (surface write failure) + Option C
+(separate audit metadata from chart data). Option B (cap/trim
+`statusHistory`) rejected — it would remove weeks from the chart axis via
+the `_platformWeeks()` dependency.
+
+Developer Assessment Result:
+
+GO on Option A. GO on Option C with a scope correction: proceed without a
+migration, and budget for four spec rewrites. All eight `statusHistory`
+audit fields are write-only in the application but asserted by four spec
+files. The Approve entry measures 288 bytes, not the 147 the Architect
+Review assumed — an approval-heavy register reaches the quota ceiling
+roughly twice as fast as the headroom table predicts.
+
 Next Action:
 
-Architect review, then Developer Assessment, per Workflow A. Investigation
-stops at the DEC-009 `Implementation Required` decision gate. DEC-011
-applies: monitoring is not an acceptable primary recommendation.
+Implementation Manager review, then the DEC-009 `Implementation Required`
+decision gate (a human decision gate). Sequenced after INV-010 C1 + C2.
+DEC-011 applies: monitoring is not an acceptable primary recommendation.
 
 Severity:
 
@@ -613,11 +723,14 @@ PASS. Repository state matches governance records. Release verified.
 
 All confirmed defects identified through INV-002, R1, INV-005, INV-006, INV-007, and INV-008 have been remediated, verified, committed, pushed, and released.
 
+INV-009 and INV-010 are confirmed and **not** remediated. Both are held at the DEC-009 `Implementation Required` decision gate awaiting Implementation Manager review and human authorization.
+
 Remaining Activities:
 
 - Continue normal application development.
 - Monitor MI-001 (Migration Complexity).
 - Monitor MI-002 residual test-infrastructure observations (the IndexedDB-timing subset separately tracked under INV-008 has now been remediated and released; see KI-006).
+- Progress INV-010 (Critical) and INV-009 (High) through Implementation Manager review to the DEC-009 `Implementation Required` decision gate.
 - Use real-world project workflows to identify future enhancements or defects.
 
 Repository Status:

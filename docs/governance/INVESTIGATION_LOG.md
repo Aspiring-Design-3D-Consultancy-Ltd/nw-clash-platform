@@ -1566,10 +1566,16 @@ Workflow A (Persistence Defect) per WORKFLOW_ROUTING.md.
 Roles Completed:
 
 - Project Analyst (via Enhancement Assessment intake) ✅
-- Architect — pending
-- QA Investigator — pending
-- Developer Assessment — pending
+- QA Investigator ✅ (2026-08-17)
+- Architect ✅ (2026-08-17)
+- Developer Assessment ✅ (2026-08-18)
 - Implementation Manager — pending
+
+Note on stage order: QA Investigation was executed before the Architect
+Review, transposing stages 2 and 3 of the Workflow A sequence recorded in
+WORKFLOW_ROUTING.md. The Architect Review depended on the runtime evidence
+the QA stage produced. This divergence is recorded, not resolved — see the
+Repository Steward observation in CURRENT_STATUS.md.
 
 ---
 
@@ -1906,22 +1912,811 @@ Three questions flagged for Developer Assessment to test hardest:
 
 ---
 
+## Developer Assessment (2026-08-18)
+
+Answers the three questions the Architect Review flagged, and corrects one
+of its measurements.
+
+### Q1 — Does anything read the audit fields?
+
+Exhaustive search of `working.html`, excluding the minified library blobs:
+
+| `statusHistory` field | Readers in `working.html` |
+|---|---|
+| `reviewedAt` | 0 |
+| `source` | 0 |
+| `matchedPattern` | 0 |
+| `reviewedInBatch` | 0 |
+| `approvedAt` | 0 |
+| `actor` | 0 |
+| `reviewedAtBatchDate` | 0 |
+| `reviewedStillOpen` (entry field) | 0 |
+
+**All eight are write-only in the application.** One precision that matters:
+`c.reviewedStillOpen` — the *clash-level flag* — IS read (line 10398).
+The `statusHistory` *entry field* of the same name is not. Removing the
+entry field does not touch the flag.
+
+Every reader of `statusHistory` consumes only `{week, year, status}`:
+`_platformWeeks()` (1557), `clashStatusAt()` (1766), `clashExistsAt()`
+(1779), the scoped chart reconstruction (5763, 5852),
+`_rqLastStatusChange()` (10768), and the JSON restore merge (9586).
+
+**But four spec files assert the audit fields:**
+`approve-action-clash-register.spec.js`, `approve-terminal-and-audit.spec.js`
+and `review-queue-bulk-delta-approve-source.spec.js` (all on `h.approvedAt`),
+and `review-queue.spec.js` (on `h.source`).
+
+Option C is therefore a **compression in the application and a contract
+change in the test suite**. The four specs require rewriting, not deleting —
+the behaviour they guard is real; only the storage location changes.
+
+### Q2 — Is a migration warranted at all?
+
+No, and the Architect Review's own alternative is the better path: new
+entries adopt the lean shape while existing entries are left untouched. No
+migration, no migration risk, headroom recovered as the register turns over.
+This avoids MI-001 entirely, which is the repository's most defect-prone
+area across three prior investigations.
+
+### Q3 — Actual register size
+
+Not answerable from the repository. All figures remain synthetic against a
+2,253-clash register. Re-measurement against the live register is required
+before implementation.
+
+### Correction to the Architect Review's headroom table
+
+The Architect Review measured the fat entry at **147 bytes** using the
+Review Queue shape. Re-measured against both fat shapes actually written:
+
+| Entry shape | Bytes | `statusHistory` at 14 entries x 2,253 clashes |
+|---|---|---|
+| Lean `{week, year, status}` | 43 | 1.29 MB |
+| Review Queue Resolve (line 11136) | 180 | 5.41 MB |
+| **Approve (line 11253)** | **288** | **8.66 MB** |
+
+The Approve entry carries nine fields including two full ISO timestamps and
+the actor name. It is **96% larger** than the 147-byte figure the Architect
+Review assumed.
+
+**Consequence:** an approval-heavy register reaches the quota ceiling
+roughly twice as fast as the Architect Review's headroom table predicts.
+Option C's benefit is correspondingly larger than assessed, and so is the
+urgency.
+
+### Assessment
+
+- **Option A — GO.** Surface write failure. Unchanged from the Architect's
+  assessment.
+- **Option C — GO, with scope correction.** Proceed without a migration
+  (Q2), and budget for four spec rewrites (Q1) that the Architect Review
+  did not account for.
+
+### Sequencing dependency (added 2026-08-18)
+
+INV-010 C1 adds a provenance key to `statusHistory` entries; INV-009
+Option C reshapes the same entries. Two passes over the same array is the
+MI-001 pattern.
+
+Because INV-010 C1 requires **no migration** and Option C requires a shape
+change, the low-risk order is:
+
+1. INV-010 C1 + C2 (additive, no migration)
+2. INV-009 Option C (subtractive, spec rewrites), authored knowing the
+   provenance key exists
+
+The two shapes are compatible — `{week, year, status, s:'i'}` satisfies
+Architectural Constraint 2 — so this is an ordering constraint, not a
+conflict.
+
+---
+
 ## Next Action
 
-**PROCEED TO DEVELOPER ASSESSMENT** per Workflow A.
+**PROCEED TO IMPLEMENTATION MANAGER REVIEW** per Workflow A.
 
-Per DEC-011, this investigation is now in the `Confirmed` state with a
+Developer Assessment is complete (2026-08-18). Preferred architecture
+remains Option A + Option C, with Option C proceeding without a migration
+and carrying four spec rewrites.
+
+Implementation is sequenced after INV-010 C1 + C2 — see the Sequencing
+dependency above.
+
+No fix is designed here — the QA Investigator role does not design
+solutions, and the Developer Assessment stage does not authorise
+implementation. Investigation stops at the DEC-009
+`Implementation Required` decision gate, which is a human decision gate.
+
+Per DEC-011, this investigation is in the `Confirmed` state with a
 reproducible defect, a validated root cause and a feasible remediation
 path, so `Do Nothing`, `Monitor Only` and `Accept the Risk` are not
 acceptable primary recommendations.
 
-No fix is designed here — the QA Investigator role does not design
-solutions. Investigation stops at the DEC-009 `Implementation Required`
-decision gate.
+---
 
-Per DEC-011, if this investigation reaches the `Confirmed` state with a
-reproducible defect, validated root cause and feasible remediation path,
-`Do Nothing`, `Monitor Only` and `Accept the Risk` are not acceptable
-primary recommendations.
+# INV-010: Import Overwrites Reviewed Clash Status
+
+Date:
+
+2026-08-18
+
+Status:
+
+Confirmed (DEC-010 State 3) — reproduced end-to-end 2026-08-18.
+
+Severity:
+
+Critical (confirmed).
+
+Source:
+
+Project Analyst Review — "Status Persistence Failure and Save Capability
+Assessment" (2026-08-18), raised from user reports that clash status
+changes were not persisting reliably across close/reopen.
+
+Workflow:
+
+Workflow B (Application Defect) per WORKFLOW_ROUTING.md. The defect lives
+in `importToRegister()`'s merge logic, not in the persistence layer.
+INV-009 owns the persistence layer; keeping the two in separate workflows
+preserves the scope boundary each investigation declared.
+
+Roles Completed:
+
+- Project Analyst ✅ (2026-08-18)
+- QA Investigator ✅ (2026-08-18)
+- Architect ✅ (2026-08-18)
+- Developer Assessment ✅ (2026-08-18)
+- Implementation Manager — pending
+
+Note on stage order: as with INV-009, QA Investigation was executed before
+the Architect Review, transposing stages 2 and 3 of the sequence recorded
+in WORKFLOW_ROUTING.md. Recorded, not resolved.
+
+---
+
+## Origin
+
+Users reported that clash statuses changed during normal use had reverted
+to older values after closing and reopening the application, and that
+nothing indicated whether a change had been persisted.
+
+The Project Analyst Review found two independent mechanisms producing that
+symptom: INV-009 (silent write failure at quota) and an unrelated import
+overwrite. This investigation covers the second. The two are not
+alternatives — both are live, and a user cannot distinguish them.
+
+The review also assessed the "Save Now / Last Saved / save verification /
+persistence-health warning / recovery" capability set proposed alongside
+the report. Save Now and Last Saved were rejected as addressing no
+identified defect under synchronous write-through; save verification and
+persistence-health warning are INV-009 Option A and belong there; recovery
+already exists as `JSON-BACKUP-RESTORE`. No enhancement was opened.
+
+---
+
+## Confirmed Defect
+
+`working.html:10055`, inside the `importToRegister()` append-mode merge
+loop:
+
+```js
+exist.status=c.mappedSt;// NW is the authoritative source for clash status
+```
+
+Every append-mode import overwrites `status` on every matched clash with
+the Navisworks-mapped value. There is no comparison, no precedence rule, no
+warning, and no undo.
+
+The behaviour is intentional and documented twice in the file — at line
+9781, "Once the register has any clashes, subsequent imports trust NW
+statuses as the authoritative source", and inline at the assignment above.
+
+`mapNWSt()` returns `'New'` for any unrecognised or absent
+`<resultstatus>`, so a malformed or partial export is indistinguishable
+from a register of genuinely new clashes.
+
+---
+
+## QA Investigation — Runtime Evidence (2026-08-18)
+
+Method: Node scripts driving Playwright/Chromium directly against
+`working.html`, bypassing the spec files — the technique established under
+INV-008 and INV-009. No application file and no spec file was modified.
+
+### Probe A — status matrix
+
+Register status (rows) against the Navisworks `<resultstatus>` in the
+re-import (columns). `*` marks a changed register value.
+
+| register \ XML | new | active | reviewed | approved | resolved | absent | unknown |
+|---|---|---|---|---|---|---|---|
+| New | New | Active* | Reviewed* | Approved* | Resolved* | New | New |
+| Active | New* | Active | Reviewed* | Approved* | Resolved* | New* | New* |
+| Reviewed | New* | Active* | Reviewed | Approved* | Resolved* | New* | New* |
+| Approved | New* | Active* | Reviewed* | Approved | Resolved* | New* | New* |
+| Resolved | New* | Active* | Reviewed* | Approved* | Resolved | New* | New* |
+
+**28 of 35 combinations overwrite the register.** The only survivors are the
+seven where the two values already agreed. All five statuses are affected,
+in both directions — `New` to `Approved` fires as readily as `Approved` to
+`New`. The register is a mirror of the last XML, not a review record.
+
+### Probe B — statusHistory rewrite
+
+Seeded: `status: 'Approved'`, history `[{W27,New},{W28,Approved}]`.
+
+Import landing in the **same** ISO week as the approval (W28):
+
+```
+hist:  [{W27,New},{W28,New}]
+status: New
+clashStatusAt(28,2026): "New"
+```
+
+The approval entry was rewritten in place. The register now asserts the
+clash was `New` in the week a human approved it. No orphan, no tombstone,
+nothing to detect it by.
+
+Import landing in a **later** week (W29):
+
+```
+hist:  [{W27,New},{W28,Approved},{W29,New}]
+clashStatusAt(28,2026): "Approved"
+clashStatusAt(29,2026): "New"
+```
+
+History is preserved and the reversal is legible as a transition.
+
+The mutation is `pushStatusHistory()` lines 1752-1756:
+
+```js
+if(last&&last.week===wy.week&&last.year===wy.year&&last.status===status)return;
+if(last&&last.week===wy.week&&last.year===wy.year){last.status=status;return;}
+```
+
+`importToRegister()` derives the week from the batch's `weekDate`, so a
+weekly import routinely lands in the same ISO week as that week's review
+activity. **The same-week collision is the normal case, not the corner
+case.**
+
+### Probe C — field delta
+
+```json
+{ "status":     {"before":"Approved",     "after":"New"},
+  "nwImageRef": {"before":"cd000148.jpg", "after":""} }
+```
+
+`priority`, `assignedTo`, `notes`, `date`, `penetration` and coordinates
+were all preserved, exactly as the code comment promises. `status` is the
+only user-workflow field written unconditionally.
+
+`exist.nwImageRef=c.nwImageRef||''` (line 10078) is also unconditional and
+blanks a stored image reference when the incoming clash carries none. Same
+defect shape, different field, impact not assessed — recorded here, out of
+scope for this investigation.
+
+### Probe D — PAIR-KEY-COORD-TIER isolated
+
+Constructed so the ID, composite and legacy `pairKey()` tiers all miss (no
+element IDs; element strings and `nwOrig` deliberately different), leaving
+only the 1.0 mm coordinate fall-through:
+
+| Coordinate shift | Register length | Original's status | `pairIdSource` |
+|---|---|---|---|
+| 0.00 mm | 1 | New | `coord` |
+| 0.50 mm | 1 | New | `coord` |
+| 0.99 mm | 1 | New | `coord` |
+| 1.01 mm | 2 | **Approved** | — |
+| 5.00 mm | 2 | **Approved** | — |
+
+`pairIdSource: 'coord'` proves which tier fired. Below the threshold the
+coord tier matches and destroys the approval; above it, no match — the
+reviewed record survives and a second record is inserted.
+
+**Exposure mechanism, stated precisely:** every widening of `pairKey()`
+converts clashes that previously *inserted alongside* the reviewed record
+into clashes that *overwrite* it.
+
+An earlier probe attempt failed to isolate the coord tier — the
+**composite** tier (sourceA + sourceB + elementA + elementB) matched first.
+That is itself a finding: exposure is already broad without the coord tier,
+because any clash whose element strings and source models are stable across
+exports matches and is overwritten, element IDs or not.
+
+### Probe E — determinism
+
+Three identical runs, three identical results. No timing, no race, no
+ordering dependency. The overwrite is an unconditional assignment on a code
+path with no branch that can avoid it.
+
+### Probe F — second overwrite path
+
+`_xtResolveSkip()` (line 9493) reproduced independently: `Approved` to
+`New`, history `[{W28,New}]`, storage `New`.
+
+---
+
+## Reproduction Conditions
+
+Required:
+
+- `mode === 'append'`
+- Register non-empty (`isFirstImport` forces `'New'` on a fresh register)
+- `testName` already known (`DUP-FILES-FIX` forces `'New'` for first-time
+  test names)
+- Incoming clash matches an existing one via any `pairKey()` tier — the
+  sole gate
+- XML status differs from register status
+
+Not required:
+
+- Quota headroom or any storage condition. Orthogonal to INV-009.
+- Any user action beyond running the weekly import.
+
+---
+
+## Overwrite Paths
+
+Three, not two:
+
+| # | Site | Function | Guard | Reproduced |
+|---|---|---|---|---|
+| 1 | 10055 | `importToRegister()` merge loop | none | Yes |
+| 2 | 9493 | `_xtResolveSkip()` | change-detection only | Yes |
+| 3 | 6332 | `showBCFImportPanel()` BCF ingest | change-detection only | No |
+
+Path 3 was identified by code read and not probed. Its map includes
+`'Closed':'Resolved'` and `'ResolvedWontFix':'Approved'`, and it matches on
+UID-in-title plus fuzzy name inclusion — a looser match than any `pairKey()`
+tier.
+
+The complete set of `.status =` writes in the file is seven sites. The other
+four are legitimate: line 1147 (load-time repair, fires only for values
+outside `ST`), 1755 (`pushStatusHistory` internal), 11134 (Review Queue
+resolve), 11229 (`_markClashesAsApproved`).
+
+---
+
+## Root Cause
+
+Confirmed. There is no ownership model for `status`. It has five writers and
+no precedence rule between them. The import wins because it runs last, not
+because anything decided it should.
+
+Contributing factors:
+
+- `mapNWSt()`'s `|| 'New'` fallback conflates missing, empty and
+  unrecognised values with a genuine new clash.
+- No precedence, provenance or conflict signal exists. Nothing records that
+  a register value was human-set.
+- Match-tier breadth: composite and coordinate tiers match on data that
+  survives re-export, so most of the register is in scope on any import.
+- `pushStatusHistory()`'s same-week replacement converts a recoverable
+  overwrite into an unrecoverable one.
+- `regenWeeklyFromRegister(_batchMaxD)` (line 10515) runs at the end of
+  every import, rebuilding the current unfrozen weekly snapshot from the
+  overwritten statuses.
+
+---
+
+## Historical Analysis
+
+**When the overwrite logic was introduced cannot be established from this
+repository.**
+
+`working.html` entered version control at `8a93b74` (2026-07-31). That
+revision already contains the overwrite assignment and all seven
+occurrences of `PAIR-KEY-COORD-TIER`. `git log -S` on both strings bottoms
+out at that commit.
+
+Consequence: the Project Analyst's regression hypothesis — that the coord
+tier widened exposure recently — **cannot be tested here.** There is no
+pre-coord-tier baseline in the repository. Answering it requires an
+artefact this repository does not hold: an older `working.html` from a
+SharePoint copy, a deployment backup, or a user's browser profile.
+
+Classification on available evidence:
+
+- **Latent design defect: confirmed.**
+- **Regression: unproven and untestable from this repository.**
+- Not "both" on current evidence.
+
+Falsified historical design assumptions:
+
+1. Navisworks status is maintained and therefore authoritative. It is not
+   maintained; the platform exists because it is not.
+2. Import and review do not compete for the same field. They do, weekly.
+3. Same-week history replacement only collapses one user's own edits.
+   Imports now use that branch, and land in the review week by
+   construction.
+
+The `DUP-FILES-FIX` and `isFirstImport` guards show the assumption was
+already recognised as unsafe for new tests and empty registers — the two
+cases where an overwrite would be most visible. The general case was left
+unguarded.
+
+---
+
+## Impact Assessment
+
+| Area | Impact | Class |
+|---|---|---|
+| Current status | Silently replaced on every matched clash, every import, in both directions | Critical |
+| Status history | Same-week: entry rewritten in place, approval erased with no trace | Critical |
+| Reporting | PPTX / PDF / CSV read current status and `clashStatusAt()`; reports issued after an import misstate the review position | High |
+| Charts | `clashStatusAt()` returns the rewritten value for past weeks; `_platformWeeks()` derives the axis from the same mutated array | High |
+| Weekly metrics | Frozen snapshots (`capturedAt`) are never touched and are safe; the current unfrozen snapshot is rebuilt from overwritten statuses | Medium |
+| Coordinator workflow | Review work destroyed by the routine meant to advance it; re-review is the only recovery | Critical |
+| Governance integrity | `Approved` is terminal, gated by a typed confirmation and an audit append, yet reversed by an import with no confirmation, no log and no trace | Critical |
+
+Severity rationale for **Critical** rather than High:
+
+1. The audit trail is falsified, not merely lost. Data loss is recoverable
+   in principle by re-review; a falsified record that reads as authentic is
+   not, because nobody knows to look.
+2. A terminal governance status is silently reversible. Entry is gated;
+   exit is not.
+3. The trigger is the platform's primary routine — the weekly import —
+   deterministically, on every matched clash.
+
+---
+
+## Architect Review (2026-08-18)
+
+### System analysis
+
+The platform already holds a ratified answer to the ownership question and
+the import path violates it. When a clash *disappears* from the XML — the
+strongest possible signal it has been fixed — `REVIEW-QUEUE-DETECT` does
+not flip it to `Resolved`; it sets `c.pendingReview = true` (line 10428)
+and routes it to a human. CLAUDE.md records that the auto-flip half of
+`PAIR-ID-RESOLVED-COUNT` is deliberately deferred.
+
+When a clash *is present* with a stale status — the weakest possible
+signal — the import overwrites the human decision unconditionally.
+
+The two policies are inverted relative to the evidential strength of their
+triggers.
+
+`statusHistory` is load-bearing, not decorative: six readers depend on it,
+including `_platformWeeks()` which derives the **chart week axis** from it.
+In-place mutation rewrites the platform's only record of the past under six
+consumers that treat it as fact.
+
+`_appendStatusHistory()` (line 7788) is the single insertion point, guarded
+by `PR-0-SCHEMA-GUARD` — a genuine architectural asset. But
+`pushStatusHistory()`'s same-week branch bypasses it by mutating in place,
+an exemption that was reasonable when only humans reached it.
+
+### Options evaluated
+
+- **Option A — Navisworks remains authoritative. Rejected.** Internally
+  incoherent with the product: the entire review workflow would be a UI
+  over a value discarded weekly. Also empirically false — `mapNWSt()` makes
+  "the field was absent" indistinguishable from authority.
+- **Option B — Platform authoritative, import never overwrites. Rejected as
+  scoped.** Discards real information. A `Resolved` clash reappearing as
+  `active` is a regression signal; pure Option B keeps `Resolved` silently.
+  Trading loud data loss for quiet data staleness is not an improvement.
+- **Option C — Conditional ownership. Adopted**, keyed on **provenance, not
+  status value**. A value-keyed rule ("protect Reviewed/Approved/Resolved")
+  is wrong: a coordinator who deliberately moves a clash back to `Active`
+  has made a real decision that a value-keyed rule leaves unprotected,
+  while a clash sitting at `Reviewed` only because a prior import wrote it
+  there gets protected for no reason.
+
+### Provenance rule
+
+| Register value last written by | Import may overwrite |
+|---|---|
+| Import | Yes — silently. Import correcting its own prior value is not a conflict |
+| Human | No — the divergence becomes a Review Queue proposal |
+| Nothing (legacy, no provenance) | No — fail closed, treat as human-set |
+
+### Assessment answers
+
+1. **Owner:** the platform, for any status a human set; Navisworks, for
+   status it set that nothing has since touched. Ownership is per-record,
+   established by the last human action. Navisworks is authoritative on
+   geometry, existence and detection — not on review state.
+2. **Per-status:** `Approved` never, under any provenance. Every other value
+   protected by provenance and surfaced, not blocked.
+3. **On conflict:** detect, record, surface, do not apply. Do not write
+   `status`; record the proposal on the clash; route to the existing Review
+   Queue; report the count in the import summary. The import must still
+   complete with conflicts outstanding — blocking it converts a
+   data-integrity fix into a workflow stoppage that coordinators will route
+   around.
+4. **statusHistory rewriting by automated processes: never.** The
+   distinction is not same-week vs different-week but same-actor vs
+   different-actor.
+5. **`Approved` protected: yes, absolutely.** A status that requires
+   confirmation to enter requires confirmation to leave.
+6. **`Resolved` protected: yes, by a different mechanism.** Never
+   overwritten silently, but never discarded either — a Navisworks
+   contradiction of `Resolved` is a regression signal and the
+   highest-priority Review Queue item the system can generate. `Approved`
+   is a governance decision Navisworks has no standing to contradict;
+   `Resolved` is a factual claim about the model that Navisworks is
+   uniquely qualified to contradict.
+
+### Preferred architecture
+
+Option C, provenance-keyed, routed through the existing Review Queue:
+
+| Component | Description |
+|---|---|
+| **C1** | Status provenance — marker on each `statusHistory` entry, enforced at `_appendStatusHistory()` |
+| **C2** | Close the mutation bypass — same-week replace conditioned on provenance |
+| **C3** | Conflict detection at all three write sites, replacing the write with a proposal |
+| **C4** | Review Queue surfacing plus import-summary conflict count |
+
+Rejected alongside: warn-and-overwrite (the write is the defect; a
+2-second `pointer-events:none` toast is not consent);
+backup-before-import (mitigates blast radius, addresses no cause);
+per-status configurable policy (pushes an architectural decision onto a
+settings screen).
+
+### Data impact
+
+Risk High. Already-corrupted entries are **unrecoverable** — no prior value
+was retained. Any fix protects from the fix date forward only. Historical
+extent is unquantifiable from the repository.
+
+### Architectural constraints (binding on implementation)
+
+1. `statusHistory` entries must remain append-only for automated writers.
+2. `{week, year, status}` must survive on every entry (INV-009 Constraint 2).
+3. Provenance enforced at `_appendStatusHistory()` (line 7788), not at each
+   write site.
+4. Absent provenance fails closed — treat as human-set, protected.
+5. No migration of existing `statusHistory` entries.
+6. `Approved` absolutely protected; no provenance exemption, no
+   configuration override.
+7. All three write sites treated as one change. Dual-parser discipline per
+   CLAUDE.md.
+8. Conflicts surfaced through the existing Review Queue. No new persistence
+   layer, no second conflict UI (DEC-008).
+9. Imports must complete with conflicts outstanding.
+10. The import summary must state the conflict count.
+11. Conflict notification must not auto-dismiss (INV-009 Constraint 10).
+12. Provenance byte cost reconciled with INV-009 Option C before either
+    ships — one `statusHistory` shape decision, not two.
+13. `DATA_VERSION` must not be bumped. Marker discipline maintained.
+14. Pre-change JSON backup mandatory.
+15. `nwImageRef` (line 10078) out of scope — separate assessment.
+
+### Governance note
+
+The ownership model is a governance position, not a procedure. Under
+DEC-013 Rule 3 a prompt cannot create it. It belongs in DECISION_LOG.md as
+**DEC-014 — Clash Status Ownership Model**. Recording it would also settle
+whether `PAIR-ID-RESOLVED-COUNT` Phase 2 (deferred auto-flip to `Resolved`)
+is still wanted — under Option C it is inconsistent, because it applies
+first and asks later.
+
+### Architect decision
+
+**APPROVED FOR DEVELOPER ASSESSMENT.** Preferred architecture Option C.
+Recommended split: C1 + C2 first, C3 + C4 second.
+
+---
+
+## Developer Assessment (2026-08-18)
+
+### Scope
+
+C1 (Status Provenance) and C2 (Close Automated Status History Mutation
+Bypass).
+
+### Provenance design
+
+A single-character key on each entry, `{week, year, status, s:'i'}`:
+
+| Value | Meaning |
+|---|---|
+| `'i'` | Import-derived |
+| absent | Human-set, backfilled or unknown — **protected** |
+
+Two values, not four. Nothing in C1 or C2 needs to distinguish a register
+dropdown from a Review Queue action from a backfill — all three sit on the
+protected side. Adding values the logic never reads is surface without
+function (DEC-008).
+
+**The design inversion that removes the migration:** stamp only automated
+writers, and treat absent provenance as human-set. Architect Constraint 4
+is then satisfied by construction, Constraint 5 needs no discipline, and
+the diff drops from seven write sites to **two**.
+
+Measured cost:
+
+| Shape | Bytes | At 14 entries x 2,253 clashes |
+|---|---|---|
+| Lean `{week, year, status}` | 43 | 1.29 MB |
+| Lean + `s:'i'` | 51 | 1.53 MB |
+| Review Queue fat (current) | 180 | 5.41 MB |
+| Approve fat (current) | 288 | 8.66 MB |
+
+8 bytes per entry, on import-written entries only.
+
+### Refinement to Architect Constraint 3
+
+Constraint 3 requires provenance be added at `_appendStatusHistory()` and
+not at each write site. That is right for enforcement and impossible for
+origin — only the caller knows who it is. Proposed refinement, flagged
+rather than silently deviated from:
+
+- Origin supplied by the caller (optional parameter).
+- Normalisation, validation and the omit-when-human rule live in
+  `_appendStatusHistory()`, inside the existing `PR-0-SCHEMA-GUARD`.
+
+### Writer enumeration
+
+Every `statusHistory` writer in the file:
+
+| # | Site | Function | Class | Passes origin |
+|---|---|---|---|---|
+| 1 | 7074 | `uf()` — dropdown, board move, group set, detail | Human | No |
+| 2 | 9491 | `_xtResolveSkip()` | Automated | `'i'` |
+| 3 | 10052 | `importToRegister()` merge loop | Automated | `'i'` |
+| 4 | 11133 | Review Queue resolve | Human | No |
+| 5 | 11228 | `_markClashesAsApproved()` | Human | No |
+| 6 | 1761 | `pushStatusHistory()` to guard | Inherits caller | Threaded |
+| 7 | 1823 | `backfillStatusHistory()` | System migration | No — protected |
+| 8 | 11136 | Review Queue Resolve audit entry | Human | No |
+| 9 | 11139 | Review Queue Still-Open audit entry | Human | No |
+| 10 | 11253 | Approve audit entry | Human | No |
+
+**Two sites change.**
+
+One judgement call surfaced: `_xtResolveSkip()` is ambiguous — a human
+clicked "Skip dupes", but the status value comes from the XML. Classified
+**automated**, because the rule protects human decisions *about status*,
+and choosing to skip duplicates is not one.
+
+### Can C2 ship independently of C1?
+
+**Yes, completely.** Both same-week branches inspect only the existing
+entry; the C2 rule needs only the incoming writer's identity, which arrives
+as a parameter. Human behaviour is bit-for-bit unchanged.
+
+**But shipping C2 alone has a cost.** Every same-week collision between an
+import and a human touch produces two entries where there was one. Against
+INV-009's measured ceiling of 14 entries per clash at the production
+register, C2-alone spends that budget faster on a register already assessed
+as near the ceiling. C1 restores the cap by letting an import replace its
+own prior same-week entry.
+
+**Recommendation: ship C1 and C2 together**, against the Architect's
+suggested split. The whole change is approximately 14 lines of application
+code across three functions and two call sites; splitting it introduces a
+regression in a Confirmed / High investigation to buy sequencing the change
+size does not require.
+
+### Migration
+
+**None. Zero entries touched.** Legacy entries have no provenance key;
+absent means protected. Constraints 4 and 5 satisfied by construction, no
+migration gate needed, no MI-001 exposure, `DATA_VERSION` untouched.
+
+### Affected paths
+
+Modified: `pushStatusHistory()` (1746, 1752-1756, 1761),
+`_appendStatusHistory()` (7788), `_xtResolveSkip()` (9491),
+`importToRegister()` (10052).
+
+Read but not modified — all six read only `{week, year, status}`, so the
+added key is invisible to them: `clashStatusAt()` (1766), `clashExistsAt()`
+(1779), `_platformWeeks()` (1557), scoped chart reconstruction (5763,
+5852), `_rqLastStatusChange()` (10768), JSON restore merge (9586).
+
+One coupling recorded: the JSON restore merge dedupes by
+`{week, year, status}`. Two entries differing only in provenance would
+collapse. Harmless under the two-value vocabulary; must be re-checked if it
+expands.
+
+**Explicitly out of scope:** lines 10055, 9493 and 6332 — the current-status
+writes. Those are C3. **After C1 + C2 ship, imports still reset reviewed
+status.** What changes is that the reversal becomes visible and permanent
+in history instead of erasing the prior decision. The release note must say
+so in plain terms.
+
+### Testing
+
+New spec `tests/status-provenance.spec.js`, 12 tests: human same-week
+replace unchanged; human same-week same-status de-dupe unchanged; human
+cross-week append unchanged; **import in the same ISO week as a human
+approval appends rather than overwrites**; **`clashStatusAt()` still returns
+`Approved` for the approval week after that import**; provenance present on
+import entries and absent on human entries; import replacing its own
+same-week entry does not grow history; `_xtResolveSkip` stamps and appends;
+legacy entries never replaced by an automated writer; schema guard still
+rejects malformed entries with provenance present; `_platformWeeks()` axis
+unchanged; JSON round-trip preserves provenance.
+
+Existing specs assessed, not assumed:
+
+- `pr03-clock2-status-transitions.spec.js` — **not affected.** Both
+  re-import tests use different weeks (W23 to W24; W23 to wall-clock), so
+  the same-week branch never fires; `historyLen === 2` and the
+  `statusHistory[1]` index assertion both hold. Verified by reading the
+  fixtures.
+- `pr0-pr01-schema-fixes.spec.js` — guard length assertions; covered.
+- `review-queue.spec.js`, `approve-*.spec.js` — assert human-path audit
+  fields; untouched by C1.
+
+Nothing in the suite currently asserts the same-week replacement behaviour
+at all, which is part of why the import path could start using it
+unnoticed.
+
+Baseline for the full suite: 298 passed, 2 failed, the two failures being
+pre-existing `CHART-PERIOD-YEAR-AWARE` cases in
+`frozen-week-and-chart-year.spec.js` that reproduce on the unmodified base.
+
+### Recommendation
+
+**GO on C1 + C2, implemented together as one change.**
+**NO-GO on the C2-first / C1-second split as scoped.**
+
+Three items for the Implementation Manager:
+
+1. Confirm the `_xtResolveSkip` classification as automated.
+2. Confirm the refinement to Architect Constraint 3 — the constraint as
+   written is not literally satisfiable.
+3. Confirm ordering with INV-009 Option C — C1 + C2 first.
+
+---
+
+## Open Questions
+
+1. Whether any loss already reported by users was this defect, INV-009, or
+   both. Not answerable from the repository.
+2. Historical extent — how many clashes in the production register carry a
+   `statusHistory` entry overwritten in place. Requires the live register.
+3. When the overwrite logic was introduced. Requires an older
+   `working.html` that this repository does not hold.
+4. Whether the BCF import path (line 6332) is used in practice. If unused
+   it is a documentation fix; if used, its fuzzy name matching may be a
+   defect in its own right.
+
+---
+
+## Scope Boundaries
+
+In scope:
+
+- `importToRegister()` merge-loop status write (line 10055)
+- `_xtResolveSkip()` status write (line 9493)
+- BCF import status write (line 6332)
+- `pushStatusHistory()` same-week mutation (lines 1752-1756)
+- `_appendStatusHistory()` provenance (line 7788)
+
+Out of scope unless evidence redirects:
+
+- `sv()` / `lv()` failure visibility — INV-009
+- `nwImageRef` unconditional write (line 10078) — separate assessment
+- The four legitimate `status =` writes (1147, 1755, 11134, 11229)
+- `DATA_VERSION` — must not be bumped
+
+---
+
+## Next Action
+
+**PROCEED TO IMPLEMENTATION MANAGER REVIEW** for C1 + C2 per Workflow B.
+
+Investigation stops at the DEC-009 `Implementation Required` decision gate,
+which is a human decision gate. No stage output authorises implementation.
+
+Per DEC-011, this investigation is in the `Confirmed` state with a
+reproducible defect, a validated root cause and a feasible remediation
+path, so `Do Nothing`, `Monitor Only` and `Accept the Risk` are not
+acceptable primary recommendations.
+
+**Standing exposure while this remains open:** every import continues to
+reset reviewed statuses, and where it lands in the same ISO week it erases
+the evidence that a clash was approved. Nothing in the current build warns
+the user. Documentation of this investigation is not a mitigation.
 
 ---
