@@ -1553,7 +1553,7 @@ Date:
 
 Status:
 
-Under Investigation (DEC-010 State 2)
+Confirmed (DEC-010 State 3) — root cause validated by runtime reproduction 2026-08-17.
 
 Source:
 
@@ -1700,11 +1700,119 @@ Out of scope unless evidence redirects:
 
 ---
 
+## QA Investigation — Runtime Evidence (2026-08-17)
+
+Method: isolated Node scripts driving Playwright/Chromium directly against
+`working.html`, bypassing the spec files entirely — the same technique used
+under INV-008. No spec file and no application file was modified.
+
+Environment: Playwright 1.62.1 installed into `tests/node_modules`
+(resolved from the `^1.55.0` range; no lock file is committed). The
+container provides Chromium build 1194 while 1.62.1 expects 1234, so probes
+launched with an explicit `executablePath` — the same override
+`playwright.config.js` exposes as `PW_CHROMIUM_PATH`.
+
+### Probe A — sv() swallows the failure
+
+With `Storage.prototype.setItem` mocked to raise `QuotaExceededError`:
+
+- quota error raised: 1
+- exception escaped `sv()`: **false** — swallowed
+- storage changed: **false** — write lost
+- `sv()` return value: **undefined** — no caller can detect the failure
+
+### Probe B — end-to-end silent data loss, reproduced
+
+Through the real mutation path `uf('PROBE1','status','Resolved')` with
+large-payload writes failing:
+
+- `uf()` threw to caller: **false**
+- status in memory (what the UI displays): **Resolved**
+- status in `localStorage` (what was saved): **New**
+- after reload: the change was gone
+
+**REPRODUCED.** The user sees "Resolved", the register never received it,
+and nothing anywhere reports a problem. Note the reloaded register was
+re-seeded by the demo dataset because the probe register was synthetic;
+that is a probe artefact, not a second defect. The material evidence is
+memory "Resolved" against storage "New".
+
+### Probe C — the real ceiling
+
+- current `nw:*` footprint in a clean session: 10 keys, 0.04 MB
+- `navigator.storage.estimate()` reports **820.97 MB** — this is the origin
+  quota and is **misleading**: it does not govern `localStorage`
+- measured bytes per clash: **810** at 2 history entries, **2,060** at 12
+- largest register that fits: **2,253 clashes at 12 history entries**
+- first failure: **3,000 clashes = 5.91 MB → QuotaExceededError**
+- `sv()` behaviour at over-quota: **silent — no write, no error**
+
+2,253 is the production register size recorded in the PR-0-RESOLVE-STAMP
+comment. The production register therefore fits, but sits near the ceiling.
+
+### Probe D — normal review activity alone reaches the ceiling
+
+Register held **fixed** at 2,253 clashes, no new imports, varying only
+`statusHistory` depth:
+
+| history entries/clash | size | result |
+|---|---|---|
+| 2 | 1.75 MB | OK |
+| 4 | 2.29 MB | OK |
+| 6 | 2.83 MB | OK |
+| 8 | 3.36 MB | OK |
+| 10 | 3.90 MB | OK |
+| 12 | 4.44 MB | OK |
+| **14** | **4.98 MB** | **QuotaExceededError** |
+
+Every status change appends one `statusHistory` entry; every Review Queue
+action appends one. At the current production register size, roughly
+**14 review touches per clash** exhausts `localStorage` — with no new
+clashes imported at all. `statusHistory` has no cap, trim or rotation
+anywhere in the file.
+
+---
+
+## Root Cause
+
+Confirmed. Two independent factors compound:
+
+1. `sv()` discards every write failure (`catch(e){}`), returns no value, and
+   emits no signal. Callers cannot detect a failed write; the user cannot
+   either, until the next load.
+2. The persisted payload grows monotonically with normal use — the whole
+   register is rewritten on every edit (42 call sites), and `statusHistory`
+   is unbounded — so `localStorage` quota exhaustion is not an edge case but
+   an arrival time.
+
+Confidence: **High.** Mechanism and reachability are both reproduced.
+
+Severity: **High** (upgraded from provisional). Silent, affects all user
+work, and the trigger is reached by ordinary coordination activity rather
+than by misuse.
+
+---
+
+## Open Question Remaining
+
+Whether any loss already reported by users was this defect. No user report
+exists in any governance record, so this cannot be answered from the
+repository. It does not block remediation.
+
+---
+
 ## Next Action
 
-Architect review, then QA Investigation to obtain the runtime evidence
-named in Open Questions. Investigation stops at the DEC-009
-`Implementation Required` decision gate.
+**PROCEED TO DEVELOPER ASSESSMENT** via Architect review, per Workflow A.
+
+Per DEC-011, this investigation is now in the `Confirmed` state with a
+reproducible defect, a validated root cause and a feasible remediation
+path, so `Do Nothing`, `Monitor Only` and `Accept the Risk` are not
+acceptable primary recommendations.
+
+No fix is designed here — the QA Investigator role does not design
+solutions. Investigation stops at the DEC-009 `Implementation Required`
+decision gate.
 
 Per DEC-011, if this investigation reaches the `Confirmed` state with a
 reproducible defect, validated root cause and feasible remediation path,

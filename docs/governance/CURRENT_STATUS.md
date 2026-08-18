@@ -462,7 +462,7 @@ Note: a full repository-wide suite run surfaced 22 pre-existing intermittent fai
 
 ## Current Priority
 
-### INV-009 (Under Investigation)
+### INV-009 (Confirmed)
 
 Title:
 
@@ -470,8 +470,9 @@ Silent Persistence Write Failure
 
 Status:
 
-Under Investigation (DEC-010 State 2). Opened 2026-08-17 from the
-"Session Persistence and Crash Recovery" Enhancement Assessment.
+Confirmed (DEC-010 State 3). Opened 2026-08-17 from the "Session
+Persistence and Crash Recovery" Enhancement Assessment; root cause
+validated by runtime reproduction the same day.
 
 Workflow:
 
@@ -493,16 +494,26 @@ recorded in the PR-0-RESOLVE-STAMP comment) serialises to 1.59 MB at two
 history entries per clash and 4.64 MB at twelve, against a typical ~5 MB
 Chrome/Edge localStorage quota.
 
+QA Investigation Result:
+
+Reproduced. Through the real mutation path, a failed write left the UI
+showing "Resolved" while storage retained "New", with no exception, no
+return value and no user-visible signal. Measured ceiling: at the
+production register size of 2,253 clashes, `localStorage` is exhausted at
+14 status-history entries per clash (4.98 MB) with no new imports at all.
+Every status change and every Review Queue action appends one entry, and
+`statusHistory` has no cap anywhere in the file. Full probe evidence in
+INVESTIGATION_LOG.md (INV-009).
+
 Next Action:
 
-Architect review, then QA Investigation to obtain runtime evidence. Per
-CLAUDE.md, DevTools console output and a Playwright reproduction are
-required before any fix is proposed. Investigation stops at the DEC-009
-`Implementation Required` decision gate.
+Architect review, then Developer Assessment, per Workflow A. Investigation
+stops at the DEC-009 `Implementation Required` decision gate. DEC-011
+applies: monitoring is not an acceptable primary recommendation.
 
 Severity:
 
-Provisional High, pending runtime confirmation.
+High (confirmed).
 
 ---
 

@@ -511,7 +511,12 @@ Implemented. Human authorization was granted to proceed with the INV-007 remedia
 
 # Confirmed Issues
 
-None currently recorded.
+## INV-009 — Silent Persistence Write Failure
+
+Confirmed 2026-08-17. High severity. See the "Under Investigation" section
+above for the full record and INVESTIGATION_LOG.md for probe evidence.
+Awaiting Architect review and Developer Assessment at the DEC-009
+`Implementation Required` decision gate.
 
 ---
 
@@ -525,11 +530,11 @@ Silent Persistence Write Failure
 
 Status:
 
-Under Investigation
+Confirmed
 
 Severity:
 
-Provisional High (pending runtime confirmation)
+High (confirmed by runtime reproduction 2026-08-17)
 
 Opened:
 
@@ -553,11 +558,20 @@ register is rewritten on every field edit (42 call sites), and
 (2,253 clashes) measures 1.59 MB at two history entries per clash and
 4.64 MB at twelve, against a typical ~5 MB localStorage quota.
 
+Runtime Evidence:
+
+Reproduced 2026-08-17. Through the real mutation path a failed write left
+the UI showing "Resolved" while storage retained "New" - no exception, no
+return value, no signal. Measured ceiling: at the production register size
+of 2,253 clashes, localStorage is exhausted at 14 status-history entries
+per clash (4.98 MB), with no new imports required. Full probe evidence in
+INVESTIGATION_LOG.md (INV-009).
+
 Outstanding:
 
-Runtime evidence. No reproduction has been performed and no user report
-exists in any governance record. The mechanism is established by code
-inspection; its occurrence in practice is not yet confirmed.
+Whether any loss already reported by users was this defect. No user report
+exists in any governance record; this cannot be answered from the
+repository and does not block remediation.
 
 ---
 
@@ -579,7 +593,7 @@ Monitoring Items:
 
 Confirmed Issues:
 
-None outstanding.
+- INV-009 — Silent Persistence Write Failure (High, awaiting remediation)
 
 Active Investigations:
 
