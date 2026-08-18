@@ -2043,7 +2043,16 @@ Date:
 
 Status:
 
-Confirmed (DEC-010 State 3) — reproduced end-to-end 2026-08-18.
+Steward Approved (DEC-010 State 7) as of 2026-08-18.
+
+State history: Confirmed (State 3) on reproduction 2026-08-18;
+Implementation Approved (State 4) at the DEC-009 gate 2026-08-18;
+Implemented (State 5) at commit `59a9770`; QA Verified (State 6) on the
+8-case retest; Steward Approved (State 7) on the Repository Steward Review.
+
+Scope note: States 4 through 7 cover **C1 + C2 only**. C3 and C4 are not
+implemented, not assessed, and not covered by this state. The defect is
+partially remediated — see "Scope Limits" and "What C1 + C2 Do Not Fix".
 
 Severity:
 
@@ -2069,6 +2078,10 @@ Roles Completed:
 - Architect ✅ (2026-08-18)
 - Developer Assessment ✅ (2026-08-18)
 - Implementation Manager ✅ (2026-08-18) — CONDITIONAL GO on C1 + C2
+- Developer Implementation ✅ (2026-08-18) — commit `59a9770`
+- QA Retest ✅ (2026-08-18) — RETEST PASSED, 8/8 cases plus one additional
+- Repository Steward ✅ (2026-08-18) — APPROVED
+- Release Manager — pending
 
 Note on stage order: as with INV-009, QA Investigation was executed before
 the Architect Review, transposing stages 2 and 3 of the sequence recorded
@@ -2874,6 +2887,307 @@ requires no code change and is available today.
 
 ---
 
+## Developer Implementation (2026-08-18)
+
+Commit:
+
+`59a9770df842bc20fb41a42ec174f12d96f04a31`
+
+Authorisation:
+
+DEC-009 `Implementation Required` decision gate passed 2026-08-18. Scope
+limited to C1 and C2; C3, C4, status ownership conflict handling, Review
+Queue conflict workflows and DEC-014 explicitly excluded.
+
+### Pre-Edit Verification
+
+| Check | Value |
+|---|---|
+| Branch / HEAD | `claude/governance-review-xjrgfm` / `316bb2e` |
+| Working tree | Clean (0 modified files) |
+| Lines | 18,521 |
+| Bytes | 1,525,630 |
+| sha256 | `832f9a4700edb1a0f94a2aec7ad56057e47419d48b7b408f6814cd80ac0f3de5` |
+| `DATA_VERSION` | `v4-correct-dates-jan25` |
+| Markers | 194 names, 0 imbalanced |
+| Marker names free | `STATUS-PROVENANCE` 0, `STATUS-PROVENANCE-GUARD` 0 |
+| App script syntax | `node --check` clean |
+| File backup | Pre-change `working.html` copy saved |
+
+On Architect Constraint 14 (pre-change JSON backup): the constraint
+concerns the user's clash register, and no production register exists in
+the build environment — only the 104-clash demo dataset. The equivalent
+available action was taken (exact pre-change file state recorded plus a
+file copy). The constraint's purpose is migration protection and this
+change performs no migration, so the register backup is belt-and-braces
+rather than load-bearing. **It remains a deploy-time action: export a
+Backup JSON from the live application before copying the new
+`working.html` to SharePoint.**
+
+### C1 — STATUS-PROVENANCE
+
+Each `statusHistory` entry now records who wrote it, via a single-character
+key present only on import-written entries:
+
+```
+{week, year, status}          human, backfilled, or legacy
+{week, year, status, s:'i'}   import-derived
+```
+
+Stamping happens at `_appendStatusHistory()` — the single insertion point
+already guarded by `PR-0-SCHEMA-GUARD`. Origin is supplied by the caller,
+per Architect Constraint 3 as refined at Implementation Manager Review. An
+ambient module-level "current writer" variable was rejected: implicit
+global state across a path with early returns is a worse defect than the
+one being fixed.
+
+**Absent means protected.** That inversion is what removes the migration:
+existing entries carry no marker, so all ~2,253 production clashes are
+treated as human-set and protected from first load, with no gate, no
+backfill and no one-shot migration. It also fails closed, per Architect
+Constraint 4.
+
+### C2 — STATUS-PROVENANCE-GUARD
+
+The pre-C2 code read `last.status=status` unconditionally. It now branches
+on the incoming writer:
+
+| Case | Behaviour |
+|---|---|
+| Human writer | Replace, exactly as before |
+| Import over its own entry | Replace — the C1 growth cap |
+| Import over a human or legacy entry | **Append.** The human decision is kept |
+
+The de-dupe branch is deliberately not gated on origin, per Implementation
+Manager Review condition 2. It fires only when the status already matches,
+so it destroys nothing, and bypassing it would append identical entries on
+every repeat import for zero information.
+
+### Two Automated Writer Call Sites
+
+Only two of the ten `statusHistory` writers pass an origin:
+
+| Site | Function |
+|---|---|
+| 9493 (pre-edit numbering) | `_xtResolveSkip()` — cross-test dedup merge |
+| 10055 (pre-edit numbering) | `importToRegister()` — XML import merge loop |
+
+Both classified AUTOMATED at Implementation Manager Review: the value
+originates in the XML, and the user's click selected which records to
+import, not what status they hold.
+
+### Provenance-Clearing Decision
+
+**This addition was not covered by the Developer Assessment or the
+Implementation Manager Review.** It was made during implementation and
+disclosed at the time.
+
+The de-dupe branch now clears the import marker when a human re-affirms a
+value an import wrote. Without it, a coordinator who explicitly selects the
+value an import already set leaves the entry marked import-written, and C3
+would later treat that human decision as overwritable — a latent defect
+seeded for the next phase.
+
+Nothing is appended and no status changes, so the de-dupe contract is
+unaffected. Verified independently at QA Retest (Test 9). Recorded here as
+an un-reviewed addition per the Repository Steward Review.
+
+### Files Modified
+
+| File | Before | After | Delta |
+|---|---|---|---|
+| `working.html` | 18,521 | 18,615 | +94 (+103 / -9) |
+| `tests/status-provenance.spec.js` | — | 304 | new |
+
+Five diff hunks in `working.html`, all inside the four authorised
+locations. The executable change is confined to the branch conditions in
+`pushStatusHistory()`, one stamping line in `_appendStatusHistory()`, two
+signature changes and two call-site arguments. The balance of the diff is
+marker commentary.
+
+### Post-Edit Verification
+
+| Check | Value |
+|---|---|
+| Lines | 18,615 |
+| Markers | 196 names, 0 imbalanced |
+| `STATUS-PROVENANCE` | 4/4 |
+| `STATUS-PROVENANCE-GUARD` | 1/1 |
+| `PR-0-SCHEMA-GUARD` | 1/1 |
+| App script syntax | `node --check` clean |
+| `DATA_VERSION` | Unchanged (`v4-correct-dates-jan25`) |
+| Migration | None — zero existing entries read, rewritten or deleted |
+
+### Test Results
+
+`tests/status-provenance.spec.js` — 13/13 passed. Full suite — 311 passed,
+2 failed; the two are the pre-existing `CHART-PERIOD-YEAR-AWARE` cases in
+`frozen-week-and-chart-year.spec.js`, previously reproduced on the
+unmodified base. Baseline was 298 passed / 2 failed; +13 new tests gives
+311/2 with no new failures.
+
+### Scope Limits
+
+C1 + C2 preserve historical evidence. They do not change historical
+reporting, and they do not stop the current-status overwrite. `clashStatusAt()`
+keeps the last entry at or before the target week, so with
+`{W28, Approved}` followed by `{W28, New}` it still returns `New`. No
+chart, export or Review Queue display changes. The three `status =` writes
+at lines 10055, 9493 and 6332 are untouched. All of that is C3 / C4.
+
+---
+
+## QA Retest (2026-08-18)
+
+Method: Node scripts driving Playwright/Chromium against `working.html` at
+`59a9770` (sha256 `b34904c9…`, clean tree), exercising the **real**
+application paths — `importToRegister('append')` and `uf()` — rather than
+the helper functions the implementation spec drives directly. No file
+modified.
+
+Reference weeks verified in-page: `2026-07-08 → W28 2026`,
+`2026-07-15 → W29 2026`, wall clock `W34 2026`.
+
+### Results
+
+| # | Case | Result | Evidence |
+|---|---|---|---|
+| 1 | Same-week approval preservation | **PASS** | `[{W28,Approved},{W28,New,s:'i'}]`; storage matches memory; no in-place replacement |
+| 2 | Different-week import | **PASS** | `[{W27,Approved},{W28,New,s:'i'}]`; ordering verified monotonic on `(year, week)` |
+| 3 | Human same-week behaviour | **PASS** | Real `uf()` path, `New → Active → Reviewed` in W34 collapses to one entry; no provenance key |
+| 4 | Automated same-week de-dupe | **PASS** | Two real imports; length unchanged. See mechanism note below |
+| 5 | Current status behaviour | **PASS** | Status still becomes `New` in memory and storage; history retains `Approved` and the appended `New` |
+| 6 | Historical reporting validation | **PASS** | `Approved` entry present; `clashStatusAt(28,2026) === "New"`; confirmed unchanged after C1 + C2 |
+| 7 | Provenance verification | **PASS** | Flags `["(none)","(none)","i"]`; human entry key set is exactly `["status","week","year"]` |
+| 8 | Legacy data behaviour | **PASS** | Legacy entry byte-identical to seed after a real same-week import |
+| 9 | Human re-affirmation clears the marker (additional) | **PASS** | `{W34,New,s:'i'}` → `{W34,New}`; nothing appended, status unchanged |
+
+### Test 4 — mechanism note
+
+The specified outcome is achieved, but the second import does not reach the
+de-dupe branch at all: `importToRegister()` computes
+`stChanged = (exist.status !== c.mappedSt)`, which is false once the
+register already holds `New`, so `pushStatusHistory()` is never called. The
+de-dupe branch was therefore additionally exercised directly with an
+automated origin against an import-written entry:
+
+```
+before [{W28,New,s:'i'}] -> pushStatusHistory(c,'New',{W28},'i') -> after [{W28,New,s:'i'}]
+```
+
+Both the specified outcome and the underlying branch are verified.
+
+### Historical Evidence Preservation
+
+Verified. The scenario that previously erased a W28 approval now preserves
+it, in memory and in `nw:clashes`, for both automated writers and for
+legacy entries carrying no provenance.
+
+Limit of the gain, confirmed rather than contradicted by this retest: the
+preserved entry is **not surfaced anywhere in the UI**.
+`_rqLastStatusChange()` shows the last entry (`New`) and `working.html`
+contains no full-history render. The approval is recoverable — by JSON
+export, by DevTools, by a future C4 surface — but a coordinator looking at
+the application will not see it.
+
+### Current Status Overwrite Behaviour
+
+Unchanged, as required, and verified as a positive expectation rather than
+left untested. `Approved → New` on import, in memory and in storage
+(Test 5); `clashStatusAt()` returns the import's value (Test 6). Had
+current status stopped being overwritten, that would have been an
+out-of-scope change and a retest failure.
+
+### Regression
+
+- Targeted import and status workflows: **107 / 107 passed** across
+  `status-provenance`, `pr03-clock2-status-transitions`,
+  `pr02-new-stamp-import-clock`, `pr0-pr01-schema-fixes`, all four
+  `review-queue*` specs, all three `approve-*` specs,
+  `weekly-incremental-import`, `batch-import-folder`, `coord-tier`,
+  `pair-id-backfill`, `pair-id-multi-attr`, `pr-a5-cross-test-dedup`.
+- Full suite: **311 passed, 2 failed** against a 298/2 baseline. The two
+  failures are the pre-existing `CHART-PERIOD-YEAR-AWARE` cases,
+  independently confirmed on the unmodified base. No new failures, no
+  flakiness across three suite executions.
+- `pr03-clock2-status-transitions` passes with its `statusHistory[1]` index
+  assertion and `historyLen === 2` intact, as the Developer Assessment
+  predicted.
+- No duplicate-history regressions: human same-week transitions still
+  collapse to one entry; repeat imports of an unchanged status add nothing;
+  an import replacing its own prior entry does not grow history. Growth
+  occurs only where C2 requires it — one entry per human/import same-week
+  collision.
+
+### Result
+
+**RETEST PASSED.**
+
+---
+
+## Repository Steward Review (2026-08-18)
+
+### Scope Containment
+
+**PASS.** Five diff hunks in `working.html`, all inside the four authorised
+locations:
+
+| Hunk | Function | Component |
+|---|---|---|
+| `@@ -1743` | `pushStatusHistory()` + accessor block | C1 / C2 |
+| `@@ -7772`, `@@ -7786` | `_appendStatusHistory()` signature and stamping point | C1 |
+| `@@ -9488` | `_xtResolveSkip()` call site | C1 |
+| `@@ -10049` | `importToRegister()` call site | C1 |
+
+### No Scope Creep
+
+Verified by targeted search across the diff:
+
+- No change to `exist.status =`, `ex.status =` or `clash.status =` — the
+  three C3 current-status writes are untouched
+- No `mappedSt` assignment changes
+- No `pendingReview` or Review Queue workflow changes (C4)
+- No `DATA_VERSION`, no `sv()` / `lv()`, no `openIDB()` — INV-009 and
+  INV-008 scope respected
+- The only C3/C4 string in the diff is a comment pointing at what is not
+  fixed
+
+### Marker Compliance
+
+196 marker names, 0 imbalanced. `STATUS-PROVENANCE` 4/4,
+`STATUS-PROVENANCE-GUARD` 1/1, names as directed by the Implementation
+Manager Review. `PR-0-SCHEMA-GUARD` remains 1/1 after the stamping
+insertion.
+
+### Governance Findings
+
+1. **Un-reviewed addition.** The provenance-clearing decision entered the
+   codebase without passing through Developer Assessment or Implementation
+   Manager Review. Steward position: acceptable — it sits inside the
+   `STATUS-PROVENANCE` markers, touches provenance only, appends nothing,
+   changes no status, was surfaced proactively and was independently
+   verified at QA Retest Test 9 — subject to being recorded as an
+   un-reviewed addition. Recorded above.
+2. **Release scope is bundled.** `main` is the deployment source, and
+   merging this branch releases more than INV-010. The branch carries a
+   second, independent `working.html` change — the configurable Dedup Queue
+   proximity threshold (`b19a676`), an enhancement with no investigation —
+   plus the prompt library, DEC-013, and the INV-009 / INV-010 governance
+   records. Whether to release these together or isolate INV-010 is a
+   Release Manager decision and must be on the table before approval. The
+   dedup tolerance change carries its own user-visible effect: reviewers'
+   Dedup Queue counts fall on first load after deployment.
+3. **DEC-014 is not required for this release.** It is required before C3.
+
+### Result
+
+**APPROVED.** Repository state matches the implementation as authorised;
+scope contained, no creep, markers balanced, no regressions. Remaining
+actions are Release Manager Review and the human `Commit / Push Required`
+decision gate.
+
+---
+
 ## Open Questions
 
 1. Whether any loss already reported by users was this defect, INV-009, or
@@ -2909,15 +3223,28 @@ Out of scope unless evidence redirects:
 
 ## Next Action
 
-**HELD AT THE DEC-009 `Implementation Required` DECISION GATE.**
+**PROCEED TO RELEASE MANAGER REVIEW** per Workflow B.
 
-All five Workflow B stages are complete. The Implementation Manager Review
-returned CONDITIONAL GO on C1 + C2; conditions 1 to 4 are applied in this
-record and condition 5 is an implementation-stage obligation.
+The DEC-009 `Implementation Required` gate was passed 2026-08-18. C1 + C2
+are implemented (`59a9770`), QA-verified and Steward-approved. Release
+Manager Review is the final stage before the second decision gate,
+`Commit / Push Required`.
 
-The gate is a human decision gate. No stage output authorises
-implementation, and per DEC-013 Rule 4 only `developer-implementation.md`
-may modify the repository, after the gate.
+Two items the Release Manager must resolve:
+
+1. **Bundled release scope.** Merging `claude/governance-review-xjrgfm` to
+   `main` — the deployment source — releases a second, independent
+   `working.html` change alongside INV-010: the configurable Dedup Queue
+   proximity threshold (`b19a676`), an enhancement with no investigation.
+   Release together, or isolate INV-010.
+2. **Release-note accuracy.** C1 + C2 preserve the record of a reviewed
+   status; they do not stop imports resetting it, and the preserved entry
+   is not surfaced in the UI. A note reading "INV-010 remediated" without
+   that qualification will be misread.
+
+Standing exposure until C3: imports still reset reviewed clash status. The
+interim mitigation remains a JSON backup before each weekly import, using
+the existing `JSON-BACKUP-RESTORE` capability.
 
 Per DEC-011, this investigation is in the `Confirmed` state with a
 reproducible defect, a validated root cause and a feasible remediation

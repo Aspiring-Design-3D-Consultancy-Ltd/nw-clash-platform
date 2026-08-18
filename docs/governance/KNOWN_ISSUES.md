@@ -523,11 +523,12 @@ DEC-009 `Implementation Required` decision gate.
 
 ## INV-010 — Import Overwrites Reviewed Clash Status
 
-Confirmed 2026-08-18. **Critical** severity. See the "Under Investigation"
-section below for the full record and INVESTIGATION_LOG.md for probe
-evidence. QA Investigation, Architect Review and Developer Assessment are
-complete (2026-08-18). Awaiting Implementation Manager review, then the
-DEC-009 `Implementation Required` decision gate.
+Confirmed 2026-08-18. **Critical** severity. **Partially remediated —
+not resolved.** C1 + C2 are implemented (`59a9770`), QA-verified and
+Steward-approved; C3 and C4 are outstanding. Awaiting Release Manager
+Review, then the DEC-009 `Commit / Push Required` decision gate. See the
+"Under Investigation" section below for the full record and
+INVESTIGATION_LOG.md for probe and retest evidence.
 
 First use of the `Critical` severity tier defined in WORKFLOW_TEMPLATES.md.
 
@@ -596,7 +597,7 @@ Import Overwrites Reviewed Clash Status
 
 Status:
 
-Confirmed
+Steward Approved (DEC-010 State 7) — **partially remediated, not resolved**
 
 Severity:
 
@@ -609,6 +610,14 @@ Opened:
 Workflow:
 
 Workflow B (Application Defect)
+
+Remediation Scope:
+
+C1 (Status Provenance) and C2 (Prevent Automated Same-Week History
+Mutation) are implemented at commit `59a9770`, QA-verified and
+Steward-approved. C3 (conflict detection at the three status write sites)
+and C4 (Review Queue surfacing) are **not implemented and not assessed**.
+C3 requires DEC-014 (Clash Status Ownership Model) first.
 
 Related Records:
 
@@ -658,11 +667,27 @@ Historical extent in the production register, and whether user-reported
 losses were this defect, INV-009, or both. Neither is answerable from the
 repository.
 
+Remediated (C1 + C2, 2026-08-18):
+
+**Historical evidence loss.** A reviewed status overwritten by an import is
+now preserved in `statusHistory` rather than rewritten in place, and is
+recoverable from memory, from `nw:clashes` and from a JSON export. Verified
+at QA Retest through the real import path, for both automated writers and
+for legacy entries carrying no provenance key. No migration was required.
+
 Standing Exposure:
 
-Unmitigated. Every import continues to reset reviewed statuses, and
-same-week imports continue to erase the evidence of approval. Nothing in
-the current build warns the user.
+**Reduced, not removed.** Every import still resets reviewed clash status —
+that is the C3 write at `working.html:10055` and it is untouched. The
+preserved history entry is not surfaced anywhere in the UI:
+`_rqLastStatusChange()` shows the last entry and there is no full-history
+render, so a coordinator sees the import's value. `clashStatusAt()` also
+still returns the import's value for the affected week, so charts and
+PPTX / PDF / CSV reporting are unchanged. Nothing warns the user.
+
+Until C3 ships, the interim mitigation is a JSON backup before each weekly
+import, using the existing `JSON-BACKUP-RESTORE` capability. No code change
+is required for it.
 
 ---
 
@@ -685,12 +710,12 @@ Monitoring Items:
 Confirmed Issues:
 
 - INV-009 — Silent Persistence Write Failure (High, awaiting remediation)
-- INV-010 — Import Overwrites Reviewed Clash Status (Critical, awaiting remediation)
+- INV-010 — Import Overwrites Reviewed Clash Status (Critical, partially remediated: C1 + C2 shipped, C3 / C4 outstanding)
 
 Active Investigations:
 
 - INV-009 — Silent Persistence Write Failure (Confirmed, DEC-010 State 3)
-- INV-010 — Import Overwrites Reviewed Clash Status (Confirmed, DEC-010 State 3)
+- INV-010 — Import Overwrites Reviewed Clash Status (Steward Approved, DEC-010 State 7 — C1 + C2 only)
 
 Note: both entries above previously read "Under Investigation" for INV-009,
 which contradicted the `Confirmed` state recorded elsewhere in this document

@@ -31,7 +31,7 @@ The governance framework has been validated through execution of real-world inve
 
 Current Branch:
 
-`claude/governance-review-xjrgfm` (20 commits ahead of `main`; not merged)
+`claude/governance-review-xjrgfm` (23 commits ahead of `main`; not merged)
 
 Repository Health:
 
@@ -39,7 +39,8 @@ Repository Health:
 - Governance framework committed and pushed
 - Project memory established in repository
 - INV-002, R1, INV-005, INV-006, INV-007, and INV-008 remediations committed and pushed to `main`
-- Two confirmed defects outstanding and unremediated: INV-009 (High) and INV-010 (Critical)
+- INV-009 (High) confirmed and unremediated
+- INV-010 (Critical) partially remediated: C1 + C2 implemented, QA-verified and Steward-approved (`59a9770`); C3 and C4 outstanding
 
 Known Governance Gaps:
 
@@ -50,7 +51,9 @@ Current Working Tree:
 
 INV-002 (680cfd5), R1 (a0526bf), INV-005 (3f37f72), INV-006 (136c397), INV-007 (b471e5c), and INV-008 (6995a0e, merging ec6af50/326a93d/f444cfa) remediations are committed and pushed to `main`.
 
-Work on `claude/governance-review-xjrgfm` not yet merged to `main`: the prompt library and DEC-013, the configurable Dedup Queue proximity threshold (b19a676), and governance records for INV-009 and INV-010. Merge to `main` is a separate DEC-009 decision gate.
+Work on `claude/governance-review-xjrgfm` not yet merged to `main`: the prompt library and DEC-013, the configurable Dedup Queue proximity threshold (b19a676), the INV-010 C1 + C2 remediation (59a9770), and governance records for INV-009 and INV-010. Merge to `main` is a separate DEC-009 decision gate.
+
+Release-scope note: `main` is the deployment source, so a merge releases the dedup tolerance enhancement alongside the INV-010 remediation. Whether to release them together or isolate INV-010 is a Release Manager decision.
 
 ---
 
@@ -469,17 +472,20 @@ Note: a full repository-wide suite run surfaced 22 pre-existing intermittent fai
 
 ## Current Priority
 
-Two confirmed defects are open at the DEC-009 `Implementation Required`
-decision gate. Both produce the same user-facing symptom — clash statuses
-reverting to older values — by independent mechanisms, and a user cannot
-distinguish them.
+Two confirmed defects remain open. Both produce the same user-facing
+symptom — clash statuses reverting to older values — by independent
+mechanisms, and a user cannot distinguish them.
 
-Recommended order: **INV-010 C1 + C2 first**, then INV-009 Option A + C.
-Both touch `statusHistory`; INV-010 C1 requires no migration while INV-009
-Option C does, so authoring the migration once, knowing the provenance key
+INV-010 C1 + C2 shipped first, as recommended, and is awaiting Release
+Manager Review. INV-009 Option A + C follows: both touch `statusHistory`,
+and authoring INV-009's migration once, knowing the provenance key already
 exists, avoids two passes over the same array (the MI-001 pattern).
 
-### INV-010 (Confirmed — Critical)
+INV-010 remains only partially remediated. C1 + C2 stop the destruction of
+historical evidence; imports still reset current clash status. C3 and C4
+are not assessed and C3 requires DEC-014 first.
+
+### INV-010 (Steward Approved — Critical)
 
 Title:
 
@@ -487,9 +493,13 @@ Import Overwrites Reviewed Clash Status
 
 Status:
 
-Confirmed (DEC-010 State 3). Opened 2026-08-18 from the Project Analyst
-Review "Status Persistence Failure and Save Capability Assessment";
-reproduced end-to-end the same day.
+Steward Approved (DEC-010 State 7). Opened 2026-08-18 from the Project
+Analyst Review "Status Persistence Failure and Save Capability
+Assessment"; reproduced, remediated (C1 + C2), QA-verified and
+Steward-approved the same day.
+
+**Partially remediated.** States 4 through 7 cover C1 + C2 only. C3 and C4
+are not implemented and not assessed.
 
 Workflow:
 
@@ -498,56 +508,78 @@ Workflow B (Application Defect).
 Summary:
 
 Every append-mode import overwrites `status` on every matched clash with
-the Navisworks-mapped value, unconditionally. The behaviour is intentional
-and documented in the code (`working.html:9781`, `:10055`) on the
-assumption that Navisworks status is authoritative — an assumption
-falsified by this deployment, in which review status is maintained on the
-platform and never written back to Navisworks.
-
-Where the import lands in the same ISO week as the review activity — the
-normal case, since the import week derives from the batch date —
-`pushStatusHistory()` rewrites the history entry in place, so the approval
-disappears from current status, from history, and from `clashStatusAt()`.
+the Navisworks-mapped value, unconditionally. Where the import lands in the
+same ISO week as the review activity — the normal case, since the import
+week derives from the batch date — `pushStatusHistory()` rewrote the
+history entry in place, so the approval disappeared from current status,
+from history, and from `clashStatusAt()`.
 
 QA Investigation Result:
 
 Reproduced. 28 of 35 register-status x XML-status combinations overwrite
-the register; deterministic across three runs. A clash approved in W28 and
-re-imported in W28 reports `clashStatusAt(28, 2026) === "New"`. Three
-overwrite paths exist; two are reproduced. `PAIR-KEY-COORD-TIER` isolated
-as a sufficient independent trigger with a clean negative control. Full
-probe evidence in INVESTIGATION_LOG.md (INV-010).
+the register; deterministic across three runs. Full probe evidence in
+INVESTIGATION_LOG.md (INV-010).
 
 Architect Result:
 
 Option C (conditional ownership, keyed on provenance rather than status
 value), routed through the existing Review Queue. Decomposed C1-C4;
-C1 + C2 approved for Developer Assessment. Fifteen architectural
-constraints recorded.
+C1 + C2 approved for Developer Assessment.
 
 Developer Assessment Result:
 
-GO on C1 + C2 implemented together — approximately 14 lines across three
-functions and two call sites, **no migration**, no `DATA_VERSION` change,
-no reader affected. NO-GO on the C2-first split, which would accelerate
-INV-009 quota exhaustion.
+GO on C1 + C2 implemented together — no migration, no `DATA_VERSION`
+change, no reader affected.
 
 Implementation Manager Result:
 
-CONDITIONAL GO on C1 + C2, five conditions. Decisions recorded:
-`_xtResolveSkip()` classified AUTOMATED; provenance architecture APPROVED
-with Architect Constraint 3 confirmed as refined; implementation order
-INV-010 C1 + C2 before INV-009 Option C. The review found and corrected one
-error in the Developer Assessment — see the scope note below. Conditions 1
-to 4 are applied in the INVESTIGATION_LOG.md record; condition 5 (pre-change
-JSON backup and pre-edit verification) is an implementation-stage
-obligation.
+CONDITIONAL GO, five conditions. `_xtResolveSkip()` classified AUTOMATED;
+provenance architecture APPROVED with Architect Constraint 3 confirmed as
+refined; order INV-010 C1 + C2 before INV-009 Option C. The review found
+and corrected one error in the Developer Assessment — see the scope note
+below.
+
+Implementation Result:
+
+Complete. Commit `59a9770`. `STATUS-PROVENANCE` (4/4) and
+`STATUS-PROVENANCE-GUARD` (1/1); 196 markers, 0 imbalanced; `DATA_VERSION`
+unchanged; **no migration** — zero existing `statusHistory` entries read,
+rewritten or deleted. Five diff hunks confined to four functions. One
+addition not covered by the Developer Assessment or Implementation Manager
+Review — the de-dupe branch clearing the import marker when a human
+re-affirms an import-written value — is recorded as such in
+INVESTIGATION_LOG.md and was independently verified at retest.
+
+QA Retest Result:
+
+**RETEST PASSED.** All 8 required cases pass plus one additional,
+exercised through the real `importToRegister()` and `uf()` paths rather
+than the helpers the implementation spec drives. Historical evidence
+preservation verified; current-status overwrite behaviour verified
+unchanged as a positive expectation. Targeted import and status workflows
+107/107. Full suite 311 passed / 2 failed against a 298/2 baseline, the
+two failures being the pre-existing `CHART-PERIOD-YEAR-AWARE` cases
+independently confirmed on the unmodified base.
+
+Repository Steward Result:
+
+**APPROVED.** Scope containment PASS — five hunks, four functions, no
+creep: the three C3 current-status writes, `mappedSt`, `pendingReview`,
+`DATA_VERSION`, `sv()` / `lv()` and `openIDB()` are all untouched. Marker
+compliance confirmed. Two governance findings recorded: the un-reviewed
+provenance-clearing addition (accepted, now recorded) and bundled release
+scope (see Next Action).
 
 Next Action:
 
-**Held at the DEC-009 `Implementation Required` decision gate.** All five
-Workflow B stages are complete. The gate is a human decision gate. DEC-011
-applies: monitoring is not an acceptable primary recommendation.
+**Release Manager Review**, then the DEC-009 `Commit / Push Required`
+decision gate (a human decision gate). Two items for that review:
+
+1. **Bundled release scope.** Merging this branch to `main` — the
+   deployment source — also releases the configurable Dedup Queue
+   proximity threshold (`b19a676`), an independent enhancement with no
+   investigation. Release together, or isolate INV-010.
+2. **Release-note accuracy.** See the scope note below.
 
 Severity:
 
@@ -556,33 +588,32 @@ WORKFLOW_TEMPLATES.md.
 
 Standing Exposure:
 
-Unmitigated. Every import continues to reset reviewed statuses, and
-same-week imports continue to erase the evidence of approval. Nothing in
-the current build warns the user. Recording this investigation is not a
-mitigation.
+**Reduced, not removed.** Historical evidence loss is remediated: a
+reviewed status overwritten by an import is now preserved in
+`statusHistory` and recoverable. Imports still reset current status, and
+the preserved entry is not surfaced anywhere in the UI. Until C3 ships the
+interim mitigation remains a JSON backup before each weekly import, using
+the existing `JSON-BACKUP-RESTORE` capability.
 
-Note on scope (corrected 2026-08-18 by the Implementation Manager Review):
+Note on scope (corrected 2026-08-18 by the Implementation Manager Review,
+confirmed by QA Retest):
 
-C1 + C2 **preserve historical evidence but do not change current historical
-reporting behaviour.** Verified by probe:
+C1 + C2 **preserve historical evidence but do not change current
+historical reporting behaviour.** Verified twice — once at review, once
+against the shipped implementation:
 
 - Approved entries survive in `statusHistory`, so automated overwrites
   become recoverable rather than destroyed.
 - `clashStatusAt()` still returns the latest same-week value — `New`, not
   `Approved`.
-- There is no user-facing render of the full `statusHistory` array anywhere
-  in `working.html`, so the preserved entry is not surfaced.
+- There is no user-facing render of the full `statusHistory` array
+  anywhere in `working.html`, so the preserved entry is not surfaced.
 - Charts, PPTX / PDF / CSV reporting, the current-status overwrite, the
   `Approved` to `New` reset, and status ownership conflicts all remain
   C3 / C4 scope.
 
-C1 + C2 convert irreversible erasure into recoverable-but-unsurfaced
-history. That is the one INV-010 harm with no workaround. It is not a
-reporting fix and must not be released as one.
-
-Interim mitigation available now: a JSON backup before each weekly import,
-using the existing `JSON-BACKUP-RESTORE` capability. No code change
-required.
+A reader who takes "INV-010 remediation shipped" to mean "imports no
+longer reset reviewed status" will be wrong.
 
 ---
 
@@ -753,14 +784,18 @@ PASS. Repository state matches governance records. Release verified.
 
 All confirmed defects identified through INV-002, R1, INV-005, INV-006, INV-007, and INV-008 have been remediated, verified, committed, pushed, and released.
 
-INV-009 and INV-010 are confirmed and **not** remediated. Both are held at the DEC-009 `Implementation Required` decision gate awaiting Implementation Manager review and human authorization.
+INV-009 is confirmed and **not** remediated; it is held at the DEC-009 `Implementation Required` decision gate awaiting Implementation Manager review and human authorization.
+
+INV-010 is **partially** remediated. C1 + C2 are implemented (`59a9770`), QA-verified and Steward-approved, and await Release Manager Review and the `Commit / Push Required` decision gate. C3 and C4 remain outstanding, so imports still reset reviewed clash status.
 
 Remaining Activities:
 
 - Continue normal application development.
 - Monitor MI-001 (Migration Complexity).
 - Monitor MI-002 residual test-infrastructure observations (the IndexedDB-timing subset separately tracked under INV-008 has now been remediated and released; see KI-006).
-- Progress INV-010 (Critical) and INV-009 (High) through Implementation Manager review to the DEC-009 `Implementation Required` decision gate.
+- Progress INV-010 C1 + C2 through Release Manager review to the DEC-009 `Commit / Push Required` decision gate.
+- Progress INV-009 (High) through Implementation Manager review to the DEC-009 `Implementation Required` decision gate.
+- INV-010 C3 / C4 remain outstanding; C3 requires DEC-014 (Clash Status Ownership Model) first.
 - Use real-world project workflows to identify future enhancements or defects.
 
 Repository Status:
