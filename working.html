@@ -965,7 +965,73 @@ function getVA(v){
 }
 
 /* ═══════ STORAGE ═══════ */
-function sv(k,v){try{localStorage.setItem('nw:'+k,JSON.stringify(v));}catch(e){}}
+/* STORAGE-WRITE-GUARD start: sv() used to swallow every localStorage
+   exception (`catch(e){}`), so a QuotaExceededError — the ~5MB-per-origin
+   ceiling Chrome/Edge enforce — dropped the write and returned as though it
+   had succeeded. The W31 batch import hit exactly this: 29 XMLs parsed and
+   merged into S.clashes in memory, every per-file sv('clashes',…) rejected
+   by the full store, and importFolderPick still reported
+   "✓ Imported 29 of 29 clash tests". Nothing was persisted, no error was
+   raised anywhere, and the next reload showed the register back at its
+   pre-import state — the reported symptom (0 W31 clashes in nw:clashes,
+   no W31 entry in nw:weekly). Repro: tests/storage-write-guard.spec.js.
+
+   sv() now returns a boolean, logs the failure, and raises a persistent
+   dismissible banner, so a full store can never masquerade as a successful
+   save. _svFailCount is monotonic so a caller can snapshot it around a
+   multi-write operation and detect a partial write (importFolderPick's
+   batch loop does exactly that). Callers that ignore the return value are
+   unaffected — sv() previously returned undefined, which is falsy, and no
+   existing call site tested it. */
+let _svFailCount=0;
+const _svFailedKeys=new Set();
+function sv(k,v){
+  try{
+    localStorage.setItem('nw:'+k,JSON.stringify(v));
+    return true;
+  }catch(e){
+    _svFailCount++;
+    _svFailedKeys.add(k);
+    try{
+      console.error('[STORAGE-WRITE-GUARD] localStorage write FAILED for "nw:'+k+'" — '+
+        ((e&&e.name)||'Error')+': '+((e&&e.message)||e)+
+        '. This data was NOT saved. Keys affected so far: '+[...(_svFailedKeys)].join(', '));
+    }catch(_){}
+    try{_svShowFailureBanner();}catch(_){}
+    return false;
+  }
+}
+/* Persistent, dismissible banner. Re-rendered (not stacked) on each failure so
+   the affected-key list stays current. Deliberately NOT a toast — a toast
+   auto-dismisses in 2s and this is silent data loss the user must act on. */
+function _svShowFailureBanner(){
+  if(typeof document==='undefined'||!document.body)return;
+  const keys=[...(_svFailedKeys)].map(k=>'nw:'+k).join(', ');
+  let el=document.getElementById('sv-write-failure');
+  if(!el){
+    el=document.createElement('div');
+    el.id='sv-write-failure';
+    el.setAttribute('role','alert');
+    el.style.cssText='position:fixed;top:0;left:0;right:0;z-index:10000;background:#B91C1C;'+
+      'color:#fff;font-family:Arial,sans-serif;font-size:12px;line-height:1.5;'+
+      'padding:10px 16px;box-shadow:0 4px 14px rgba(0,0,0,.3);display:flex;'+
+      'align-items:flex-start;gap:12px';
+    document.body.appendChild(el);
+  }
+  el.innerHTML='<div style="flex:1">'+
+    '<strong>⚠ Browser storage is full — your data was NOT saved.</strong><br>'+
+    'Failed to write: <code style="background:rgba(255,255,255,.18);padding:1px 4px;border-radius:3px">'+
+    esc(keys)+'</code>. Anything you have imported or changed since this appeared exists only in '+
+    'this browser tab and will be lost on refresh. Export a JSON backup now, then use '+
+    'Settings → Selective Reset to clear old data before re-importing.'+
+    '</div>'+
+    '<button type="button" id="sv-write-failure-x" aria-label="Dismiss" '+
+    'style="background:rgba(255,255,255,.15);border:0;color:#fff;padding:4px 10px;'+
+    'border-radius:4px;font-size:12px;font-weight:700;cursor:pointer;flex:0 0 auto">Dismiss</button>';
+  const btn=document.getElementById('sv-write-failure-x');
+  if(btn)btn.addEventListener('click',()=>{const n=document.getElementById('sv-write-failure');if(n)n.remove();});
+}
+/* STORAGE-WRITE-GUARD end */
 function lv(k,d){try{const v=localStorage.getItem('nw:'+k);return v!==null?JSON.parse(v):d;}catch(e){return d;}}
 
 /* ═══════ AUTH ═══════ */
@@ -8641,6 +8707,13 @@ async function importFolderPick(inputEl){
   // Track how many we actually completed so the final toast is accurate.
   let completedCount=0;
   let totalClashesImported=0;
+  /* STORAGE-WRITE-GUARD-BATCH start: snapshot the monotonic sv() failure
+     counter so the closing summary below can tell "imported and saved" from
+     "imported into memory only". Without this the loop reported
+     "✓ Imported 29 of 29" purely from completedCount, which only counts
+     importToRegister() calls that ran — not writes that landed. */
+  const _svFailAtStart=_svFailCount;
+  /* STORAGE-WRITE-GUARD-BATCH end */
 
   for(let i=0;i<jobs.length;i++){
     const {xmlFile,baseName,matchedImages}=jobs[i];
@@ -8746,7 +8819,19 @@ async function importFolderPick(inputEl){
     }
   }
 
-  showToast(`✓ Imported ${completedCount} of ${jobs.length} clash tests (${totalClashesImported} clashes total)`,6500);
+  /* STORAGE-WRITE-GUARD-BATCH: only claim success if every write landed.
+     A full store makes sv() a no-op, so the register is correct in memory
+     and empty on disk — report that instead of a tick. The banner raised by
+     _svShowFailureBanner() carries the recovery steps. */
+  if(_svFailCount>_svFailAtStart){
+    showToast(`⚠ NOT SAVED — browser storage is full. ${completedCount} of ${jobs.length} clash tests `+
+      `(${totalClashesImported} clashes) were parsed but could not be written to storage. `+
+      `See the red banner at the top of the page.`,12000);
+    try{console.error('[STORAGE-WRITE-GUARD-BATCH] Folder import completed in memory but '+
+      (_svFailCount-_svFailAtStart)+' storage write(s) failed. Nothing from this import is persisted.');}catch(e){}
+  } else {
+    showToast(`✓ Imported ${completedCount} of ${jobs.length} clash tests (${totalClashesImported} clashes total)`,6500);
+  }
   inputEl.value='';
   /* XTEST-DUP-BATCH-AUDIT start: after a multi-XML batch, automatically run
      the cross-test duplicate audit so the user sees a single consolidated
