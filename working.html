@@ -4316,46 +4316,120 @@ function loadNwImages(files,testName){
   showToast(`Loading ${total} images for ${testName}… 0%`);
 
   const filenames=[];
+  /* IMG-BATCH-BACKPRESSURE: filenames must be complete and in order the moment
+     loadNwImages returns control — importFolderPick's batch loop reads
+     _nwImgByTest[testName] synchronously to compute the next test's firstIdx.
+     The pre-backpressure code got this for free because it pushed inside a
+     synchronous forEach; the worker pool below is async, so populate up front. */
+  imgFiles.forEach(f=>filenames.push(f.name));
   _nwImgByTest[testName]={firstIdx,count:total,filenames};
 
-  imgFiles.forEach((f,i)=>{
-    const name=f.name;
-    const idx=firstIdx+i;
-    filenames.push(name);
-    const reader=new FileReader();
-    reader.onload=async e=>{
-      const b64=e.target.result.split(',')[1];
-      await idbPut(idx,b64);
-      _nwImages.set(testName+'::'+name,idx);
-      _nwImagesByIndex[idx]=b64;
-      loaded++;
-      const pct=Math.round(loaded/total*100);
-      if(pct%10===0||loaded===total){
-        showToast(`Loading ${testName}… ${pct}% (${loaded}/${total})`);
+  /* IMG-BATCH-BACKPRESSURE start: this used to open a FileReader for EVERY
+     image in the same synchronous tick (`imgFiles.forEach(... new FileReader()
+     ... readAsDataURL(f))`) and return immediately, with each onload awaiting
+     its own idbPut. importFolderPick's batch loop then called it un-awaited
+     once per test, so a 29-test W31 pick queued every image in all 29 tests at
+     once — 4,322 images / ~500MB of file data on the real folder — decoding to
+     base64 (~1.37x) with a separate IndexedDB transaction each.
+
+     Measured before this change: by loop iteration 23 test 16 was still at
+     13/126 images, i.e. the XML loop ran ~10s ahead of a reader queue that had
+     thousands of outstanding reads. That backlog is the reported hang, and the
+     peak footprint is the reported crash at 145/288 images. With 1KB stand-in
+     images the same 29-test pick imports deterministically; at a realistic
+     120KB per image it becomes nondeterministic and frequently lands 0 clashes
+     with no W31 snapshot.
+
+     Fix: a bounded worker pool (_IMG_READ_CONCURRENCY at a time) and a Promise
+     return value so callers can await a test's images before starting the next.
+     Peak in-flight decode is now concurrency-bounded instead of unbounded.
+     Read/write failures are logged and counted rather than silently stalling
+     the completion block — the old code only ran completion when `loaded`
+     reached `total`, so a single failed read left the metadata write, the UI
+     refresh and the success toast permanently pending. */
+  let failed=0;
+  const _bump=()=>{
+    loaded++;
+    const pct=Math.round(loaded/total*100);
+    if(pct%10===0||loaded===total){
+      showToast(`Loading ${testName}… ${pct}% (${loaded}/${total})`);
+    }
+  };
+  async function _imgWorker(nextRef){
+    for(;;){
+      const i=nextRef.i++;
+      if(i>=imgFiles.length)return;
+      const f=imgFiles[i];
+      const idx=firstIdx+i;
+      try{
+        const b64=await _readFileAsDataB64(f);
+        await idbPut(idx,b64);
+        _nwImages.set(testName+'::'+f.name,idx);
+        _nwImagesByIndex[idx]=b64;
+      }catch(e){
+        failed++;
+        try{console.error('[IMG-BATCH-BACKPRESSURE] failed to store image "'+f.name+
+          '" for test "'+testName+'": '+((e&&e.message)||e));}catch(_){}
       }
-      if(loaded===total){
-        // Recompute total count across all tests, save new-shape metadata.
-        let grandTotal=0;
-        Object.values(_nwImgByTest).forEach(t=>{grandTotal+=t.count||0;});
-        _nwImgCount=grandTotal;
-        _nwFolderName=testName; // last-loaded test name shown in UI
-        const meta={
-          shape:'imgfix-v1',
-          count:grandTotal,
-          loadedAt:Date.now(),
-          byTest:JSON.parse(JSON.stringify(_nwImgByTest))
-        };
-        await idbPut(0,meta);
-        showToast(`\u2713 ${total} images saved for ${testName} (${grandTotal} total across all tests)`,4000);
-        updateNwImgUI();
-        refreshModalImage();
-        if(S.view==='register')document.getElementById('tbr').innerHTML=getVA('register')||'';
-      }
+      _bump();
+    }
+  }
+  return (async()=>{
+    const nextRef={i:0};
+    const lanes=Math.min(_IMG_READ_CONCURRENCY,imgFiles.length);
+    await Promise.all(Array.from({length:lanes},()=>_imgWorker(nextRef)));
+    // Recompute total count across all tests, save new-shape metadata.
+    let grandTotal=0;
+    Object.values(_nwImgByTest).forEach(t=>{grandTotal+=t.count||0;});
+    _nwImgCount=grandTotal;
+    _nwFolderName=testName; // last-loaded test name shown in UI
+    const meta={
+      shape:'imgfix-v1',
+      count:grandTotal,
+      loadedAt:Date.now(),
+      byTest:JSON.parse(JSON.stringify(_nwImgByTest))
     };
-    reader.readAsDataURL(f);
-  });
+    try{ await idbPut(0,meta); }
+    catch(e){ try{console.error('[IMG-BATCH-BACKPRESSURE] image metadata write failed: '+((e&&e.message)||e));}catch(_){} }
+    const stored=total-failed;
+    showToast(failed
+      ? `⚠ ${stored} of ${total} images saved for ${testName} — ${failed} failed (${grandTotal} total across all tests)`
+      : `✓ ${total} images saved for ${testName} (${grandTotal} total across all tests)`,4000);
+    updateNwImgUI();
+    refreshModalImage();
+    if(S.view==='register'){
+      const tbr=document.getElementById('tbr');
+      if(tbr)tbr.innerHTML=getVA('register')||'';
+    }
+    return {testName,total,stored,failed};
+  })();
+  /* IMG-BATCH-BACKPRESSURE end */
   /* IMG-FIX end */
 }
+
+/* IMG-BATCH-BACKPRESSURE-HELPERS start: how many images may be decoding and
+   writing to IndexedDB at once, across the whole app. 4 keeps a weekly folder
+   pick responsive while capping peak transient memory at roughly
+   4 x (file + data-URL + base64) instead of one copy per image in the folder.
+   _readFileAsDataB64 is the promise wrapper the pool awaits; it strips the
+   `data:...;base64,` prefix exactly as the previous inline onload did, but via
+   indexOf rather than split(',') so a comma inside the payload cannot truncate
+   it. */
+const _IMG_READ_CONCURRENCY=4;
+function _readFileAsDataB64(f){
+  return new Promise((res,rej)=>{
+    const r=new FileReader();
+    r.onload=e=>{
+      const s=String((e.target&&e.target.result)||'');
+      const i=s.indexOf(',');
+      res(i>=0?s.slice(i+1):'');
+    };
+    r.onerror=()=>rej((r.error)||new Error('FileReader failed'));
+    r.onabort=()=>rej(new Error('FileReader aborted'));
+    try{ r.readAsDataURL(f); }catch(e){ rej(e); }
+  });
+}
+/* IMG-BATCH-BACKPRESSURE-HELPERS end */
 
 // Refresh the image panel inside an open modal
 function refreshModalImage(){
@@ -8573,13 +8647,38 @@ async function importFolderPick(inputEl){
     showToast(`[${i+1}/${jobs.length}] Importing "${baseName}" — ${matchedImages.length} images…`,3500);
 
     try{
-      // Kick off image upload first. _nwImgByTest[baseName] is set
-      // synchronously inside loadNwImages so subsequent iterations get the
-      // correct next firstIdx even before reads finish.
+      /* IMG-BATCH-BACKPRESSURE-AWAIT start: this used to fire loadNwImages()
+         without awaiting it, on the reasoning quoted below that only
+         _nwImgByTest[baseName] had to be set synchronously for the next
+         iteration's firstIdx. That is still true, but it let the XML loop run
+         the full 29 tests while every image in every test was still decoding,
+         so peak in-flight work was the ENTIRE folder rather than one test's
+         worth. Awaiting here bounds the batch to one test's images at a time
+         (themselves capped at _IMG_READ_CONCURRENCY), which is what stops the
+         W31 pick hanging and OOM-ing partway through the image load.
+
+         Cost: the batch now takes as long as its images genuinely need instead
+         of appearing to finish early and thrashing afterwards. The per-test
+         progress toasts already report that, and the loop still yields between
+         iterations below.
+
+         Image failures must not abort the clash import — loadNwImages resolves
+         with a {failed} count rather than rejecting, but guard anyway so a
+         rejection can never cost this test's clashes. */
       window._pendingImgTest=baseName;
       if(matchedImages.length){
-        loadNwImages(matchedImages,baseName);
+        try{
+          const _imgRes=await loadNwImages(matchedImages,baseName);
+          if(_imgRes&&_imgRes.failed){
+            try{console.warn('[IMG-BATCH-BACKPRESSURE-AWAIT] "'+baseName+'": '+
+              _imgRes.failed+' of '+_imgRes.total+' images failed to store; clash import continues.');}catch(e){}
+          }
+        }catch(e){
+          try{console.error('[IMG-BATCH-BACKPRESSURE-AWAIT] image load rejected for "'+
+            baseName+'": '+((e&&e.message)||e)+' — importing this test\'s clashes anyway.');}catch(_){}
+        }
       }
+      /* IMG-BATCH-BACKPRESSURE-AWAIT end */
 
       // Read XML and parse synchronously. file.text() is a clean Promise
       // wrapper around FileReader; bparse() is synchronous after the
