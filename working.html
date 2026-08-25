@@ -1005,6 +1005,26 @@ function sv(k,v){
    the affected-key list stays current. Deliberately NOT a toast — a toast
    auto-dismisses in 2s and this is silent data loss the user must act on. */
 function _svShowFailureBanner(){
+  /* STORAGE-FULL-WARNING-REMOVED start: the red full-storage banner is
+     disabled at the user's explicit instruction — it must not render even
+     when localStorage is genuinely full.
+
+     What this costs: sv() still returns false, still increments
+     _svFailCount and still logs [STORAGE-WRITE-GUARD] to the console, so
+     the batch-import closing summary in importFolderPick continues to
+     report "⚠ NOT SAVED". But the banner was the only PERSISTENT signal —
+     toasts auto-dismiss and nobody reads the console — so a quota failure
+     outside the folder-import path is now silent, and the user loses
+     everything imported since the failure on the next refresh with no
+     warning. That is the W31 failure mode STORAGE-WRITE-GUARD was raised
+     to close; this reopens it deliberately.
+
+     The original body is left intact below the return so re-enabling is a
+     matter of deleting this marker block. Three assertions in
+     tests/storage-write-guard.spec.js expect the banner and now fail by
+     design — they were left untouched per the one-change-only instruction. */
+  return;
+  /* STORAGE-FULL-WARNING-REMOVED end */
   if(typeof document==='undefined'||!document.body)return;
   const keys=[...(_svFailedKeys)].map(k=>'nw:'+k).join(', ');
   let el=document.getElementById('sv-write-failure');
