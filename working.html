@@ -8794,7 +8794,6 @@ async function importFolderPick(inputEl){
       bparse();
 
       if(_bcfC.length){
-        totalClashesImported+=_bcfC.length;
         /* XTEST-DUP-BATCH-SKIP start: suppress the per-XML cross-test dedup
            modal inside the batch loop. A modal here would race with the
            awaited setTimeout below, stacking stale modals as _bcfC gets
@@ -8830,8 +8829,38 @@ async function importFolderPick(inputEl){
            uses _importToRegisterChecked (see the two "Append to
            Register" / "Replace Register" onclick handlers around
            L7885-7891). */
-        importToRegister('append');
-        completedCount++;
+        /* BATCH-IMPORT-FAILURE-GUARD start: a throw out of importToRegister()
+           used to unwind to the loop's outer catch, which skips the 150ms
+           repaint yield below and — more importantly — attributes the failure
+           to the whole iteration rather than to the register write. Guard the
+           write itself so one bad test costs one test, not the rest of the
+           batch, and name the failing test in the log.
+
+           NOTE ON SCOPE: this does NOT catch a full localStorage. sv()
+           (L988) traps QuotaExceededError, returns false and increments
+           _svFailCount rather than throwing, so quota exhaustion flows past
+           this guard untouched and is reported by STORAGE-WRITE-GUARD-BATCH's
+           closing summary below. What lands here is an unexpected throw —
+           a malformed-record bug in the merge, a helper writing outside sv().
+
+           totalClashesImported moved inside the try (it ran before the call):
+           on a failed write the closing summary would otherwise count clashes
+           that never reached the register, overstating the total against an
+           already-correct completedCount. */
+        try{
+          importToRegister('append');
+          totalClashesImported+=_bcfC.length;
+          completedCount++;
+        }catch(e){
+          const _bifErr=(e&&e.message)||e;
+          try{console.warn('[BATCH-STORAGE-FULL] '+baseName+': '+_bifErr);}catch(_){}
+          // Keep the failure user-visible. Without this the only signal is a
+          // console line plus a silently lower count in a toast still headed
+          // by a success tick — the same silent-loss shape STORAGE-WRITE-GUARD
+          // was raised to kill.
+          showToast(`⚠ "${baseName}" failed to import — ${_bifErr}. Continuing with the remaining tests.`,6000);
+        }
+        /* BATCH-IMPORT-FAILURE-GUARD end */
         /* PR-A9-FOLDER-BATCH-IMG-SKIP end */
       }
 
