@@ -8760,6 +8760,32 @@ async function importFolderPick(inputEl){
   /* STORAGE-WRITE-GUARD-BATCH end */
 
   for(let i=0;i<jobs.length;i++){
+    /* BATCH-IMPORT-EARLY-STOP start: bail out of the batch as soon as a
+       localStorage write has been rejected, instead of parsing all 29 tests
+       into a store that cannot accept any of them. Each sv('clashes',…)
+       JSON.stringify()s the entire accumulated register before the quota
+       check rejects it, so past the fill point every remaining test pays
+       full serialisation cost for a write that is thrown away — that is the
+       mid-loop stall, and this is what stops it.
+
+       Gated on _svFailAtStart, NOT on _svFailCount > 0. _svFailCount is
+       monotonic for the page lifetime and is never reset, so a bare > 0 test
+       would abort at i=0 with "0 of 29" on every folder import for the rest
+       of the session once any write had ever failed — including the retry
+       right after the user clears space. Comparing against the snapshot
+       taken above scopes the check to this batch.
+
+       Console line as well as the toast: showToast ignores its duration
+       argument (always 2s) and the closing summary toast lands on top of
+       this one immediately, so the toast alone is easy to miss. */
+    if(_svFailCount>_svFailAtStart){
+      showToast(`⚠ Storage full after ${i} of ${jobs.length} tests. Stopping batch.`,6000);
+      try{console.warn('[BATCH-IMPORT-EARLY-STOP] Halting folder import at test '+i+
+        ' of '+jobs.length+' — '+(_svFailCount-_svFailAtStart)+
+        ' localStorage write(s) rejected. Remaining tests were not parsed.');}catch(e){}
+      break;
+    }
+    /* BATCH-IMPORT-EARLY-STOP end */
     const {xmlFile,baseName,matchedImages}=jobs[i];
     showToast(`[${i+1}/${jobs.length}] Importing "${baseName}" — ${matchedImages.length} images…`,3500);
 
