@@ -8637,15 +8637,39 @@ async function importFolderPick(inputEl){
 
   // Sniff ALL candidates — multi-test folders have one report file per test.
   showToast(`Scanning ${reportCandidates.length} candidate file${reportCandidates.length===1?'':'s'}…`,2500);
+  /* W31-XML-SNIFF-DEBUG start: diagnostic console logging for the batch
+     XML content sniff. The W31 pick surfaced 29 report candidates but only
+     1 passed the regex, and the old loop swallowed every read error
+     silently, so there was nothing to diagnose from. Logging name + size,
+     read success/failure, and the leading bytes of each sample separates
+     the three candidate causes: unreadable files (OneDrive online-only
+     stubs / permissions), an encoding mismatch (a UTF-16 BOM makes the
+     ASCII regex miss real XML), or genuinely non-XML candidates. Logging
+     only — the sniff decision and the skip-on-error behaviour are
+     unchanged. Remove once W31 is diagnosed. */
   const xmlFiles=[];
+  try{console.log('[W31-DEBUG] Starting XML sniff on',reportCandidates.length,'candidates');}catch(e){}
   for(const c of reportCandidates){
     try{
       const sample=await c.slice(0,4096).text();
-      if(/<exchange|<batchtest|<clashresult|<clashtest/i.test(sample)){
+      const isXml=/<exchange|<batchtest|<clashresult|<clashtest/i.test(sample);
+      // Failures get 200 chars — enough to expose a BOM, an HTML shim or a
+      // binary header. Matches get 100 to keep the log readable.
+      try{
+        console.log('[W31-DEBUG]',c.name,'('+c.size+' bytes) →',
+          isXml?'✓ XML match':'✗ No match',
+          '['+sample.substring(0,isXml?100:200).replace(/\s+/g,' ')+']');
+      }catch(e){}
+      if(isXml){
         xmlFiles.push(c);
       }
-    }catch(e){/* skip unreadable */}
+    }catch(e){
+      try{console.log('[W31-DEBUG]',c.name,'('+((c&&c.size)||0)+' bytes) → ERROR:',e&&e.message);}catch(_e){}
+      /* skip unreadable */
+    }
   }
+  try{console.log('[W31-DEBUG] Final xmlFiles:',xmlFiles.map(x=>x.name));}catch(e){}
+  /* W31-XML-SNIFF-DEBUG end */
 
   if(!xmlFiles.length){
     showToast('No Navisworks XML content found in this folder',6000);
