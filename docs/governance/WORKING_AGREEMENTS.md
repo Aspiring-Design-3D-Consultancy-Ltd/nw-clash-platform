@@ -84,6 +84,11 @@ Before release:
 - Verify test status.
 - Verify governance workflow completion.
 
+When a brief declares a marker block in `working.html` protected:
+
+- Run the invariant gate in `PROTECTED_REGIONS.md` before requesting merge.
+- A changed block is a stop, not a warning.
+
 ---
 
 # Documentation Standards
