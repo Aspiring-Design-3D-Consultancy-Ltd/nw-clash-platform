@@ -4429,7 +4429,19 @@ function loadNwImages(files,testName){
       const idx=firstIdx+i;
       try{
         const b64=await _readFileAsDataB64(f);
-        await idbPut(idx,b64);
+        /* IMG-DHASH-PHASE1 start: fingerprint on the way in, inside this
+           worker, so hashing inherits the pool's _IMG_READ_CONCURRENCY cap
+           rather than adding a second source of parallelism. A hash failure
+           must never cost the image — store it with dhash:null and let the
+           backfill retry on a later load. */
+        let _dh=null;
+        try{ _dh=await computeDHash(b64); }
+        catch(e){
+          try{console.warn('[IMG-DHASH-PHASE1] hash failed for "'+f.name+'" ('+testName+
+            '): '+((e&&e.message)||e)+' — image stored unhashed.');}catch(_){}
+        }
+        await idbPut(idx,{b64,dhash:_dh});
+        /* IMG-DHASH-PHASE1 end */
         _nwImages.set(testName+'::'+f.name,idx);
         _nwImagesByIndex[idx]=b64;
       }catch(e){
@@ -4496,6 +4508,148 @@ function _readFileAsDataB64(f){
   });
 }
 /* IMG-BATCH-BACKPRESSURE-HELPERS end */
+
+/* IMG-DHASH-PHASE1 start: perceptual-hash layer for stored clash images.
+   Phase 1 is storage + computation ONLY — nothing reads the hash yet. No
+   Dedup Queue change, no comparison, no threshold, no UI.
+
+   RECORD SHAPE. The images store previously held bare base64 strings at
+   keys 1..n (key 0 is the metadata block). To put the hash "on the image
+   record" the record becomes {b64, dhash}. Every read goes through
+   _dhashUnwrap(), which accepts both shapes, so a store written by any
+   earlier build keeps working untouched and un-migrated until the backfill
+   reaches it. dhash is null when hashing failed — distinguishable from
+   "not yet hashed" only by re-running, which is deliberate: a permanently
+   undecodable image should not be retried forever, but a null costs one
+   cheap re-read per load rather than a separate failure ledger.
+
+   Cost accepted: because the hash lives on the record, backfilling an
+   existing store rewrites each image's payload, not just 16 bytes. Bounded
+   at _IMG_READ_CONCURRENCY and resumable, but it is real IO on a large
+   store. The alternative — sidecar 'dh:<idx>' keys in the same store —
+   writes 16 bytes per image and avoids the rewrite entirely, but it puts
+   non-numeric keys in the images store, which changes what idbGetAllKeys()
+   returns and breaks img-batch-backpressure.spec.js's key-count assertion.
+   Followed the brief; flagging the trade for review. */
+
+/* Data URLs carry their own MIME and the store keeps only the payload, so
+   recover the type from the magic bytes at the head of the base64. */
+function _dhashMime(b64){
+  if(/^iVBORw0KGgo/.test(b64))return 'image/png';
+  if(/^R0lGOD/.test(b64))return 'image/gif';
+  if(/^UklGR/.test(b64))return 'image/webp';
+  return 'image/jpeg';
+}
+
+/* Normalises either record shape to {b64, dhash}. Returns null for the
+   metadata block, an empty record, or anything unrecognised. */
+function _dhashUnwrap(rec){
+  if(typeof rec==='string')return rec?{b64:rec,dhash:null}:null;
+  if(rec&&typeof rec==='object'&&typeof rec.b64==='string'&&rec.b64)
+    return {b64:rec.b64,dhash:(typeof rec.dhash==='string'&&rec.dhash)||null};
+  return null;
+}
+
+/* computeDHash(base64) -> Promise<16-char lowercase hex>
+   Difference hash: downscale to 9x8, convert to luminance, then compare each
+   pixel with its right-hand neighbour along each row — 8 rows x 8 comparisons
+   = 64 bits. Robust to rescaling and mild compression, which is what makes it
+   useful against Navisworks viewpoint captures of the same clash.
+
+   Reads no application state; its only dependencies are the DOM's Image and
+   canvas. Necessarily async — image decode is. Rejects rather than returning
+   a sentinel so callers decide what a failure means. */
+function computeDHash(base64){
+  return new Promise((resolve,reject)=>{
+    if(typeof base64!=='string'||!base64){reject(new Error('computeDHash: empty input'));return;}
+    const img=new Image();
+    img.onload=()=>{
+      try{
+        const c=document.createElement('canvas');
+        c.width=9;c.height=8;
+        const g=c.getContext('2d',{willReadFrequently:true});
+        if(!g){reject(new Error('computeDHash: no 2d context'));return;}
+        g.drawImage(img,0,0,9,8);
+        const d=g.getImageData(0,0,9,8).data;
+        const lum=new Array(72);
+        for(let i=0;i<72;i++){
+          const o=i*4;
+          lum[i]=0.299*d[o]+0.587*d[o+1]+0.114*d[o+2];
+        }
+        let hex='';
+        for(let row=0;row<8;row++){
+          let nib=0,n=0;
+          for(let col=0;col<8;col++){
+            const p=row*9+col;
+            nib=(nib<<1)|(lum[p]>lum[p+1]?1:0);
+            if(++n===4){hex+=nib.toString(16);nib=0;n=0;}
+          }
+        }
+        resolve(hex);
+      }catch(e){reject(e);}
+    };
+    img.onerror=()=>reject(new Error('computeDHash: image decode failed'));
+    img.src='data:'+_dhashMime(base64)+';base64,'+base64;
+  });
+}
+
+/* Backfill for images stored before this shipped. Resumable by construction:
+   each image's hash is committed on its own put, so an interrupted run leaves
+   every completed image hashed and simply re-scans the rest next launch. Reuses
+   the same bounded worker-pool shape and the same _IMG_READ_CONCURRENCY cap as
+   the import pipeline — no extra parallelism is introduced. Writes nothing to
+   localStorage. Every await yields to the event loop, so the UI stays live. */
+let _dhashBackfillRunning=false;
+async function _dhashBackfill(){
+  if(_dhashBackfillRunning)return {skippedRun:true};
+  _dhashBackfillRunning=true;
+  const t0=(typeof performance!=='undefined'&&performance.now)?performance.now():0;
+  let hashed=0,already=0,failed=0,targets=[];
+  try{
+    try{ if(localStorage.getItem('nw:pendingIdbWipe'))return {hashed:0,already:0,failed:0,total:0}; }catch(e){}
+    let keys=[];
+    try{ keys=await idbGetAllKeys(); }
+    catch(e){
+      try{console.warn('[IMG-DHASH-PHASE1] backfill could not read image keys: '+((e&&e.message)||e));}catch(_){}
+      return {hashed:0,already:0,failed:0,total:0};
+    }
+    // Key 0 is the metadata block, never an image.
+    targets=(keys||[]).filter(k=>typeof k==='number'&&k>0);
+    if(!targets.length)return {hashed:0,already:0,failed:0,total:0};
+
+    const nextRef={i:0};
+    async function _dhashWorker(){
+      for(;;){
+        const i=nextRef.i++;
+        if(i>=targets.length)return;
+        const k=targets[i];
+        // A selective reset or full wipe outranks a backfill: stop touching
+        // the store rather than re-opening a DB someone is trying to delete.
+        try{ if(localStorage.getItem('nw:pendingIdbWipe'))return; }catch(e){}
+        try{
+          const norm=_dhashUnwrap(await idbGet(k));
+          if(!norm){failed++;continue;}
+          if(norm.dhash){already++;continue;}
+          const dhash=await computeDHash(norm.b64);
+          await idbPut(k,{b64:norm.b64,dhash});
+          hashed++;
+        }catch(e){failed++;}
+      }
+    }
+    const lanes=Math.min(_IMG_READ_CONCURRENCY,targets.length);
+    await Promise.all(Array.from({length:lanes},()=>_dhashWorker()));
+  } finally {
+    _dhashBackfillRunning=false;
+  }
+  if(hashed||failed){
+    const ms=((typeof performance!=='undefined'&&performance.now)?performance.now():0)-t0;
+    try{console.log('[IMG-DHASH-PHASE1] backfill: '+hashed+' hashed, '+already+
+      ' already had a hash, '+failed+' failed, of '+targets.length+' images in '+
+      Math.round(ms)+'ms');}catch(e){}
+  }
+  return {hashed,already,failed,total:targets.length};
+}
+/* IMG-DHASH-PHASE1 end */
 
 // Refresh the image panel inside an open modal
 function refreshModalImage(){
@@ -4651,7 +4805,13 @@ function _posClashCount(testName){
 async function _idbGetB64(idx){
   if(_nwImagesByIndex[idx])return _nwImagesByIndex[idx]; // memory cache hit
   try{
-    const b64=await idbGet(idx);
+    /* IMG-DHASH-PHASE1 start: records are now {b64,dhash}; _dhashUnwrap also
+       accepts the bare-string shape written by every earlier build, so an
+       un-backfilled store reads exactly as before. The memory cache still
+       holds plain b64 — callers of this function are unchanged. */
+    const norm=_dhashUnwrap(await idbGet(idx));
+    const b64=norm?norm.b64:null;
+    /* IMG-DHASH-PHASE1 end */
     if(b64)_nwImagesByIndex[idx]=b64; // cache it
     return b64||null;
   }catch(e){return null;}
@@ -18558,7 +18718,7 @@ async function exportSingleBCF(uid){
 function showToast(msg){const t=document.createElement('div');t.textContent=msg;t.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#0F1824;color:#fff;padding:8px 18px;border-radius:6px;font-size:12px;font-family:Arial,sans-serif;z-index:9999;pointer-events:none;opacity:1;transition:opacity .4s';document.body.appendChild(t);setTimeout(()=>{t.style.opacity='0';setTimeout(()=>t.remove(),400);},2000);}
 
 /* ═══════ INIT ═══════ */
-window.onload=()=>{initAuth();initNwImages();/* PLAN-BG start: load floor-plan records into memory cache on app start. Mirrors initNwImages — non-blocking, fails silent on no-data. */initPlans();/* PLAN-BG end */
+window.onload=()=>{initAuth();/* IMG-DHASH-PHASE1 start: backfill after initNwImages has restored the metadata, deliberately un-awaited so it never gates app startup or UI interaction. Two guards, both load-bearing: skip entirely when no images were restored, so a store with nothing to hash generates no IndexedDB traffic at all; and delay past the 1500/1600ms deferred migrations so the backfill's openIDB() cannot land in the middle of another caller's open/close cycle. Without the first guard the un-awaited backfill re-populated the cached _idbOpenPromise while selective-reset's retry path was mid-test, masking a failed open. Failures are contained inside _dhashBackfill. */initNwImages().then(()=>{if(!(_nwImgCount>0))return;setTimeout(()=>{try{_dhashBackfill();}catch(e){}},2000);}).catch(()=>{});/* IMG-DHASH-PHASE1 end *//* PLAN-BG start: load floor-plan records into memory cache on app start. Mirrors initNwImages — non-blocking, fails silent on no-data. */initPlans();/* PLAN-BG end */
 /* DUP-FILES-FIX start: auto-run the imports[] backfill once state has loaded.
   Delayed by 1500ms because initAuth is async (awaits hashPin, etc) and we need
   S.clashes / S.weekly populated. Backfill is idempotent — safe if it runs twice. */
