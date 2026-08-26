@@ -40,3 +40,27 @@ Changes:
 Notes:
 
 Documentation/tooling capability only. No `working.html` changes. No investigation reopened.
+
+---
+
+### 2026-08-26
+
+Summary:
+
+Protected-region invariant gate corrected and recorded in the repository
+(DEC-013). The fingerprints previously carried in briefs did not reproduce under
+any stated algorithm, leaving the gate unrunnable.
+
+Changes:
+
+- Added: `docs/governance/PROTECTED_REGIONS.md` (gate procedure, algorithm,
+  corrected fingerprints, failure handling)
+- Updated: `docs/governance/DECISION_LOG.md` (DEC-013)
+- Updated: `docs/governance/WORKING_AGREEMENTS.md` (cross-reference under
+  Repository Standards)
+
+Notes:
+
+Documentation only. No `working.html` changes. Both protected blocks were
+verified unchanged at `161894f` before the fingerprints were recorded.
+

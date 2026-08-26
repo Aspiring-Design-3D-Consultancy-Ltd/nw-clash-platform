@@ -351,6 +351,83 @@ Governance documentation should evolve through practical use rather than specula
 
 ---
 
+DEC-009 through DEC-012 are recorded in dedicated files in this directory
+(`DEC-009-GOVERNANCE-AUTOMATION.md`, `DEC-010-WORKFLOW-STATE-AUTOMATION.md`,
+`DEC-011-CONFIRMED-DEFECT-REMEDIATION.md`, `DEC-012-RELEASE-SNAPSHOT.md`) rather
+than inline here.
+
+---
+
+# DEC-013
+
+Title:
+
+Protected-Region Invariant Gate — Corrected Fingerprints and Stated Algorithm
+
+Status:
+
+Approved
+
+Date:
+
+2026-08-26
+
+Decision:
+
+The invariant gate protecting marker blocks in `working.html` is a direct byte
+comparison of each protected block against the same block on `origin/main`.
+Fingerprints are recorded alongside as human-readable summaries, computed as
+sha256 over the extracted block, truncated to the first 16 hex characters.
+
+Corrected fingerprints, recorded at commit `161894f`:
+
+- REVIEW-QUEUE-DETECT: `54db97511c97f7ad`
+- APPROVE-TERMINAL-STATUS-FILTER: `c1173153c15dba7b`
+
+These supersede the previously circulated values `61bcb46de6148f06` and
+`b968bca42c93b2be`.
+
+Procedure, algorithm, failure handling and the process for adding a region are
+recorded in `PROTECTED_REGIONS.md`.
+
+Reasoning:
+
+During review of PR #61 (IMG-DHASH-PHASE1) the brief required both blocks to be
+byte-identical and quoted the two fingerprints above. Neither value could be
+reproduced by sha256 or sha1 over either block, and no algorithm was recorded
+with them. Their origin is unknown — most likely a truncated or differently
+scoped digest from an earlier session.
+
+The consequence was that the gate could not be executed as specified. Byte
+comparison against `origin/main` was substituted, and both blocks were confirmed
+unchanged, but an invariant gate that cannot be run is not a gate.
+
+A fingerprint alone also cannot establish that a region is unchanged relative to
+a moving base; only comparison against that base can. The corrected gate
+therefore performs the comparison and reports the fingerprint, rather than
+relying on the fingerprint alone.
+
+This expansion of governance documentation is consistent with DEC-008: a genuine
+process gap was discovered through practical use rather than anticipated
+speculatively.
+
+Impact:
+
+Briefs declaring a protected region should reference `PROTECTED_REGIONS.md`
+rather than quoting fingerprints inline. Fingerprints in that document are
+updated only in the same commit as an approved, reviewed change to a protected
+block, never to make a failing gate pass.
+
+Related Investigations:
+
+PR #61 — PIXEL-DEDUP Phase 1 (IMG-DHASH-PHASE1), commit `161894f`
+
+Related Issues:
+
+None.
+
+---
+
 # Future Decisions
 
 Record future decisions using the following structure:
