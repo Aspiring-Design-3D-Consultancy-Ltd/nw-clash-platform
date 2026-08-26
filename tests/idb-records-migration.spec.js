@@ -431,3 +431,164 @@ test.describe('IDB-RECORDS-VERIFY-RACE', () => {
   });
 });
 
+/* IDB-RECORDS-GATE-QUOTA — the migration must complete on a profile that is at
+   100% of the localStorage cap, which is the only profile it exists to rescue.
+   Under the previous ordering the 1-byte gate write was itself rejected with
+   QuotaExceededError, so the migration could never finish. */
+test.describe('IDB-RECORDS-GATE-QUOTA', () => {
+  /** Seed a register, then pad localStorage until it will not accept another byte. */
+  async function fillToCap(page, clashCount = 400) {
+    return page.evaluate(async (clashCount) => {
+      Object.keys(localStorage).forEach(k => localStorage.removeItem(k));
+      localStorage.setItem('nw:dataVersion', JSON.stringify(DATA_VERSION));
+      localStorage.setItem('nw:dedupInitialScan', '1');
+      const reg = Array.from({ length: clashCount }, (_, i) => ({
+        uid: 'CLX-' + String(i + 1).padStart(3, '0'), name: 'Clash ' + i,
+        testName: '03_GAS vs 08_AMHS', status: 'Active', notes: 'x'.repeat(600),
+      }));
+      localStorage.setItem('nw:clashes', JSON.stringify(reg));
+      localStorage.setItem('nw:weekly', JSON.stringify([{ year: 2026, week: 31 }]));
+      // Pad down to the last byte with progressively smaller chunks.
+      let pad = 0;
+      for (const size of [262144, 32768, 4096, 512, 64, 8, 1]) {
+        for (;;) {
+          try { localStorage.setItem('pad:' + pad, 'p'.repeat(size)); pad++; }
+          catch (e) { break; }
+        }
+      }
+      // Prove there is genuinely no room left for even a 1-byte value.
+      let roomLeft = true;
+      try { localStorage.setItem('pad:probe', '1'); localStorage.removeItem('pad:probe'); }
+      catch (e) { roomLeft = false; }
+      return { roomLeft, clashChars: (localStorage.getItem('nw:clashes') || '').length };
+    }, clashCount);
+  }
+
+  test('(a) a migration on a localStorage at exactly-full quota completes', async ({ page }) => {
+    test.setTimeout(120000);
+    await fresh(page);
+    const seed = await fillToCap(page);
+    expect(seed.roomLeft, 'harness must genuinely fill the store').toBe(false);
+    expect(seed.clashChars).toBeGreaterThan(200000);
+
+    await reload(page);
+    const r = await page.evaluate(async () => ({
+      fallback: _recFallback,
+      gate: localStorage.getItem('nw:idbRecordsMigrated'),
+      lsClashes: localStorage.getItem('nw:clashes'),
+      lsWeekly: localStorage.getItem('nw:weekly'),
+      recordsLen: (await _idbGetRecord('clashes') || []).length,
+      registerLen: (S.clashes || []).length,
+    }));
+    expect(r.fallback).toBe(false);      // the deadlock: this was true on 9a0007e
+    expect(r.gate).toBe('1');            // and this was null
+    expect(r.lsClashes).toBeNull();
+    expect(r.lsWeekly).toBeNull();
+    expect(r.recordsLen).toBe(400);
+    expect(r.registerLen).toBe(400);
+    await page.evaluate(() => Object.keys(localStorage).filter(k => k.startsWith('pad:')).forEach(k => localStorage.removeItem(k)));
+  });
+
+  test('(b) a crash between delete and gate-set loses nothing; the next boot recovers', async ({ page }) => {
+    test.setTimeout(120000);
+    await fresh(page);
+    await page.evaluate(() => {
+      localStorage.setItem('nw:dataVersion', JSON.stringify(DATA_VERSION));
+      localStorage.setItem('nw:dedupInitialScan', '1');
+      localStorage.setItem('nw:clashes', JSON.stringify(
+        Array.from({ length: 250 }, (_, i) => ({ uid: 'CLX-' + String(i + 1).padStart(3, '0'), name: 'Clash ' + i }))));
+      localStorage.setItem('nw:weekly', JSON.stringify([{ year: 2026, week: 31 }]));
+      localStorage.setItem('__gateBlock', '1');
+    });
+    // Kill the gate write only — the deletes before it still land. That is
+    // exactly the crash window: originals gone, gate unset, records populated.
+    await page.addInitScript(() => {
+      const realSet = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (k, v) {
+        if (k === 'nw:idbRecordsMigrated' && localStorage.getItem('__gateBlock') === '1') {
+          throw new DOMException('Quota exceeded', 'QuotaExceededError');
+        }
+        return realSet.call(this, k, v);
+      };
+    });
+
+    await reload(page);
+    const mid = await page.evaluate(async () => ({
+      fallback: _recFallback,
+      gate: localStorage.getItem('nw:idbRecordsMigrated'),
+      lsClashes: localStorage.getItem('nw:clashes'),
+      recordsLen: (await _idbGetRecord('clashes') || []).length,
+      registerLen: (S.clashes || []).length,
+    }));
+    // The crash window itself.
+    expect(mid.gate).toBeNull();          // gate never got written
+    expect(mid.lsClashes).toBeNull();     // originals already deleted
+    expect(mid.recordsLen).toBe(250);     // data is safe in records
+    // Hazard the reorder could have introduced: falling back here would read the
+    // now-empty localStorage and show the user an empty register.
+    expect(mid.fallback).toBe(false);
+    expect(mid.registerLen).toBe(250);
+
+    // Next boot, gate write no longer blocked.
+    await page.evaluate(() => localStorage.setItem('__gateBlock', '0'));
+    await reload(page);
+    const after = await page.evaluate(async () => {
+      const back = await _idbGetRecord('clashes');
+      return {
+        fallback: _recFallback,
+        gate: localStorage.getItem('nw:idbRecordsMigrated'),
+        recordsLen: (back || []).length,
+        firstUid: back && back[0] && back[0].uid,
+        lastUid: back && back[back.length - 1] && back[back.length - 1].uid,
+        registerLen: (S.clashes || []).length,
+      };
+    });
+    expect(after.gate).toBe('1');          // self-healed
+    expect(after.fallback).toBe(false);
+    expect(after.recordsLen).toBe(250);    // nothing lost
+    expect(after.firstUid).toBe('CLX-001');
+    expect(after.lastUid).toBe('CLX-250');
+    expect(after.registerLen).toBe(250);
+  });
+
+  test('an empty localStorage with the gate unset never overwrites a populated records store', async ({ page }) => {
+    await fresh(page); await reload(page);
+    // Put verified data in records, then recreate the crash window by hand:
+    // gate cleared, no routed keys in localStorage.
+    await page.evaluate(async () => {
+      await _idbPutRecord('clashes', Array.from({ length: 120 }, (_, i) => ({ uid: 'CLX-' + (i + 1) })));
+      localStorage.removeItem('nw:idbRecordsMigrated');
+      localStorage.removeItem('nw:clashes');
+      localStorage.removeItem('nw:weekly');
+    });
+    const r = await page.evaluate(async () => {
+      const res = await _recMigrateFromLocalStorage();
+      return { moved: res.moved, recordsLen: (await _idbGetRecord('clashes') || []).length };
+    });
+    expect(r.moved).toEqual([]);        // nothing was read, so nothing was written
+    expect(r.recordsLen).toBe(120);     // the verified store is untouched
+  });
+
+  test('a gate-write failure is not fatal and does not trigger fallback', async ({ page }) => {
+    await fresh(page); await reload(page);
+    const r = await page.evaluate(async () => {
+      localStorage.removeItem('nw:idbRecordsMigrated');
+      localStorage.setItem('nw:clashes', JSON.stringify([{ uid: 'CLX-001' }]));
+      const realSet = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (k, v) {
+        if (k === 'nw:idbRecordsMigrated') throw new DOMException('Quota exceeded', 'QuotaExceededError');
+        return realSet.call(this, k, v);
+      };
+      let threw = null, res = null;
+      try { res = await _recMigrateFromLocalStorage(); } catch (e) { threw = e.message; }
+      Storage.prototype.setItem = realSet;
+      return { threw, gateSet: res && res.gateSet, moved: res && res.moved,
+               recordsLen: (await _idbGetRecord('clashes') || []).length };
+    });
+    expect(r.threw).toBeNull();       // must NOT throw — throwing sends _recInit to fallback
+    expect(r.gateSet).toBe(false);    // reported honestly
+    expect(r.moved).toEqual(['clashes']);
+    expect(r.recordsLen).toBe(1);     // data landed regardless
+  });
+});
+
