@@ -1080,6 +1080,26 @@ function lv(k,d){
    _recFallback true, and sv()/lv() behave exactly as they do today against
    localStorage. The app never depends on this layer having worked. */
 
+/* IDB-RECORDS-VERIFY-RACE start: "the register has been loaded" signal.
+   Before the records layer existed, initAuth() assigned S.clashes synchronously
+   before its first await, so anything running later on window.onload could read
+   S.clashes and trust it. _recInit() introduced an await AHEAD of that
+   assignment, which opened a window where S.clashes is still [] — not because
+   the register is empty, but because it has not been loaded yet.
+   ORPHAN-IDB-SWEEP reads exactly that condition and responds by deleting the
+   whole database, which is what destroyed the in-flight migration write on the
+   live profile. This promise lets a reader wait for the register to be KNOWN
+   rather than inferring it from a not-yet-populated array. */
+let _registerHydrated=false;
+let _resolveRegisterReady;
+const _registerReady=new Promise(res=>{_resolveRegisterReady=res;});
+function _markRegisterHydrated(){
+  if(_registerHydrated)return;
+  _registerHydrated=true;
+  try{_resolveRegisterReady(true);}catch(e){}
+}
+/* IDB-RECORDS-VERIFY-RACE end */
+
 /* Keys routed to IndexedDB, named as sv()/lv() take them (no nw: prefix). */
 const _IDB_ROUTED_KEYS=new Set(['clashes','weekly']);
 function _isRoutedKey(k){return _IDB_ROUTED_KEYS.has(k);}
@@ -1205,8 +1225,19 @@ async function _recMigrateFromLocalStorage(){
     }
     await _idbPutRecord(k,parsed);
     const back=await _idbGetRecord(k);
-    if(JSON.stringify(back)!==JSON.stringify(parsed)){
-      throw new Error('verify failed for nw:'+k+' — read-back did not match; migration aborted');
+    const _bs=JSON.stringify(back), _ps=JSON.stringify(parsed);
+    if(_bs!==_ps){
+      /* IDB-RECORDS-VERIFY-RACE: same comparison, same abort — only the message
+         is richer. "read-back was undefined" means the record vanished between
+         the write and the read (a concurrent deleteDatabase), which is a very
+         different fault from a content mismatch and was previously
+         indistinguishable in the console. */
+      const _why = back===undefined
+        ? 'read-back was undefined — the record vanished between write and read '+
+          '(concurrent deleteDatabase?)'
+        : 'content differed ('+String(_ps&&_ps.length)+' chars written, '+
+          String(_bs&&_bs.length)+' chars read back)';
+      throw new Error('verify failed for nw:'+k+' — '+_why+'; migration aborted');
     }
     moved.push(k);
   }
@@ -1407,8 +1438,13 @@ async function initAuth(){
   if(savedVer!==DATA_VERSION){
     S.clashes=DC.map(c=>({...c}));S.weekly=DW;
     sv('clashes',S.clashes);sv('weekly',S.weekly);sv('dataVersion',DATA_VERSION);_uid=104;
+    /* IDB-RECORDS-VERIFY-RACE: register is known from here on. */
+    _markRegisterHydrated();
   } else {
     S.clashes=lv('clashes',null);S.weekly=lv('weekly',null);
+    /* IDB-RECORDS-VERIFY-RACE: raised as soon as both are assigned — before the
+       normalisation below, which only reshapes what has already been read. */
+    _markRegisterHydrated();
     /* REVIEW-QUEUE-DATE-GUARD-BANNER: hydrate the per-test suppressed-import
        state so rReview can surface the amber banner without waiting for a
        fresh import to repopulate it. Defaults to {} on first launch. */
@@ -4521,7 +4557,28 @@ async function initNwImages(){
        confuse the user. Same resolve-on-any-outcome contract. Runs
        AFTER the meta.count>0 gate above so it only fires when there's
        actually stale metadata to clean up. */
-    if(Array.isArray(S.clashes)&&S.clashes.length===0){
+    /* IDB-RECORDS-VERIFY-RACE start: wait for the register to be loaded before
+       reading it as empty. initAuth() now hydrates S.clashes after an await, so
+       an unqualified length===0 here can mean "not loaded yet" and would delete
+       a database that is mid-migration. Deleting is destructive and
+       irreversible, so it requires a positive signal: if hydration has not
+       happened within the grace period, skip the sweep entirely this launch and
+       let it run on the next one. Failing to sweep costs a stale image count;
+       sweeping wrongly costs the user's images. */
+    if(!_registerHydrated){
+      try{
+        await Promise.race([_registerReady,new Promise(r=>setTimeout(()=>r(false),4000))]);
+      }catch(e){}
+    }
+    if(!_registerHydrated){
+      try{console.warn('[IDB-RECORDS-VERIFY-RACE] register not hydrated in time — '+
+        'skipping ORPHAN-IDB-SWEEP this launch rather than deleting a database '+
+        'whose register state is unknown.');}catch(e){}
+    }
+    /* IDB-RECORDS-VERIFY-RACE end */
+    /* IDB-RECORDS-VERIFY-RACE: `_registerHydrated &&` added to the condition
+       below — the rest of this block is unchanged. */
+    if(_registerHydrated&&Array.isArray(S.clashes)&&S.clashes.length===0){
       try{_closeSharedIdb();}catch(e){}
       await new Promise(resolve=>{
         let settled=false;
