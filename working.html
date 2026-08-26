@@ -9052,6 +9052,173 @@ function _bifShowShapeWarn(archiveName){
   });
 }
 /* BATCH-IMPORT-SHAPE-WARN end */
+/* IMG-REATTACH-ARCHIVE start: folder-matching primitives, factored OUT of
+   importFolderPick so the archive re-attach tool reuses the identical matcher
+   rather than forking a second one. importFolderPick below now calls these
+   three and behaves exactly as before; any future change to how a weekly
+   archive folder is interpreted lands in one place and both callers inherit it. */
+
+/* Bucket a webkitdirectory pick: images by their parent _files folder (handles
+   nesting), everything else that could be a report as a candidate. */
+function _bifBucketFolderFiles(all){
+  const reportCandidates=[];
+  const imagesByFolder={};
+  all.forEach(f=>{
+    const path=f.webkitRelativePath||f.name;
+    const parts=path.split('/');
+    const parentDir=parts.length>=2?parts[parts.length-2]:'';
+    if(/\.(jpe?g|png)$/i.test(f.name)&&/_files$/i.test(parentDir)){
+      (imagesByFolder[parentDir]=imagesByFolder[parentDir]||[]).push(f);
+    } else if(!/\.(zip|pdf|docx?|xlsx?|nwf|nwc|nwd|json|css|js|gif|svg|ico|mp4|wav|mp3)$/i.test(f.name)){
+      reportCandidates.push(f);
+    }
+  });
+  return {reportCandidates,imagesByFolder};
+}
+
+/* Identify which candidates are Navisworks reports by sniffing the first 4 KB.
+   This is the only file content the re-attach tool reads — it needs the report
+   names to derive each test's baseName, and it never parses the XML body. */
+async function _bifSniffXmlFiles(reportCandidates){
+  const xmlFiles=[];
+  for(const c of reportCandidates){
+    try{
+      const sample=await c.slice(0,4096).text();
+      if(/<exchange|<batchtest|<clashresult|<clashtest/i.test(sample)){
+        xmlFiles.push(c);
+      }
+    }catch(e){/* skip unreadable */}
+  }
+  return xmlFiles;
+}
+
+/* Pair each report with its images folder: `<baseName>_files`, with the
+   single-test fallback for folders where the one _files sibling is
+   unambiguous despite a naming mismatch. */
+function _bifMatchImageJobs(xmlFiles,imagesByFolder){
+  return xmlFiles.map(xmlFile=>{
+    const baseName=xmlFile.name.replace(/\.[^.]+$/,'');
+    const expectedImgFolder=baseName+'_files';
+    let matchedImages=imagesByFolder[expectedImgFolder]||[];
+    // Fallback for single-test folders where the images folder is the only
+    // _files folder in the same directory (handles minor naming mismatches)
+    if(!matchedImages.length&&xmlFiles.length===1){
+      const xmlPath=xmlFile.webkitRelativePath||xmlFile.name;
+      const xmlDir=xmlPath.split('/').slice(0,-1).join('/');
+      const siblings=Object.keys(imagesByFolder).filter(k=>{
+        const samplePath=imagesByFolder[k][0].webkitRelativePath||'';
+        const folderDir=samplePath.split('/').slice(0,-2).join('/');
+        return folderDir===xmlDir;
+      });
+      if(siblings.length===1)matchedImages=imagesByFolder[siblings[0]];
+    }
+    return {xmlFile,baseName,matchedImages};
+  });
+}
+
+/* Recovery tool. The image store was destroyed by the 26-Aug sweep-race defect
+   while the register survived, so historical weeks reference images that no
+   longer exist. This walks one week's archive folder and re-attaches its
+   images — and nothing else.
+
+   IMAGES ONLY, deliberately: no XML body is parsed, importToRegister is never
+   called, and no clash, weekly, snapshot or dedup state is written. Attaching
+   images cannot change a clash's status or its history, which is what makes
+   this safe to run against a live register.
+
+   Idempotent per test: loadNwImages() drops the test's existing composite-key
+   entries and per-test tracker before reallocating, so re-running the same
+   week updates that week's mapping in place rather than duplicating it. Other
+   tests are untouched. (Superseded IDB image records from the previous run are
+   left behind — that is the known orphan backlog item, not something this tool
+   changes.) */
+async function reattachImagesFromArchive(inputEl){
+  const all=[...inputEl.files];
+  if(!all.length)return;
+
+  const {reportCandidates,imagesByFolder}=_bifBucketFolderFiles(all);
+  if(!reportCandidates.length){
+    showToast('No report file found in this folder',5000);
+    inputEl.value='';
+    return;
+  }
+  showToast(`Scanning ${reportCandidates.length} candidate file${reportCandidates.length===1?'':'s'}…`,2500);
+  const xmlFiles=await _bifSniffXmlFiles(reportCandidates);
+  if(!xmlFiles.length){
+    showToast('No Navisworks XML content found in this folder',6000);
+    inputEl.value='';
+    return;
+  }
+  const jobs=_bifMatchImageJobs(xmlFiles,imagesByFolder);
+  const withImages=jobs.filter(j=>j.matchedImages.length>0);
+  if(!withImages.length){
+    showToast(`Found ${jobs.length} test${jobs.length===1?'':'s'} but no matching _files image folders — nothing to re-attach`,7000);
+    inputEl.value='';
+    return;
+  }
+
+  const totalImages=withImages.reduce((n,j)=>n+j.matchedImages.length,0);
+  const skipped=jobs.length-withImages.length;
+  const ok=confirm(
+    `Re-attach images from this archive folder?\n\n`+
+    withImages.map(j=>`  • ${j.baseName} — ${j.matchedImages.length} image${j.matchedImages.length===1?'':'s'}`).join('\n')+
+    (skipped?`\n\n${skipped} test${skipped===1?'':'s'} in this folder had no images folder and will be skipped.`:'')+
+    `\n\nImages only — no clashes, statuses, weekly snapshots or dedup data are `+
+    `read or written. Re-running the same week replaces that week's images `+
+    `rather than duplicating them.\n\nProceed?`
+  );
+  if(!ok){inputEl.value='';return;}
+
+  let attached=0,failedImages=0,failedTests=0;
+  for(let i=0;i<withImages.length;i++){
+    const {baseName,matchedImages}=withImages[i];
+    showToast(`[${i+1}/${withImages.length}] Re-attaching "${baseName}" — ${matchedImages.length} image${matchedImages.length===1?'':'s'}…`,3500);
+    try{
+      const res=await loadNwImages(matchedImages,baseName);
+      const stored=(res&&res.stored)||0;
+      const failed=(res&&res.failed)||0;
+      attached+=stored;
+      failedImages+=failed;
+      try{console.log('[IMG-REATTACH-ARCHIVE] "'+baseName+'" → '+stored+' of '+
+        matchedImages.length+' image(s) attached'+(failed?' ('+failed+' failed)':''));}catch(e){}
+    }catch(e){
+      failedTests++;
+      try{console.error('[IMG-REATTACH-ARCHIVE] "'+baseName+'" failed: '+((e&&e.message)||e)+
+        ' — continuing with the remaining tests.');}catch(_){}
+    }
+    // Tiny yield so the toast can repaint between tests.
+    await new Promise(r=>setTimeout(r,150));
+  }
+
+  const summary=`✓ Re-attached ${attached} of ${totalImages} image${totalImages===1?'':'s'} across `+
+    `${withImages.length - failedTests} of ${withImages.length} test${withImages.length===1?'':'s'}`+
+    (failedImages?` — ${failedImages} image${failedImages===1?'':'s'} failed to store`:'')+
+    (failedTests?` — ${failedTests} test${failedTests===1?'':'s'} failed`:'')+
+    (skipped?` — ${skipped} skipped (no images folder)`:'');
+  showToast(summary,8000);
+  try{console.log('[IMG-REATTACH-ARCHIVE] '+summary.replace(/^✓ /,''));}catch(e){}
+  inputEl.value='';
+}
+
+/* Data Manager panel. Sits alongside the week-reset panel and mirrors its shape. */
+function _rDataReattachPanel(){
+  return `<div class="card" style="border-top:3px solid #006BA6">
+    <div class="ch"><span class="ct">Re-attach images from archive folder</span></div>
+    <div style="padding:10px 12px">
+      <p style="margin:0 0 10px 0;font-size:11px;color:#475569;line-height:1.55">
+        Pick one week's archive folder to restore its clash images. Each test is matched to its
+        <code style="background:#F1F5F9;padding:1px 4px;border-radius:3px">_files</code> folder using the same
+        rules as a normal folder import. <strong>Images only</strong> — no clashes, statuses, weekly snapshots
+        or dedup data are read or written. Re-running a week replaces that week's images rather than
+        duplicating them.
+      </p>
+      <button class="btn sm p" onclick="document.getElementById('reattach-folder').click()">📎 Choose archive folder…</button>
+      <input type="file" id="reattach-folder" webkitdirectory mozdirectory style="display:none"
+             onchange="reattachImagesFromArchive(this)">
+    </div>
+  </div>`;
+}
+/* IMG-REATTACH-ARCHIVE end */
 async function importFolderPick(inputEl){
   const all=[...inputEl.files];
   if(!all.length)return;
@@ -9145,19 +9312,9 @@ async function importFolderPick(inputEl){
     if(!_proceed){inputEl.value='';return;}
   }
 
-  // Bucket files. Images by their parent _files folder (handles nested folders).
-  const reportCandidates=[];
-  const imagesByFolder={};
-  all.forEach(f=>{
-    const path=f.webkitRelativePath||f.name;
-    const parts=path.split('/');
-    const parentDir=parts.length>=2?parts[parts.length-2]:'';
-    if(/\.(jpe?g|png)$/i.test(f.name)&&/_files$/i.test(parentDir)){
-      (imagesByFolder[parentDir]=imagesByFolder[parentDir]||[]).push(f);
-    } else if(!/\.(zip|pdf|docx?|xlsx?|nwf|nwc|nwd|json|css|js|gif|svg|ico|mp4|wav|mp3)$/i.test(f.name)){
-      reportCandidates.push(f);
-    }
-  });
+  /* IMG-REATTACH-ARCHIVE: bucketing moved to _bifBucketFolderFiles so the
+     archive re-attach tool shares this matcher instead of forking one. */
+  const {reportCandidates,imagesByFolder}=_bifBucketFolderFiles(all);
 
   if(!reportCandidates.length){
     showToast('No report file found in this folder',5000);
@@ -9167,15 +9324,8 @@ async function importFolderPick(inputEl){
 
   // Sniff ALL candidates — multi-test folders have one report file per test.
   showToast(`Scanning ${reportCandidates.length} candidate file${reportCandidates.length===1?'':'s'}…`,2500);
-  const xmlFiles=[];
-  for(const c of reportCandidates){
-    try{
-      const sample=await c.slice(0,4096).text();
-      if(/<exchange|<batchtest|<clashresult|<clashtest/i.test(sample)){
-        xmlFiles.push(c);
-      }
-    }catch(e){/* skip unreadable */}
-  }
+  /* IMG-REATTACH-ARCHIVE: shared sniff. */
+  const xmlFiles=await _bifSniffXmlFiles(reportCandidates);
 
   if(!xmlFiles.length){
     showToast('No Navisworks XML content found in this folder',6000);
@@ -9183,25 +9333,8 @@ async function importFolderPick(inputEl){
     return;
   }
 
-  // Build jobs (one per XML report). Match each to its images folder.
-  const jobs=xmlFiles.map(xmlFile=>{
-    const baseName=xmlFile.name.replace(/\.[^.]+$/,'');
-    const expectedImgFolder=baseName+'_files';
-    let matchedImages=imagesByFolder[expectedImgFolder]||[];
-    // Fallback for single-test folders where the images folder is the only
-    // _files folder in the same directory (handles minor naming mismatches)
-    if(!matchedImages.length&&xmlFiles.length===1){
-      const xmlPath=xmlFile.webkitRelativePath||xmlFile.name;
-      const xmlDir=xmlPath.split('/').slice(0,-1).join('/');
-      const siblings=Object.keys(imagesByFolder).filter(k=>{
-        const samplePath=imagesByFolder[k][0].webkitRelativePath||'';
-        const folderDir=samplePath.split('/').slice(0,-2).join('/');
-        return folderDir===xmlDir;
-      });
-      if(siblings.length===1)matchedImages=imagesByFolder[siblings[0]];
-    }
-    return {xmlFile,baseName,matchedImages};
-  });
+  /* IMG-REATTACH-ARCHIVE: shared report<->images pairing. */
+  const jobs=_bifMatchImageJobs(xmlFiles,imagesByFolder);
 
   // SINGLE-TEST PATH: original behaviour — load XML, await user click on Append/Replace.
   // Keeps the preview-then-confirm flow for one-off imports.
@@ -15045,7 +15178,9 @@ function rData(){
        Never touches firstSeenWeekTag on any clash — that's per-clash
        history, not per-batch metadata. Empty state shown when the
        register has no weekTag-stamped clashes. */
-     _rDataWeekResetPanel()}`;}
+     _rDataWeekResetPanel()}
+  ${/* IMG-REATTACH-ARCHIVE: recovery panel — see reattachImagesFromArchive. */
+     _rDataReattachPanel()}`;}
 function _rDataWeekResetPanel(){
   const cl=S.clashes||[];
   const byTag={};
