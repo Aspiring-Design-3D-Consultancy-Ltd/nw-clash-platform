@@ -1211,7 +1211,21 @@ function _recInstallUnloadFlush(){
    mismatch or throw on any key aborts the whole migration with the gate
    unset and every original intact, so the next boot retries. */
 async function _recMigrateFromLocalStorage(){
-  if(localStorage.getItem('nw:idbRecordsMigrated')==='1')return {skipped:true,moved:[]};
+  if(localStorage.getItem('nw:idbRecordsMigrated')==='1'){
+    /* IDB-RECORDS-GATE-QUOTA: under the previous ordering a crash between the
+       gate write and the deletes left the originals behind, still occupying the
+       space the migration set out to reclaim. Report it rather than deleting:
+       if IndexedDB was unavailable on some later launch the app ran in fallback
+       and those same keys may hold NEWER data than the records store, and an
+       automatic delete would destroy it. Detection only — the user decides. */
+    try{
+      const _stale=[..._IDB_ROUTED_KEYS].filter(k=>localStorage.getItem('nw:'+k)!==null);
+      if(_stale.length)console.warn('[IDB-RECORDS-GATE-QUOTA] migration gate is set but '+
+        _stale.map(k=>'nw:'+k).join(', ')+' still occupy localStorage. Not removing them '+
+        'automatically — they may hold newer data written during a fallback session.');
+    }catch(e){}
+    return {skipped:true,moved:[],gateSet:true,originalsDeleted:false};
+  }
   const moved=[];
   for(const k of _IDB_ROUTED_KEYS){
     const raw=localStorage.getItem('nw:'+k);
@@ -1241,15 +1255,49 @@ async function _recMigrateFromLocalStorage(){
     }
     moved.push(k);
   }
-  localStorage.setItem('nw:idbRecordsMigrated','1');   // gate: only now
+  /* IDB-RECORDS-GATE-QUOTA start: delete the verified originals BEFORE writing
+     the gate. On a profile at 100% of the localStorage cap — the exact profile
+     this migration exists to rescue — there is no room left for even the 1-byte
+     gate value, so the old order (gate, then delete) threw QuotaExceededError
+     and the migration could never complete. Freeing ~9.7 MB first makes the
+     gate write trivially affordable.
+
+     VERIFY-THEN-GATE IS UNCHANGED. Nothing destructive happens until every
+     routed key has been copied, read back and byte-compared above; a throw
+     there still leaves every original intact and the gate unset. What moved is
+     the order of the two steps AFTER verification, both of which act only on
+     keys already proven safe in `moved`.
+
+     CRASH WINDOW (originals deleted, gate not yet written): the next boot finds
+     the gate unset and re-enters this function, where localStorage.getItem
+     returns null for those keys and the loop `continue`s — it never calls
+     _idbPutRecord for a key it did not read, so an empty localStorage can never
+     overwrite the verified records store. The gate is then written with an
+     empty `moved`, and the register loads from records. Covered by
+     "a crash between delete and gate-set loses nothing". */
   for(const k of moved){
-    try{localStorage.removeItem('nw:'+k);}catch(e){}   // delete: only after the gate
+    try{localStorage.removeItem('nw:'+k);}catch(e){}   // frees the space the gate needs
   }
+  let _gateSet=false;
+  try{
+    localStorage.setItem('nw:idbRecordsMigrated','1');
+    _gateSet=true;
+  }catch(e){
+    /* Non-fatal by design. The data is verified in the records store; the gate
+       only saves a redundant re-scan next boot. Throwing here would send
+       _recInit into fallback, and fallback reads localStorage — which we have
+       just emptied — so the user would be shown an empty register while their
+       data sat safely in IndexedDB. */
+    try{console.warn('[IDB-RECORDS-GATE-QUOTA] migration completed and verified, but the '+
+      'gate write failed ('+((e&&e.message)||e)+'). Data is safe in IndexedDB; the next '+
+      'boot will re-scan an empty localStorage and set the gate then.');}catch(_){}
+  }
+  /* IDB-RECORDS-GATE-QUOTA end */
   if(moved.length){
     try{console.log('[IDB-RECORDS-MIGRATION] migrated '+moved.length+' key(s) to IndexedDB: '+
       moved.map(k=>'nw:'+k).join(', ')+' — localStorage originals removed after verification');}catch(e){}
   }
-  return {skipped:false,moved};
+  return {skipped:false,moved,gateSet:_gateSet,originalsDeleted:moved.length>0};
 }
 
 /* --- boot ---------------------------------------------------------------- */
@@ -1272,6 +1320,12 @@ async function _recInit(){
     }catch(e){}
 
     await openIDB();
+    /* IDB-RECORDS-GATE-QUOTA: a throw from the migration happens only BEFORE
+       anything destructive — copy or verify failed, every original is still in
+       localStorage — so the catch below may safely fall back. Once the
+       migration returns, the originals may already be deleted and the records
+       store is the only copy; from that point falling back to localStorage
+       would surface an empty register, so it must not happen. */
     await _recMigrateFromLocalStorage();
 
     _recCache=Object.create(null);
