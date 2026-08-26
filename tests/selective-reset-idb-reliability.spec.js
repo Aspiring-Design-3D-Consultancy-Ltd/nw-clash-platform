@@ -272,7 +272,9 @@ test.describe('SELECTIVE-RESET-IDB-VERIFY', () => {
       return _verifyIdbFreshVersion('NWClashImages', 2000);
     });
     expect(result.ok).toBe(false);
-    expect(result.error).toMatch(/version 2/);
+    // Schema version moves with the DB (v3 since IDB-RECORDS-MIGRATION); the
+    // signature under test is 'reopened with the schema still present'.
+    expect(result.error).toMatch(/DB reopened at version \d+ with stores \[/);
     expect(result.error).toMatch(/silently failed/);
   });
 
@@ -564,7 +566,7 @@ test.describe('SELECTIVE-RESET wiring — end-to-end with images ticked', () => 
       } catch (e) { threw = e.message; }
       // Verify empty inline — raw open, read getAllKeys, close.
       const keys = await new Promise((resolve, reject) => {
-        const req = indexedDB.open('NWClashImages', 2);
+        const req = indexedDB.open('NWClashImages');
         req.onupgradeneeded = e => {
           const db = e.target.result;
           if (!db.objectStoreNames.contains('images')) db.createObjectStore('images');

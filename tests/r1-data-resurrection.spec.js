@@ -102,8 +102,8 @@ test.describe('R1-DATA-RESURRECTION-FIX — clearAll()', () => {
         sv('weekly', S.weekly);
         sv('dedupQueue', S.dedupQueue);
         captured = {
-          clashes: localStorage.getItem('nw:clashes'),
-          weekly: localStorage.getItem('nw:weekly'),
+          clashes: (typeof _recCache!=='undefined'&&_recCache.clashes!==undefined?JSON.stringify(_recCache.clashes):localStorage.getItem('nw:clashes')),
+          weekly: (typeof _recCache!=='undefined'&&_recCache.weekly!==undefined?JSON.stringify(_recCache.weekly):localStorage.getItem('nw:weekly')),
           dedupQueue: localStorage.getItem('nw:dedupQueue'),
         };
         throw new Error('__test_block_reload__');

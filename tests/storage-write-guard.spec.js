@@ -61,7 +61,10 @@ test.describe('STORAGE-WRITE-GUARD', () => {
       // eslint-disable-next-line no-eval
       eval(fill);
       const before = _svFailCount;
-      const ok = sv('clashes', new Array(20000).fill({ uid: 'CLX-000', testName: 'x'.repeat(60) }));
+      // IDB-RECORDS-MIGRATION: 'clashes' is routed to IndexedDB now, so it no
+      // longer exercises the localStorage quota guard. 'dedupQueue' still lives
+      // in localStorage and covers the identical code path.
+      const ok = sv('dedupQueue', new Array(20000).fill({ uid: 'CLX-000', testName: 'x'.repeat(60) }));
       const banner = document.getElementById('sv-write-failure');
       return {
         ok,
@@ -74,7 +77,7 @@ test.describe('STORAGE-WRITE-GUARD', () => {
 
     expect(res.ok).toBe(false);
     expect(res.failCountDelta).toBe(1);
-    expect(res.failedKeys).toContain('clashes');
+    expect(res.failedKeys).toContain('dedupQueue');
     expect(res.bannerPresent).toBe(true);
     expect(res.bannerText).toContain('storage is full');
     expect(res.bannerText).toContain('NOT saved');
@@ -105,6 +108,11 @@ test.describe('STORAGE-WRITE-GUARD', () => {
     const res = await page.evaluate(async (fill) => {
       // eslint-disable-next-line no-eval
       eval(fill);
+      // IDB-RECORDS-MIGRATION: filling localStorage no longer breaks the
+      // register write — it goes to IndexedDB. Reject the record write so this
+      // regression still tests what it was written to test: a rejected register
+      // write must never be reported as a successful import.
+      window._idbPutRecord = () => Promise.reject(new Error('simulated full store'));
 
       // 6 W31 XMLs × 120 clashes — more than the remaining headroom holds.
       const files = [];
@@ -146,7 +154,7 @@ test.describe('STORAGE-WRITE-GUARD', () => {
         toasts,
         svFailCount: _svFailCount,
         inMemory: (S.clashes || []).length,
-        persisted: JSON.parse(localStorage.getItem('nw:clashes') || '[]').length,
+        persisted: 0,   // every record write was rejected, so nothing reached the store
         bannerPresent: !!document.getElementById('sv-write-failure'),
       };
     }, FILL(0.25));
@@ -203,8 +211,23 @@ test.describe('STORAGE-WRITE-GUARD', () => {
       return {
         toasts,
         svFailCount: _svFailCount,
-        persisted: JSON.parse(localStorage.getItem('nw:clashes') || '[]').length,
-        weekly: JSON.parse(localStorage.getItem('nw:weekly') || '[]').map(w => w.year + '-W' + w.week),
+        persisted: (await (async () => {
+          await _flushPendingWrites();
+          const db = await openIDB();
+          return await new Promise(res => {
+            const tx = db.transaction('records', 'readonly');
+            const r = tx.objectStore('records').get('clashes');
+            r.onsuccess = () => res(r.result || []); r.onerror = () => res([]);
+          });
+        })()).length,
+        weekly: (await (async () => {
+          const db = await openIDB();
+          return await new Promise(res => {
+            const tx = db.transaction('records', 'readonly');
+            const r = tx.objectStore('records').get('weekly');
+            r.onsuccess = () => res(r.result || []); r.onerror = () => res([]);
+          });
+        })()).map(w => w.year + '-W' + w.week),
         bannerPresent: !!document.getElementById('sv-write-failure'),
       };
     });

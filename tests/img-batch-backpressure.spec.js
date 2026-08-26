@@ -132,8 +132,8 @@ async ({ tests, imgs, clashes, failAt, readDelayMs }) => {
     mappedImages: _nwImages.size,
     idbImageKeys: idbKeys.filter(k => k !== 0).length,
     clashes: (S.clashes || []).length,
-    persisted: JSON.parse(localStorage.getItem('nw:clashes') || '[]').length,
-    weekly: JSON.parse(localStorage.getItem('nw:weekly') || '[]').map(w => w.year + '-W' + w.week),
+    persisted: JSON.parse((typeof _recCache!=='undefined'&&_recCache.clashes!==undefined?JSON.stringify(_recCache.clashes):localStorage.getItem('nw:clashes')) || '[]').length,
+    weekly: JSON.parse((typeof _recCache!=='undefined'&&_recCache.weekly!==undefined?JSON.stringify(_recCache.weekly):localStorage.getItem('nw:weekly')) || '[]').map(w => w.year + '-W' + w.week),
   };
 }`;
 

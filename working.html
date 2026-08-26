@@ -986,6 +986,14 @@ function getVA(v){
 let _svFailCount=0;
 const _svFailedKeys=new Set();
 function sv(k,v){
+  /* IDB-RECORDS-MIGRATION start: routed keys go to the write-through queue
+     instead of localStorage. Still synchronous, still returns a boolean —
+     true means "accepted into the queue". The write lands on flush, and a
+     flush failure increments _svFailCount exactly as a rejected
+     localStorage write does, so STORAGE-WRITE-GUARD's counter still tells
+     the truth to any caller that awaits _flushPendingWrites() first. */
+  if(!_recFallback&&_isRoutedKey(k))return _recQueueWrite(k,v);
+  /* IDB-RECORDS-MIGRATION end */
   try{
     localStorage.setItem('nw:'+k,JSON.stringify(v));
     return true;
@@ -1032,7 +1040,240 @@ function _svShowFailureBanner(){
   if(btn)btn.addEventListener('click',()=>{const n=document.getElementById('sv-write-failure');if(n)n.remove();});
 }
 /* STORAGE-WRITE-GUARD end */
-function lv(k,d){try{const v=localStorage.getItem('nw:'+k);return v!==null?JSON.parse(v):d;}catch(e){return d;}}
+function lv(k,d){
+  /* IDB-RECORDS-MIGRATION start: routed keys read from the in-memory cache
+     that _recInit() fills at boot, so lv() stays synchronous and all 41
+     existing readers are untouched. Absent key -> the caller's default,
+     matching the localStorage branch below. */
+  if(!_recFallback&&_isRoutedKey(k)){
+    const v=_recCache[k];
+    return (v===undefined||v===null)?d:v;
+  }
+  /* IDB-RECORDS-MIGRATION end */
+  try{const v=localStorage.getItem('nw:'+k);return v!==null?JSON.parse(v):d;}catch(e){return d;}}
+
+/* IDB-RECORDS-MIGRATION start: move the register out of localStorage.
+   localStorage is capped at ~5M UTF-16 chars per origin. Measured on the
+   live profile, nw:clashes + nw:weekly alone fill it at 4,264 clashes, which
+   is the import blocker. IndexedDB on the same profile reports a 13.5 GB
+   quota. This layer moves those two values into a `records` store in the
+   existing NWClashImages DB and leaves every other nw:* key where it is.
+
+   WHY ONLY TWO KEYS, NOT THE FIVE IN THE BRIEF — see the PR body. Short
+   version: nw:clashes + nw:weekly are 10,228 KB of a 10,240 KB store, i.e.
+   effectively all of it. The other three total ~11 KB (0.1%) and each has a
+   contract that routing would break:
+     - nw:dedupIncidentLog:* is not a data blob, it is a 4-byte 'true' gate
+       read SYNCHRONOUSLY at _logDedupIncident20260713V1(). Routed, that read
+       returns null every boot and the one-shot re-appends its incident event
+       to an audit log documented "never mutated after write".
+     - nw:dedupActionHistory is appended by a synchronous read-modify-write
+       in _appendDedupAuditEvent(). Routed, the sync read yields null and each
+       append truncates the log to a single entry.
+     - both are listed in _protectedAuditKeys, deliberately shielded from
+       Selective Reset. The records store is cleared by a full wipe, so
+       routing them would place explicitly reset-protected records inside a
+       reset-cleared store.
+   _IDB_ROUTED_KEYS is the whole contract: add a key there and it routes.
+
+   FAILURE POSTURE: any problem opening, migrating or verifying leaves
+   _recFallback true, and sv()/lv() behave exactly as they do today against
+   localStorage. The app never depends on this layer having worked. */
+
+/* Keys routed to IndexedDB, named as sv()/lv() take them (no nw: prefix). */
+const _IDB_ROUTED_KEYS=new Set(['clashes','weekly']);
+function _isRoutedKey(k){return _IDB_ROUTED_KEYS.has(k);}
+
+let _recFallback=true;        // until _recInit() proves otherwise, behave as today
+let _recCache=Object.create(null);
+const _recPending=new Map();  // key -> value awaiting an IDB write
+let _recFlushTimer=null;
+let _recFlushDeadline=0;
+let _recFlushInFlight=null;
+const _REC_DEBOUNCE_MS=400;   // coalesce bursts (a batch import writes per test)
+const _REC_MAX_LATENCY_MS=2000; // ...but never hold a write longer than this
+
+/* --- record store primitives (the `records` store, keyed by bare key) --- */
+async function _idbPutRecord(k,v){
+  const db=await openIDB();
+  return new Promise((res,rej)=>{
+    const tx=db.transaction('records','readwrite');
+    tx.objectStore('records').put(v,k);
+    tx.oncomplete=()=>res(true);
+    tx.onerror=e=>rej((e.target&&e.target.error)||new Error('records put failed'));
+    tx.onabort=e=>rej((e.target&&e.target.error)||new Error('records put aborted'));
+  });
+}
+async function _idbGetRecord(k){
+  const db=await openIDB();
+  return new Promise((res,rej)=>{
+    const tx=db.transaction('records','readonly');
+    const req=tx.objectStore('records').get(k);
+    req.onsuccess=()=>res(req.result);
+    req.onerror=e=>rej((e.target&&e.target.error)||new Error('records get failed'));
+  });
+}
+
+/* --- write-through queue -------------------------------------------------
+   sv() must stay synchronous and must keep returning a boolean, so a routed
+   write updates the cache, queues the value and reports true. The write
+   itself lands on flush; a flush failure increments _svFailCount and raises
+   the same banner a direct localStorage failure would, so STORAGE-WRITE-GUARD
+   still sees it — provided the caller awaits the flush before reading the
+   counter. importFolderPick does exactly that. */
+function _recQueueWrite(k,v){
+  _recCache[k]=v;
+  _recPending.set(k,v);
+  const now=Date.now();
+  if(!_recFlushDeadline)_recFlushDeadline=now+_REC_MAX_LATENCY_MS;
+  if(_recFlushTimer)clearTimeout(_recFlushTimer);
+  const wait=Math.max(0,Math.min(_REC_DEBOUNCE_MS,_recFlushDeadline-now));
+  _recFlushTimer=setTimeout(()=>{_recFlushTimer=null;_flushPendingWrites();},wait);
+  return true;
+}
+
+async function _flushPendingWrites(){
+  if(_recFlushTimer){clearTimeout(_recFlushTimer);_recFlushTimer=null;}
+  if(_recFlushInFlight){
+    try{await _recFlushInFlight;}catch(e){}
+    if(!_recPending.size)return;
+  }
+  if(!_recPending.size){_recFlushDeadline=0;return;}
+  _recFlushInFlight=(async()=>{
+    // Drain in a loop: a write queued while we await must not be stranded.
+    while(_recPending.size){
+      const batch=[..._recPending.entries()];
+      _recPending.clear();
+      for(const [k,v] of batch){
+        try{
+          await _idbPutRecord(k,v);
+        }catch(e){
+          _svFailCount++;
+          _svFailedKeys.add(k);
+          try{console.error('[IDB-RECORDS-MIGRATION] record write FAILED for "'+k+
+            '" — '+((e&&e.name)||'Error')+': '+((e&&e.message)||e)+
+            '. This data was NOT saved.');}catch(_){}
+          try{_svShowFailureBanner();}catch(_){}
+        }
+      }
+    }
+    _recFlushDeadline=0;
+    try{localStorage.removeItem('nw:recFlushDirty');}catch(e){}
+  })();
+  try{await _recFlushInFlight;}finally{_recFlushInFlight=null;}
+}
+
+/* --- unload path ---------------------------------------------------------
+   No user edit may be lost on tab close. visibilitychange->hidden is the
+   reliable signal and fires well before teardown (tab switch, minimise,
+   navigation), so the ordinary async flush almost always completes there.
+   pagehide is the last resort: nothing can be awaited, so we mark
+   nw:recFlushDirty first and kick the flush; the flush clears the marker on
+   success. A marker still present at next boot means a flush may not have
+   landed, and says so in the console rather than failing silently. */
+function _recInstallUnloadFlush(){
+  if(typeof window==='undefined'||typeof document==='undefined')return;
+  const onHide=()=>{
+    if(_recFallback||!_recPending.size)return;
+    try{localStorage.setItem('nw:recFlushDirty',String(Date.now()));}catch(e){}
+    _flushPendingWrites();
+  };
+  document.addEventListener('visibilitychange',()=>{
+    if(document.visibilityState==='hidden')onHide();
+  });
+  window.addEventListener('pagehide',onHide);
+}
+
+/* --- migration: copy -> read back -> byte-compare -> gate -> delete -------
+   INV-003: the gate must never be set before verification. Every routed key
+   is copied and read back and compared before nw:idbRecordsMigrated is
+   written, and the localStorage originals are removed only after that. A
+   mismatch or throw on any key aborts the whole migration with the gate
+   unset and every original intact, so the next boot retries. */
+async function _recMigrateFromLocalStorage(){
+  if(localStorage.getItem('nw:idbRecordsMigrated')==='1')return {skipped:true,moved:[]};
+  const moved=[];
+  for(const k of _IDB_ROUTED_KEYS){
+    const raw=localStorage.getItem('nw:'+k);
+    if(raw===null)continue;
+    let parsed;
+    try{parsed=JSON.parse(raw);}
+    catch(e){
+      // Unparseable original: leave it exactly where it is and abort. Do not
+      // silently drop data we cannot round-trip.
+      throw new Error('cannot parse existing nw:'+k+' — migration aborted');
+    }
+    await _idbPutRecord(k,parsed);
+    const back=await _idbGetRecord(k);
+    if(JSON.stringify(back)!==JSON.stringify(parsed)){
+      throw new Error('verify failed for nw:'+k+' — read-back did not match; migration aborted');
+    }
+    moved.push(k);
+  }
+  localStorage.setItem('nw:idbRecordsMigrated','1');   // gate: only now
+  for(const k of moved){
+    try{localStorage.removeItem('nw:'+k);}catch(e){}   // delete: only after the gate
+  }
+  if(moved.length){
+    try{console.log('[IDB-RECORDS-MIGRATION] migrated '+moved.length+' key(s) to IndexedDB: '+
+      moved.map(k=>'nw:'+k).join(', ')+' — localStorage originals removed after verification');}catch(e){}
+  }
+  return {skipped:false,moved};
+}
+
+/* --- boot ---------------------------------------------------------------- */
+async function _recInit(){
+  if(typeof indexedDB==='undefined')return {ok:false,reason:'no indexedDB'};
+  try{
+    // Ask the browser not to evict this origin under storage pressure.
+    if(navigator.storage&&navigator.storage.persist){
+      try{
+        const granted=await navigator.storage.persist();
+        try{console.log('[IDB-RECORDS-MIGRATION] storage persistence '+(granted?'granted':'not granted'));}catch(e){}
+      }catch(e){}
+    }
+    try{
+      if(localStorage.getItem('nw:recFlushDirty')){
+        console.warn('[IDB-RECORDS-MIGRATION] previous session closed with an unflushed write queued; '+
+          'the last change before that close may not have been saved.');
+        localStorage.removeItem('nw:recFlushDirty');
+      }
+    }catch(e){}
+
+    await openIDB();
+    await _recMigrateFromLocalStorage();
+
+    _recCache=Object.create(null);
+    for(const k of _IDB_ROUTED_KEYS){
+      const v=await _idbGetRecord(k);
+      if(v!==undefined)_recCache[k]=v;
+    }
+    _recFallback=false;
+    _recInstallUnloadFlush();
+    return {ok:true};
+  }catch(e){
+    _recFallback=true;
+    try{console.error('[IDB-RECORDS-MIGRATION] init failed — falling back to localStorage for '+
+      'routed keys. '+((e&&e.message)||e));}catch(_){}
+    return {ok:false,reason:(e&&e.message)||String(e)};
+  }
+}
+
+/* Durable routed write with the throwing contract the one-shot migration
+   gates rely on (INV-003/005/006). Those gates used a direct, THROWING
+   localStorage.setItem for nw:clashes so a rejected write would skip the gate
+   and let the migration retry on the next load. A routed write cannot throw
+   synchronously, so this awaits the flush and rethrows if the write failed —
+   preserving "the gate is never set on a failed write" exactly. Works in
+   fallback mode too, where sv() increments _svFailCount on its own. */
+async function _recWriteDurable(k,v){
+  const before=_svFailCount;
+  sv(k,v);
+  await _flushPendingWrites();
+  if(_svFailCount>before)throw new Error('durable write failed for nw:'+k);
+  return true;
+}
+/* IDB-RECORDS-MIGRATION end */
 
 /* ═══════ AUTH ═══════ */
 async function hashPin(p){const e=new TextEncoder(),b=await crypto.subtle.digest('SHA-256',e.encode(p+':nwci'));return [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('');}
@@ -1155,6 +1396,13 @@ async function initAuth(){
       customs.forEach(c=>{if(!S.iso.conventions.find(x=>x.id===c.id))S.iso.conventions.push(c);});
     }
   }
+  /* IDB-RECORDS-MIGRATION start: open the DB, run the verify-then-gate
+     migration and fill the read cache BEFORE the first lv('clashes') below.
+     initAuth() is already async, so this is the single await the design
+     adds to the boot path. On any failure _recInit leaves _recFallback true
+     and everything below reads localStorage exactly as it does today. */
+  await _recInit();
+  /* IDB-RECORDS-MIGRATION end */
   const savedVer=lv('dataVersion',null);
   if(savedVer!==DATA_VERSION){
     S.clashes=DC.map(c=>({...c}));S.weekly=DW;
@@ -1238,11 +1486,11 @@ async function initAuth(){
         if(c.disappearedAt!==undefined)delete c.disappearedAt;
         if(c.disappearedInBatch!==undefined)delete c.disappearedInBatch;
       });
+      /* IDB-RECORDS-MIGRATION: routed durable write replaces the direct
+         throwing setItem. It still throws on failure, so the gate below is
+         still skipped and the migration still retries on the next load. */
       if(_rqCleared)
-        localStorage.setItem(
-          'nw:clashes',
-          JSON.stringify(S.clashes)
-        );
+        await _recWriteDurable('clashes',S.clashes);
       localStorage.setItem('nw:reviewQueueScopeFixed','1');
     }
   }catch(e){console.warn('REVIEW-QUEUE-MIGRATE-SCOPE-FIX error:',e);}
@@ -1265,11 +1513,10 @@ async function initAuth(){
         if(c.disappearedAt!==undefined)delete c.disappearedAt;
         if(c.disappearedInBatch!==undefined)delete c.disappearedInBatch;
       });
+      /* IDB-RECORDS-MIGRATION: routed durable write; still throws on failure
+         so the gate below stays unset and the migration retries. */
       if(_rqDgCleared)
-        localStorage.setItem(
-          'nw:clashes',
-          JSON.stringify(S.clashes)
-        );
+        await _recWriteDurable('clashes',S.clashes);
       if(S.reviewQueueNoDateBanner){
         S.reviewQueueNoDateBanner=false;
         localStorage.setItem(
@@ -2265,7 +2512,7 @@ function _rqdaFirstSeen(c){
    write propagates to the outer catch and prevents the gate from ever
    being set — mirroring the INV-003/INV-005 remediation shape without
    altering the shared helper function. */
-function _rqdaMigrate(){
+async function _rqdaMigrate(){
   try{
     if(localStorage.getItem('nw:reviewQueueDeltaAnalysisMigrated')==='1')return 0;
     const n=(typeof _rqdaReclassifyAll==='function')?_rqdaReclassifyAll():0;
@@ -2274,7 +2521,10 @@ function _rqdaMigrate(){
        conditional `if(touched)sv('clashes',...)` so this fix does not
        introduce an unconditional S.clashes write (and resulting race
        with unrelated code paths) on loads where nothing changed. */
-    if(n>0)localStorage.setItem('nw:clashes',JSON.stringify(S.clashes));
+    /* IDB-RECORDS-MIGRATION: routed durable write. Awaiting it is what makes
+       this function async; the throw-on-failure contract that keeps the gate
+       below unset is unchanged. */
+    if(n>0)await _recWriteDurable('clashes',S.clashes);
     localStorage.setItem('nw:reviewQueueDeltaAnalysisMigrated','1');
     console.log('REVIEW-QUEUE-DELTA-ANALYSIS: migrated '+n+' pendingReview clash'+(n===1?'':'es'));
     return n;
@@ -3515,7 +3765,12 @@ function openIDB(){
        alongside 'images'. Existing image data is preserved; onupgradeneeded
        fires from any lower version up so create-only-if-missing works for
        both fresh installs and v1→v2 upgrades. */
-    const req=indexedDB.open('NWClashImages',2);
+    /* IDB-RECORDS-MIGRATION start: bump 2->3 for the 'records' store.
+       Same create-only-if-missing shape PLAN-BG used, so fresh installs and
+       v1/v2 upgrades both land correctly and existing image/plan data is
+       untouched. */
+    const req=indexedDB.open('NWClashImages',3);
+    /* IDB-RECORDS-MIGRATION end */
     /* PLAN-BG end */
     req.onupgradeneeded=e=>{
       const db=e.target.result;
@@ -3528,6 +3783,10 @@ function openIDB(){
          of the project-grid intersection that pin marks. */
       if(!db.objectStoreNames.contains('plans'))db.createObjectStore('plans');
       /* PLAN-BG end */
+      /* IDB-RECORDS-MIGRATION start: 'records' holds the large register
+         values keyed by their bare sv()/lv() key ('clashes', 'weekly'). */
+      if(!db.objectStoreNames.contains('records'))db.createObjectStore('records');
+      /* IDB-RECORDS-MIGRATION end */
     };
     req.onsuccess=e=>{
       const db=e.target.result;
@@ -8983,6 +9242,12 @@ async function importFolderPick(inputEl){
      A full store makes sv() a no-op, so the register is correct in memory
      and empty on disk — report that instead of a tick. The banner raised by
      _svShowFailureBanner() carries the recovery steps. */
+  /* IDB-RECORDS-MIGRATION start: routed writes are queued, so the counter
+     below is only meaningful once the queue has drained. Without this await
+     a full store would be reported as a clean import — the exact
+     STORAGE-WRITE-GUARD defect class this comparison exists to catch. */
+  await _flushPendingWrites();
+  /* IDB-RECORDS-MIGRATION end */
   if(_svFailCount>_svFailAtStart){
     showToast(`⚠ NOT SAVED — browser storage is full. ${completedCount} of ${jobs.length} clash tests `+
       `(${totalClashesImported} clashes) were parsed but could not be written to storage. `+
@@ -16094,7 +16359,14 @@ function _clearIdbStores(name,storesWanted,timeoutMs){
     const done=fn=>{if(!settled){settled=true;fn();}};
     _closeSharedIdb();
     try{
-      const req=indexedDB.open(name,2);
+      /* IDB-RECORDS-MIGRATION: open WITHOUT a version. This was pinned to 2,
+         which throws VersionError once openIDB() upgrades the DB to 3 — a
+         downgrade request is illegal. A versionless open attaches to whatever
+         version exists and never triggers an upgrade, so this helper stays
+         correct across every future schema bump. On a deleted DB it still
+         creates an empty one with no stores, exactly as the pinned open did,
+         and the storesWanted filter below then finds nothing. */
+      const req=indexedDB.open(name);
       req.onsuccess=()=>{
         const db=req.result;
         try{
@@ -16124,7 +16396,14 @@ function _verifyIdbEmpty(name,storesWanted,timeoutMs){
     let settled=false;
     const done=v=>{if(!settled){settled=true;resolve(v);}};
     try{
-      const req=indexedDB.open(name,2);
+      /* IDB-RECORDS-MIGRATION: open WITHOUT a version. This was pinned to 2,
+         which throws VersionError once openIDB() upgrades the DB to 3 — a
+         downgrade request is illegal. A versionless open attaches to whatever
+         version exists and never triggers an upgrade, so this helper stays
+         correct across every future schema bump. On a deleted DB it still
+         creates an empty one with no stores, exactly as the pinned open did,
+         and the storesWanted filter below then finds nothing. */
+      const req=indexedDB.open(name);
       req.onsuccess=()=>{
         const db=req.result;
         try{
@@ -16193,7 +16472,10 @@ async function _wipeIdbWithVerify(mode,storesWanted){
      .clear() to preserve the untouched store. Full-wipe verify checks
      both version-freshness AND empty-keys; partial-wipe verify checks
      empty-keys only. Both retry ONCE before throwing. */
-  const stores=storesWanted&&storesWanted.length?storesWanted:['images','plans'];
+  /* IDB-RECORDS-MIGRATION: 'records' now holds the register, so a full wipe
+     that omitted it would leave the clash data behind and verify clean.
+     Partial paths pass an explicit list and are unaffected. */
+  const stores=storesWanted&&storesWanted.length?storesWanted:['images','plans','records'];
   for(let attempt=1;attempt<=2;attempt++){
     try{
       if(mode==='full'){
@@ -16288,6 +16570,14 @@ async function factoryReset(){
     sv('weekly',DW);
     sv('dataVersion',DATA_VERSION);
   }catch(e){console.warn('factoryReset demo install:',e);}
+  /* IDB-RECORDS-MIGRATION start: drain the routed write queue before the
+     alert and the reload. Routed writes are queued, and location.reload()
+     will happily beat an unflushed queue — which would reload the OLD
+     register and silently undo this operation. alert() blocks the main
+     thread, so the flush must come before it, not between it and the
+     reload. Same defect class as the importFolderPick flush. */
+  try{await _flushPendingWrites();}catch(e){}
+  /* IDB-RECORDS-MIGRATION end */
   alert('Factory reset complete. The page will reload with demo data.');
   location.reload();
 }
@@ -16393,6 +16683,14 @@ async function clearAll(){
   }catch(e){
     console.warn('clearAll IDB wipe deferred:',e.message);
   }
+  /* IDB-RECORDS-MIGRATION start: drain the routed write queue before the
+     alert and the reload. Routed writes are queued, and location.reload()
+     will happily beat an unflushed queue — which would reload the OLD
+     register and silently undo this operation. alert() blocks the main
+     thread, so the flush must come before it, not between it and the
+     reload. Same defect class as the importFolderPick flush. */
+  try{await _flushPendingWrites();}catch(e){}
+  /* IDB-RECORDS-MIGRATION end */
   alert('All data cleared. The page will reload to a blank state.\n\n(Admin PIN, patterns, audit logs, settings, and migration flags preserved.)');
   location.reload();
   /* CLEAR-ALL-IDB-NONBLOCKING end */
@@ -17076,6 +17374,14 @@ async function _executeSelectiveReset(cats,modalId){
     /* PR-A14-SR-FAILURE-ALERT end */
     /* SELECTIVE-RESET-IDB-NONBLOCKING end */
   }
+  /* IDB-RECORDS-MIGRATION start: drain the routed write queue before the
+     alert and the reload. Routed writes are queued, and location.reload()
+     will happily beat an unflushed queue — which would reload the OLD
+     register and silently undo this operation. alert() blocks the main
+     thread, so the flush must come before it, not between it and the
+     reload. Same defect class as the importFolderPick flush. */
+  try{await _flushPendingWrites();}catch(e){}
+  /* IDB-RECORDS-MIGRATION end */
   alert('Selective reset complete. The page will reload.');
   location.reload();
 }
@@ -18736,9 +19042,9 @@ setTimeout(backfillStatusHistory,1500);
    V2 pattern seed runs first (also gated, also idempotent) so any
    pending reclassify uses the full 3-pattern set. Both share the same
    timer to keep window.onload compact. */
-setTimeout(function(){
+setTimeout(async function(){
   try{_rqdaMigrateSeedPatternsV2();}catch(_e){console.warn('rqda seed v2:',_e);}
-  try{_rqdaMigrate();}catch(_e){console.warn('rqda migrate:',_e);}
+  try{await _rqdaMigrate();}catch(_e){console.warn('rqda migrate:',_e);}
 },1600);};
 </script>
 </body>

@@ -43,8 +43,9 @@ test.describe('CLEAR-ALL-SUPPRESS-DEMO-SEED — demo does not rehydrate post-ini
     const state = await page.evaluate(() => ({
       clashesLen: S.clashes.length,
       weeklyLen: S.weekly.length,
-      storedClashes: localStorage.getItem('nw:clashes'),
-      storedWeekly: localStorage.getItem('nw:weekly'),
+      // IDB-RECORDS-MIGRATION: routed to IndexedDB; the cache is the sync view.
+      storedClashes: JSON.stringify(_recCache.clashes),
+      storedWeekly: JSON.stringify(_recCache.weekly),
       uid: _uid,
     }));
 
@@ -83,8 +84,9 @@ test.describe('CLEAR-ALL-SUPPRESS-DEMO-SEED — demo does not rehydrate post-ini
     const state = await page.evaluate(() => ({
       clashesLen: (S.clashes || []).length,
       weeklyLen: (S.weekly || []).length,
-      storedClashes: localStorage.getItem('nw:clashes'),
-      storedWeekly: localStorage.getItem('nw:weekly'),
+      // IDB-RECORDS-MIGRATION: routed to IndexedDB; the cache is the sync view.
+      storedClashes: JSON.stringify(_recCache.clashes),
+      storedWeekly: JSON.stringify(_recCache.weekly),
     }));
     expect(state.clashesLen).toBe(0);
     expect(state.weeklyLen).toBe(0);
