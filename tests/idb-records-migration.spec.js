@@ -324,3 +324,110 @@ test.describe('IDB-RECORDS-MIGRATION — flush on import and on unload', () => {
     expect(r.dirty).toBeNull();          // cleared once the write actually landed
   });
 });
+
+/* IDB-RECORDS-VERIFY-RACE — regression coverage for the live-profile defect.
+   On the real profile the migration aborted with "verify failed for nw:clashes".
+   Root cause was not encoding or payload size: initAuth()'s await on _recInit()
+   runs BEFORE S.clashes is hydrated, and window.onload does not await initAuth,
+   so initNwImages() saw S.clashes === [] with image metadata present, read that
+   as the ORPHAN-IDB-SWEEP condition, and deleted the database out from under
+   the in-flight migration write. */
+test.describe('IDB-RECORDS-VERIFY-RACE', () => {
+  /** Seed the live-profile shape: a register in localStorage + image metadata in IDB. */
+  async function seedProfile(page, { clashCount, imageCount, notesLen = 400 }) {
+    await page.evaluate(async ({ clashCount, imageCount, notesLen }) => {
+      Object.keys(localStorage).filter(k => k.startsWith('nw:')).forEach(k => localStorage.removeItem(k));
+      localStorage.setItem('nw:dataVersion', JSON.stringify(DATA_VERSION));
+      localStorage.setItem('nw:dedupInitialScan', '1');
+      if (clashCount > 0) {
+        const reg = Array.from({ length: clashCount }, (_, i) => ({
+          uid: 'CLX-' + String(i + 1).padStart(3, '0'), name: 'Clash ' + i,
+          testName: '03_GAS vs 08_AMHS', status: 'Active', priority: 'High',
+          notes: 'x'.repeat(notesLen), x: 1.1 + i, y: 2.2, z: 3.3,
+          statusHistory: [{ status: 'New', week: 25, year: 2026 }],
+        }));
+        localStorage.setItem('nw:clashes', JSON.stringify(reg));
+        localStorage.setItem('nw:weekly', JSON.stringify([{ year: 2026, week: 31, total: clashCount }]));
+      }
+      await openIDB();
+      if (imageCount > 0) {
+        await idbPut(0, { shape: 'imgfix-v1', count: imageCount, loadedAt: Date.now(),
+          byTest: { '03_GAS vs 08_AMHS': { firstIdx: 1, count: imageCount, filenames: [] } } });
+        await idbPut(1, { b64: 'aaaa', dhash: null });
+      }
+    }, { clashCount, imageCount, notesLen });
+  }
+
+  test('a register migrates cleanly while image metadata is present (the live-profile defect)', async ({ page }) => {
+    await fresh(page);
+    await seedProfile(page, { clashCount: 600, imageCount: 63178 });
+    await reload(page);
+    const r = await page.evaluate(async () => ({
+      fallback: _recFallback,
+      gate: localStorage.getItem('nw:idbRecordsMigrated'),
+      lsClashes: localStorage.getItem('nw:clashes'),
+      recordsLen: (await _idbGetRecord('clashes') || []).length,
+      registerLen: (S.clashes || []).length,
+      imagesMetaCount: (await idbGet(0) || {}).count,
+    }));
+    expect(r.fallback).toBe(false);          // migration succeeded, no fallback
+    expect(r.gate).toBe('1');
+    expect(r.lsClashes).toBeNull();          // originals removed after verification
+    expect(r.recordsLen).toBe(600);
+    expect(r.registerLen).toBe(600);
+    expect(r.imagesMetaCount).toBe(63178);   // the sweep did NOT delete the DB
+  });
+
+  test('a multi-MB register survives the round trip and verifies', async ({ page }) => {
+    test.setTimeout(120000);
+    await fresh(page);
+    // ~4.3 MB of JSON — the size of the real 4,264-clash register.
+    await seedProfile(page, { clashCount: 4264, notesLen: 700, imageCount: 63178 });
+    const seededChars = await page.evaluate(() => (localStorage.getItem('nw:clashes') || '').length);
+    expect(seededChars).toBeGreaterThan(3 * 1024 * 1024);   // genuinely multi-MB
+    await reload(page);
+    const r = await page.evaluate(async () => {
+      const back = await _idbGetRecord('clashes');
+      return {
+        fallback: _recFallback,
+        gate: localStorage.getItem('nw:idbRecordsMigrated'),
+        lsClashes: localStorage.getItem('nw:clashes'),
+        recordsLen: (back || []).length,
+        firstUid: back && back[0] && back[0].uid,
+        lastUid: back && back[back.length - 1] && back[back.length - 1].uid,
+        roundTripChars: JSON.stringify(back).length,
+      };
+    });
+    expect(r.fallback).toBe(false);
+    expect(r.gate).toBe('1');
+    expect(r.lsClashes).toBeNull();
+    expect(r.recordsLen).toBe(4264);
+    expect(r.firstUid).toBe('CLX-001');
+    expect(r.lastUid).toBe('CLX-4264');
+    expect(r.roundTripChars).toBeGreaterThan(3 * 1024 * 1024);
+  });
+
+  test('ORPHAN-IDB-SWEEP still fires when the register is genuinely empty', async ({ page }) => {
+    await fresh(page);
+    // No register at all, but image metadata left behind — the state the sweep exists for.
+    await seedProfile(page, { clashCount: 0, imageCount: 1247 });
+    await page.evaluate(() => localStorage.setItem('nw:clashes', JSON.stringify([])));
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => typeof _registerHydrated !== 'undefined' && _registerHydrated === true, null, { timeout: 10000 });
+    await page.waitForTimeout(2500);   // let the sweep's delete settle
+    const r = await page.evaluate(() => ({
+      nwImgCount: _nwImgCount,
+      registerLen: (S.clashes || []).length,
+      hydrated: _registerHydrated,
+    }));
+    expect(r.hydrated).toBe(true);
+    expect(r.registerLen).toBe(0);
+    expect(r.nwImgCount).toBe(0);      // stale metadata swept, not surfaced as "1247 images / 0 clashes"
+  });
+
+  test('the register-hydrated signal is raised on both initAuth paths', async ({ page }) => {
+    await fresh(page); await reload(page);
+    expect(await page.evaluate(() => _registerHydrated)).toBe(true);
+  });
+});
+
