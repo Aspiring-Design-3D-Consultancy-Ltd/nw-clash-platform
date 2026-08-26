@@ -218,6 +218,9 @@ test.describe('REVIEW-QUEUE-MIGRATE-DATE-GUARD-FIX', () => {
         { uid: 'CLX-004', testName: 'Test D', nwOrig: 'Clash1', status: 'Active',
           reviewedStillOpen: true },
       ];
+      /* IDB-RECORDS-MIGRATION: clearing the one-shot gate lets boot migrate
+         this freshly seeded localStorage register into the records store. */
+      localStorage.removeItem('nw:idbRecordsMigrated');
       localStorage.setItem('nw:clashes', JSON.stringify(clashes));
       localStorage.setItem('nw:reviewQueueNoDateBanner', JSON.stringify(true));
     }, DATA_VERSION);
@@ -252,6 +255,9 @@ test.describe('REVIEW-QUEUE-MIGRATE-DATE-GUARD-FIX', () => {
         ? { ...c, pendingReview: true, disappearedAt: '2026-07-20T00:00:00.000Z', disappearedInBatch: 'bat-new' }
         : c);
       localStorage.setItem('nw:dataVersion', JSON.stringify(dv));
+      /* IDB-RECORDS-MIGRATION: clearing the one-shot gate lets boot migrate
+         this freshly seeded localStorage register into the records store. */
+      localStorage.removeItem('nw:idbRecordsMigrated');
       localStorage.setItem('nw:clashes', JSON.stringify(cs));
     }, DATA_VERSION);
     await page.reload({ waitUntil: 'domcontentloaded' });

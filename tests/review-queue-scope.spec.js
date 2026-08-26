@@ -171,6 +171,9 @@ test.describe('REVIEW-QUEUE-MIGRATE-SCOPE-FIX', () => {
       // instead of resetting to the DC demo dataset. CLAUDE.md forbids bumping
       // this value — we mirror whatever it currently is at test time.
       localStorage.setItem('nw:dataVersion', JSON.stringify(DATA_VERSION));
+      /* IDB-RECORDS-MIGRATION: clearing the one-shot gate lets boot migrate
+         this freshly seeded localStorage register into the records store. */
+      localStorage.removeItem('nw:idbRecordsMigrated');
       localStorage.setItem('nw:clashes', JSON.stringify(clashes));
     });
 
@@ -199,6 +202,9 @@ test.describe('REVIEW-QUEUE-MIGRATE-SCOPE-FIX', () => {
     await page.evaluate(() => {
       const cs = S.clashes.map(c => c.uid === 'CLX-001' ? { ...c, pendingReview: true, disappearedAt: '2026-08-01T00:00:00.000Z', disappearedInBatch: 'bat-new' } : c);
       localStorage.setItem('nw:dataVersion', JSON.stringify(DATA_VERSION));
+      /* IDB-RECORDS-MIGRATION: clearing the one-shot gate lets boot migrate
+         this freshly seeded localStorage register into the records store. */
+      localStorage.removeItem('nw:idbRecordsMigrated');
       localStorage.setItem('nw:clashes', JSON.stringify(cs));
     });
     await page.reload({ waitUntil: 'domcontentloaded' });

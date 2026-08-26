@@ -51,8 +51,11 @@ test.describe('CLEAR-ALL-IDB-NONBLOCKING — reload-always contract', () => {
       window._postAlertSnapshot = null;
       window.alert = () => {
         window._postAlertSnapshot = {
-          clashes: localStorage.getItem('nw:clashes'),
-          weekly: localStorage.getItem('nw:weekly'),
+          // IDB-RECORDS-MIGRATION: these two are routed to IndexedDB now. The
+          // in-memory cache is the synchronous view of them and is what the
+          // reloaded page will read back, so assert on it here.
+          clashes: JSON.stringify(_recCache.clashes),
+          weekly: JSON.stringify(_recCache.weekly),
           dataVersion: localStorage.getItem('nw:dataVersion'),
           pendingIdbWipe: localStorage.getItem('nw:pendingIdbWipe'),
         };

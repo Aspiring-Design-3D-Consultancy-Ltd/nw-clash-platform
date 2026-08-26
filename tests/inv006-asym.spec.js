@@ -30,7 +30,18 @@ async function installMock(page) {
       if (localStorage.getItem('__inv006MockActive') === '1' && String(v).length > 50) {
         throw new DOMException('Quota exceeded', 'QuotaExceededError');
       }
+      // (see below for the IndexedDB half of this mock)
       return origSetItem.call(this, k, v);
+    };
+    /* IDB-RECORDS-MIGRATION: nw:clashes is written to the `records` store now,
+       so patching localStorage.setItem alone no longer makes the register write
+       fail. Reject it at the IndexedDB layer too — same intent. */
+    const origIdbPut = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (value, key) {
+      if (localStorage.getItem('__inv006MockActive') === '1' && this.name === 'records' && key === 'clashes') {
+        throw new DOMException('Quota exceeded', 'QuotaExceededError');
+      }
+      return origIdbPut.apply(this, arguments);
     };
   });
 }
@@ -73,6 +84,9 @@ test.describe('INV-006: dedupInitialScan gate/persistence divergence', () => {
       localStorage.setItem('nw:dataVersion', JSON.stringify(DATA_VERSION));
       localStorage.setItem('nw:reviewQueueScopeFixed', '1');
       localStorage.setItem('nw:reviewQueueDateGuardFixed', '1');
+      /* IDB-RECORDS-MIGRATION: clearing the one-shot gate lets boot migrate
+         this freshly seeded localStorage register into the records store. */
+      localStorage.removeItem('nw:idbRecordsMigrated');
       localStorage.setItem('nw:clashes', JSON.stringify(clashes));
       localStorage.setItem('__inv006MockActive', '1');
     }, { clashes: seedClashes });
@@ -110,6 +124,9 @@ test.describe('INV-006: dedupInitialScan gate/persistence divergence', () => {
       localStorage.setItem('nw:dataVersion', JSON.stringify(DATA_VERSION));
       localStorage.setItem('nw:reviewQueueScopeFixed', '1');
       localStorage.setItem('nw:reviewQueueDateGuardFixed', '1');
+      /* IDB-RECORDS-MIGRATION: clearing the one-shot gate lets boot migrate
+         this freshly seeded localStorage register into the records store. */
+      localStorage.removeItem('nw:idbRecordsMigrated');
       localStorage.setItem('nw:clashes', JSON.stringify(clashes));
     }, { clashes: seedClashes });
 
@@ -150,6 +167,9 @@ test.describe('INV-006: reviewQueueDeltaAnalysisMigrated gate/persistence diverg
       localStorage.setItem('nw:reviewQueueScopeFixed', '1');
       localStorage.setItem('nw:reviewQueueDateGuardFixed', '1');
       localStorage.setItem('nw:dedupInitialScan', '1');
+      /* IDB-RECORDS-MIGRATION: clearing the one-shot gate lets boot migrate
+         this freshly seeded localStorage register into the records store. */
+      localStorage.removeItem('nw:idbRecordsMigrated');
       localStorage.setItem('nw:clashes', JSON.stringify(clashes));
       localStorage.setItem('__inv006MockActive', '1');
     }, { clashes: seedClashes });
@@ -161,7 +181,7 @@ test.describe('INV-006: reviewQueueDeltaAnalysisMigrated gate/persistence diverg
 
     const afterFail = await page.evaluate(() => ({
       gate: localStorage.getItem('nw:reviewQueueDeltaAnalysisMigrated'),
-      persistedClashes: localStorage.getItem('nw:clashes'),
+      persistedClashes: (typeof _recCache!=='undefined'&&_recCache.clashes!==undefined?JSON.stringify(_recCache.clashes):localStorage.getItem('nw:clashes')),
     }));
     expect(afterFail.gate).toBeNull();
     expect(afterFail.persistedClashes).toBe(originalJson);
@@ -174,7 +194,7 @@ test.describe('INV-006: reviewQueueDeltaAnalysisMigrated gate/persistence diverg
 
     const afterRetry = await page.evaluate(() => ({
       gate: localStorage.getItem('nw:reviewQueueDeltaAnalysisMigrated'),
-      persistedClashes: JSON.parse(localStorage.getItem('nw:clashes') || 'null'),
+      persistedClashes: JSON.parse((typeof _recCache!=='undefined'&&_recCache.clashes!==undefined?JSON.stringify(_recCache.clashes):localStorage.getItem('nw:clashes')) || 'null'),
     }));
     expect(afterRetry.gate).toBe('1');
     const p301 = afterRetry.persistedClashes.find(c => c.uid === 'CLX-301');
@@ -191,6 +211,9 @@ test.describe('INV-006: reviewQueueDeltaAnalysisMigrated gate/persistence diverg
       localStorage.setItem('nw:reviewQueueScopeFixed', '1');
       localStorage.setItem('nw:reviewQueueDateGuardFixed', '1');
       localStorage.setItem('nw:dedupInitialScan', '1');
+      /* IDB-RECORDS-MIGRATION: clearing the one-shot gate lets boot migrate
+         this freshly seeded localStorage register into the records store. */
+      localStorage.removeItem('nw:idbRecordsMigrated');
       localStorage.setItem('nw:clashes', JSON.stringify(clashes));
     }, { clashes: seedClashes });
 
@@ -200,7 +223,7 @@ test.describe('INV-006: reviewQueueDeltaAnalysisMigrated gate/persistence diverg
 
     const after = await page.evaluate(() => ({
       gate: localStorage.getItem('nw:reviewQueueDeltaAnalysisMigrated'),
-      persistedClashes: JSON.parse(localStorage.getItem('nw:clashes') || 'null'),
+      persistedClashes: JSON.parse((typeof _recCache!=='undefined'&&_recCache.clashes!==undefined?JSON.stringify(_recCache.clashes):localStorage.getItem('nw:clashes')) || 'null'),
       inMemory301: S.clashes.find(c => c.uid === 'CLX-301'),
     }));
     expect(after.gate).toBe('1');

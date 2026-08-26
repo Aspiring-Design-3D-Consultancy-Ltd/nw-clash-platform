@@ -38,7 +38,7 @@ async function idbKeysAfter(page) {
   // deleteDatabase call). onupgradeneeded re-creates the empty store; we
   // then read getAllKeys off it.
   return page.evaluate(() => new Promise((resolve, reject) => {
-    const req = indexedDB.open('NWClashImages', 2);
+    const req = indexedDB.open('NWClashImages');
     req.onupgradeneeded = e => {
       const db = e.target.result;
       if (!db.objectStoreNames.contains('images')) db.createObjectStore('images');

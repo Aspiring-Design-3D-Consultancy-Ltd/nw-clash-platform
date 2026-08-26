@@ -34,6 +34,17 @@ async function installMock(page) {
       }
       return origSetItem.call(this, k, v);
     };
+    /* IDB-RECORDS-MIGRATION: nw:clashes is written to the `records` store now,
+       so patching localStorage.setItem alone no longer makes the register
+       write fail. Reject it at the IndexedDB layer instead — same intent:
+       "the large clashes write fails", so the gate must stay unset. */
+    const origIdbPut = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (value, key) {
+      if (localStorage.getItem('__inv005MockActive') === '1' && this.name === 'records' && key === 'clashes') {
+        throw new DOMException('Quota exceeded', 'QuotaExceededError');
+      }
+      return origIdbPut.apply(this, arguments);
+    };
   });
 }
 
@@ -61,6 +72,9 @@ test.describe('INV-005: reviewQueueScopeFixed gate/persistence divergence', () =
     await page.evaluate(({ clashes }) => {
       Object.keys(localStorage).filter(k => k.startsWith('nw:')).forEach(k => localStorage.removeItem(k));
       localStorage.setItem('nw:dataVersion', JSON.stringify(DATA_VERSION));
+      /* IDB-RECORDS-MIGRATION: clearing the one-shot gate lets boot migrate
+         this freshly seeded localStorage register into the records store. */
+      localStorage.removeItem('nw:idbRecordsMigrated');
       localStorage.setItem('nw:clashes', JSON.stringify(clashes));
       localStorage.setItem('__inv005MockActive', '1');
     }, { clashes: seedClashes });
@@ -70,7 +84,7 @@ test.describe('INV-005: reviewQueueScopeFixed gate/persistence divergence', () =
 
     const afterFail = await page.evaluate(() => ({
       gate: localStorage.getItem('nw:reviewQueueScopeFixed'),
-      persistedClashes: localStorage.getItem('nw:clashes'),
+      persistedClashes: (typeof _recCache!=='undefined'&&_recCache.clashes!==undefined?JSON.stringify(_recCache.clashes):localStorage.getItem('nw:clashes')),
     }));
     // Gate must NOT be set — the write that should have preceded it threw.
     expect(afterFail.gate).toBeNull();
@@ -88,7 +102,7 @@ test.describe('INV-005: reviewQueueScopeFixed gate/persistence divergence', () =
 
     const afterRetry = await page.evaluate(() => ({
       gate: localStorage.getItem('nw:reviewQueueScopeFixed'),
-      persistedClashes: JSON.parse(localStorage.getItem('nw:clashes') || 'null'),
+      persistedClashes: JSON.parse((typeof _recCache!=='undefined'&&_recCache.clashes!==undefined?JSON.stringify(_recCache.clashes):localStorage.getItem('nw:clashes')) || 'null'),
     }));
     expect(afterRetry.gate).toBe('1');
     const p101 = afterRetry.persistedClashes.find(c => c.uid === 'CLX-101');
@@ -104,6 +118,9 @@ test.describe('INV-005: reviewQueueScopeFixed gate/persistence divergence', () =
     await page.evaluate(({ clashes }) => {
       Object.keys(localStorage).filter(k => k.startsWith('nw:')).forEach(k => localStorage.removeItem(k));
       localStorage.setItem('nw:dataVersion', JSON.stringify(DATA_VERSION));
+      /* IDB-RECORDS-MIGRATION: clearing the one-shot gate lets boot migrate
+         this freshly seeded localStorage register into the records store. */
+      localStorage.removeItem('nw:idbRecordsMigrated');
       localStorage.setItem('nw:clashes', JSON.stringify(clashes));
     }, { clashes: seedClashes });
 
@@ -112,7 +129,7 @@ test.describe('INV-005: reviewQueueScopeFixed gate/persistence divergence', () =
 
     const after = await page.evaluate(() => ({
       gate: localStorage.getItem('nw:reviewQueueScopeFixed'),
-      persistedClashes: JSON.parse(localStorage.getItem('nw:clashes') || 'null'),
+      persistedClashes: JSON.parse((typeof _recCache!=='undefined'&&_recCache.clashes!==undefined?JSON.stringify(_recCache.clashes):localStorage.getItem('nw:clashes')) || 'null'),
       inMemory101: S.clashes.find(c => c.uid === 'CLX-101'),
     }));
     expect(after.gate).toBe('1');
@@ -140,6 +157,9 @@ test.describe('INV-005: reviewQueueDateGuardFixed gate/persistence divergence', 
       // seeded pendingReview/disappearedAt flags before DATE-GUARD-FIX runs
       // (mirrors the same guard used in tests/review-queue-date-guard.spec.js).
       localStorage.setItem('nw:reviewQueueScopeFixed', '1');
+      /* IDB-RECORDS-MIGRATION: clearing the one-shot gate lets boot migrate
+         this freshly seeded localStorage register into the records store. */
+      localStorage.removeItem('nw:idbRecordsMigrated');
       localStorage.setItem('nw:clashes', JSON.stringify(clashes));
       // Also seed the no-date banner so the second write inside the same
       // try block is exercised — it must likewise never fire when the
@@ -153,7 +173,7 @@ test.describe('INV-005: reviewQueueDateGuardFixed gate/persistence divergence', 
 
     const afterFail = await page.evaluate(() => ({
       gate: localStorage.getItem('nw:reviewQueueDateGuardFixed'),
-      persistedClashes: localStorage.getItem('nw:clashes'),
+      persistedClashes: (typeof _recCache!=='undefined'&&_recCache.clashes!==undefined?JSON.stringify(_recCache.clashes):localStorage.getItem('nw:clashes')),
       persistedBanner: localStorage.getItem('nw:reviewQueueNoDateBanner'),
     }));
     expect(afterFail.gate).toBeNull();
@@ -169,7 +189,7 @@ test.describe('INV-005: reviewQueueDateGuardFixed gate/persistence divergence', 
 
     const afterRetry = await page.evaluate(() => ({
       gate: localStorage.getItem('nw:reviewQueueDateGuardFixed'),
-      persistedClashes: JSON.parse(localStorage.getItem('nw:clashes') || 'null'),
+      persistedClashes: JSON.parse((typeof _recCache!=='undefined'&&_recCache.clashes!==undefined?JSON.stringify(_recCache.clashes):localStorage.getItem('nw:clashes')) || 'null'),
       persistedBanner: localStorage.getItem('nw:reviewQueueNoDateBanner'),
     }));
     expect(afterRetry.gate).toBe('1');
@@ -188,6 +208,9 @@ test.describe('INV-005: reviewQueueDateGuardFixed gate/persistence divergence', 
       Object.keys(localStorage).filter(k => k.startsWith('nw:')).forEach(k => localStorage.removeItem(k));
       localStorage.setItem('nw:dataVersion', JSON.stringify(DATA_VERSION));
       localStorage.setItem('nw:reviewQueueScopeFixed', '1');
+      /* IDB-RECORDS-MIGRATION: clearing the one-shot gate lets boot migrate
+         this freshly seeded localStorage register into the records store. */
+      localStorage.removeItem('nw:idbRecordsMigrated');
       localStorage.setItem('nw:clashes', JSON.stringify(clashes));
       localStorage.setItem('nw:reviewQueueNoDateBanner', JSON.stringify(true));
     }, { clashes: seedClashes });
@@ -197,7 +220,7 @@ test.describe('INV-005: reviewQueueDateGuardFixed gate/persistence divergence', 
 
     const after = await page.evaluate(() => ({
       gate: localStorage.getItem('nw:reviewQueueDateGuardFixed'),
-      persistedClashes: JSON.parse(localStorage.getItem('nw:clashes') || 'null'),
+      persistedClashes: JSON.parse((typeof _recCache!=='undefined'&&_recCache.clashes!==undefined?JSON.stringify(_recCache.clashes):localStorage.getItem('nw:clashes')) || 'null'),
       persistedBanner: localStorage.getItem('nw:reviewQueueNoDateBanner'),
       inMemoryBanner: S.reviewQueueNoDateBanner,
       inMemory101: S.clashes.find(c => c.uid === 'CLX-101'),
