@@ -8,7 +8,7 @@
 
 This repository follows a role-based governance framework recorded in `docs/governance/` (decisions `DEC-001`–`DEC-012`, `WORKFLOW_ROUTING.md`, `WORKFLOW_TEMPLATES.md`, `GOVERNANCE_ORCHESTRATOR.md`, `RELEASE_SNAPSHOTS.md`) and `.cline/bootstrap.md` / `.cline/roles/*`. Investigation before implementation, evidence before conclusions, minimal-change principle. When work resembles a defect investigation rather than a direct instruction, follow that workflow instead of editing directly.
 
-**Released:** INV-008 (IndexedDB Reset Reliability) — `openIDB()` in-flight promise de-dup + self-closing `onversionchange` (commit `6995a0e`). INV-009 (ORPHAN-IDB-SWEEP data-loss race after the register moved to IndexedDB) — remediated by `9a0007e` / `d996b8d`, recovery tool `43705e0`; recorded retrospectively 2026-09-03. See `docs/governance/CURRENT_STATUS.md` for the ranked backlog and `KNOWN_ISSUES.md` for KI-007/KI-008/MI-003.
+**Released:** INV-008 (IndexedDB Reset Reliability) — `openIDB()` in-flight promise de-dup + self-closing `onversionchange` (commit `6995a0e`). INV-009 (ORPHAN-IDB-SWEEP data-loss race after the register moved to IndexedDB) — remediated by `9a0007e` / `d996b8d`, recovery tool `43705e0`; recorded retrospectively 2026-09-03. INV-011 (orphan image records regenerate on every weekly import) — `IMG-ORPHAN-CLEANUP`, 2026-09-03. See `docs/governance/CURRENT_STATUS.md` for the ranked backlog and `KNOWN_ISSUES.md` for KI-007 to KI-010.
 
 **Test suite has no known failures.** INV-010 (2026-09-03) root-caused the two `CHART-PERIOD-YEAR-AWARE` failures that every PR since INV-008 had labelled "pre-existing flakiness": the spec left the demo register in memory and `rDash()` regenerated weekly buckets from it. Test-only fix (KI-009). A red test is a regression until proven otherwise; specs that seed `S.weekly` or read the dashboard must also reset `S.clashes`.
 
@@ -120,7 +120,7 @@ Listed for context — when working near these areas, read the comment headers b
 
 Ranked order lives in `docs/governance/CURRENT_STATUS.md` → "Current Priority". Summary:
 
-- **MI-003 orphan audit:** ~63,178 image records vs ~3,670 restorable on the live profile. Read-only audit first. Wipe nothing.
+- **MI-003 / INV-011 orphan cleanup:** live audit found 76,682 orphaned image records (2.87 GB). Mechanism and fix in INV-011 (`IMG-ORPHAN-CLEANUP`). Remaining step is the live-profile run: `await _cleanupNwImageOrphans()` (dry run), then `{dryRun:false}`. Record the output in INV-011. Older weeks' images being unreachable per test name is a separate design item (image sets keyed by test **and** week) and needs a brief.
 - **PIXEL-DEDUP Phase 2 consumer:** the read side shipped (DEC-014, `IMG-DHASH-INDEX`): hashes indexed per referenced slot on the metadata record, `findSimilarImages(maxDistance)` returns cross-test groups. What a near-duplicate image means for two clashes, the threshold, and where it surfaces need a brief before building. Do not touch the Dedup Queue for this without one.
 - **Phase 2 of PAIR-ID-RESOLVED-COUNT:** auto-flip status to Resolved with confirmation toast + undo. Detection logic is shipped; the status-mutation part is deferred pending Playwright validation against real Muratec XMLs.
 - Building filter additions to Lifecycle and Severity charts

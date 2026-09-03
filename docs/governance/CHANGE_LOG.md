@@ -225,3 +225,21 @@ Notes:
 
 `DATA_VERSION` untouched. Protected blocks `UNCHANGED`. Behavioural change to stored `S.weekly` counters, ruled by Shane (option 1).
 
+---
+
+### 2026-09-03 (code, INV-011 / KI-010)
+
+Summary:
+
+Orphaned image records: mechanism confirmed, cleanup tool, root cause fixed at re-load time.
+
+Changes:
+
+- `working.html` — IMG-ORPHAN-CLEANUP (3 regions): `_classifyNwImageKeys` shared with the audit; `idbDeleteKeys`; `_cleanupNwImageOrphans` (dry run default, verified delete, refuses under pending wipe / backfill / no metadata); `loadNwImages` deletes superseded slots after the metadata write and reports `superseded`; `_dhashBackfill` yields to a running cleanup. Audit output unchanged.
+- `tests/img-orphan-cleanup.spec.js` — 9 tests.
+- INVESTIGATION_LOG.md INV-011 (mechanism with confidence tags, audit output, ruling 3 answer); KNOWN_ISSUES.md KI-010, MI-003 escalated; CURRENT_STATUS.md, CLAUDE.md.
+
+Notes:
+
+`DATA_VERSION` untouched. Protected blocks `UNCHANGED`. No UI change; console tool only.
+

@@ -606,6 +606,54 @@ Resolved. The stored weekly snapshot now agrees with the charts and exports.
 
 ---
 
+## KI-010
+
+Title:
+
+Re-loading a Test Name Strands Its Previous Image Records (Orphan Regeneration)
+
+Status:
+
+Resolved (INV-011)
+
+Severity:
+
+High (2.87 GB of unreachable records on the live profile after six weekly imports; store grows by a full weekly set on every import; every launch's dHash backfill and any future bulk read walks all of it)
+
+Related Investigation:
+
+- INV-011
+
+Summary:
+
+`loadNwImages` replaces a test name's `byTest` range on re-load and never deletes the old range's records. A weekly folder import re-loads all 13 test names, so each import strands the previous week's set. Audit on 2026-09-03: 81,451 keys, 4,768 referenced, 76,682 orphaned in 4 runs.
+
+Root Cause:
+
+Per-test replace semantics (IMG-FIX) with no delete of the superseded slots; allocation always appends after the highest surviving range, so superseded slots are never reused unless the re-loaded test was the highest.
+
+Approved Remediation:
+
+`IMG-ORPHAN-CLEANUP`: (1) `_cleanupNwImageOrphans()` console tool, dry run by default, delete mode verified against the referenced set; (2) `loadNwImages` deletes superseded slots after the new metadata write lands; (3) shared classifier so audit and cleanup agree.
+
+Implementation Status:
+
+✅ Completed
+
+QA Retest Status:
+
+✅ PASS — `tests/img-orphan-cleanup.spec.js` 9/9; image-layer and IndexedDB specs 84/84; full suite per CURRENT_STATUS.md.
+
+Regression Protection:
+
+- tests/img-orphan-cleanup.spec.js
+
+Outcome:
+
+Resolved in code. The live-profile cleanup run is the remaining step (INV-011 "Next Action").
+
+---
+
 # Monitoring
 
 ## MI-001
@@ -697,7 +745,7 @@ Orphaned IndexedDB Image Records
 
 Status:
 
-Monitoring — audit required before any action
+Escalated to INV-011 (2026-09-03) — audit run, mechanism confirmed, remediation KI-010. Closes when the live-profile cleanup output is recorded in INV-011.
 
 Description:
 
@@ -728,7 +776,13 @@ await _auditNwImageStore()          // default: 200-record sample per class
 await _auditNwImageStore({sample:0}) // counts only, no payload reads
 ```
 
-It reports total keys, metadata shape and count, referenced vs orphaned keys against the `byTest` slot ranges, missing slots (referenced but absent), overlapping ranges, the ten largest contiguous orphan runs (where re-import churn came from), per-test present/missing, record-shape and hash coverage per class, and an estimated decoded payload size per class. Regression protection: `tests/img-store-audit.spec.js` (8 tests, including a byte-identical before/after store comparison). Record the live-profile output here when it has been run.
+It reports total keys, metadata shape and count, referenced vs orphaned keys against the `byTest` slot ranges, missing slots (referenced but absent), overlapping ranges, the ten largest contiguous orphan runs (where re-import churn came from), per-test present/missing, record-shape and hash coverage per class, and an estimated decoded payload size per class. Regression protection: `tests/img-store-audit.spec.js` (8 tests, including a byte-identical before/after store comparison). Live-profile output (2026-09-03):
+
+```
+[IMG-STORE-AUDIT] 81451 keys; metadata imgfix-v1, count 4768, 13 tests; referenced 4768, orphaned 76682 in 4 runs, missing 0, overlapping 0, non-numeric 0; referenced 171.4 MB / orphaned 2872.8 MB.
+```
+
+Shane's ruling: not moot — the orphans regenerate on every weekly import. See INV-011 for the mechanism, the cleanup tool and the root-cause fix.
 
 ---
 
@@ -757,12 +811,13 @@ Resolved Issues:
 - KI-007 — ORPHAN-IDB-SWEEP Deletes the Image Database Under the In-Flight Register Migration (INV-009, retrospective) ✅
 - KI-008 — Frozen-Week Terminal Refresh Double-Count (DEC-015, projection everywhere) ✅
 - KI-009 — frozen-week-and-chart-year.spec.js register isolation (INV-010, test-only) ✅
+- KI-010 — Re-loading a test name strands its previous image records (INV-011) ✅
 
 Monitoring Items:
 
 - MI-001 — Migration Complexity (updated 2026-09-03: `idbRecordsMigrated` gate and the routed write path added)
 - MI-002 — Test Timing Sensitivity (root cause remediated under INV-007 / KI-005)
-- MI-003 — Orphaned IndexedDB Image Records (audit required before any action)
+- MI-003 — Orphaned IndexedDB Image Records (escalated to INV-011; closes on the live-profile cleanup run)
 
 Confirmed Issues:
 
