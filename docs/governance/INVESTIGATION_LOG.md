@@ -1747,3 +1747,94 @@ Test-only remediation committed on `claude/app-progress-issues-04app5` (see CHAN
 Investigation closed.
 
 ---
+
+# INV-011: Orphaned IndexedDB Image Records — Mechanism, Cleanup and Root Cause
+
+Date:
+
+Opened 2026-09-03 on the live-profile audit result. Remediation implemented the same day.
+
+Status:
+
+Closed - Released (pending merge of the remediation PR; test-only and code changes recorded below).
+
+Workflow:
+
+Workflow A (Persistence Defect). Escalated from MI-003 by Shane's ruling after the audit proved the orphans regenerate rather than being a one-off residue.
+
+Trigger:
+
+`_auditNwImageStore()` (IMG-STORE-AUDIT, PR #67) run on the live profile on 2026-09-03:
+
+```
+[IMG-STORE-AUDIT] 81451 keys; metadata imgfix-v1, count 4768, 13 tests;
+referenced 4768, orphaned 76682 in 4 runs, missing 0, overlapping 0, non-numeric 0;
+referenced 171.4 MB / orphaned 2872.8 MB.
+```
+
+Four in five records in the store are unreachable, and they hold 94% of the payload.
+
+---
+## Root Cause Findings
+
+**[Certain, from source] `loadNwImages` strands the previous range on every re-load of a test name.** The function keys the per-test tracker `_nwImgByTest` by `testName` — the report filename without extension (`baseName`), which is what `importFolderPick` and `reattachImagesFromArchive` both pass. On re-load it deletes that entry, computes `nextIdx` as the end of the highest *remaining* range, writes the new images from there, and rewrites the metadata block (`byTest`) to point at the new range. Nothing deletes the old range's records. They remain in IndexedDB as numeric keys no `byTest` range covers, which is exactly the class the audit calls orphaned.
+
+**[Certain, from source] A weekly folder import re-loads every test.** `importFolderPick` calls `loadNwImages(matchedImages, baseName)` once per report in the folder. The weekly archive folders carry the same 13 report names each week, so each weekly import re-loads all 13 names and strands the whole previous week's set (about 4,768 records) in one contiguous block above the ranges that survive.
+
+**[Likely, inferred from the audit] 76,682 orphans in 4 runs ≈ 16 stranded import cycles.** Consecutive weekly imports strand adjacent blocks, which the run detector merges into one run; a run boundary appears wherever a surviving referenced range or a partial re-load (archive re-attach, single-test re-load) sits between two stranded blocks. Four runs is consistent with six weekly imports plus re-attach and re-load activity since 26 Aug. The audit does not record per-run sizes; the mechanism does not depend on the exact count.
+
+**[Certain, from source] The orphans are already unreachable.** Every image lookup goes through the composite key `rawTestName::nwImageRef` into `_nwImages`, which `initNwImages` rebuilds from `byTest` only. The positional fallback (`IMG-POS`) also reads `_nwImgByTest`. No code path can reach a record outside the current ranges, so deleting orphans cannot change what any user sees.
+
+---
+## Why the Metadata Shows 13 Tests After Six Weekly Imports (Ruling 3)
+
+**[Certain, from source]** `byTest` is keyed by test name alone, and a re-load replaces the entry. The metadata therefore holds exactly one range per distinct report name — the most recently loaded week's — and 13 is the number of distinct report names across the FAB and CUP folders, not the number of test-weeks imported. Older weeks' images for the same name are the orphans above.
+
+**[Likely, from source; not reproduced against the live data]** This is also the mechanism behind missing or wrong images on W33/W34 clashes:
+
+- `IMG-REF-REFRESH` updates a clash's `nwImageRef` and `testIdx` to the newest export's values only when the clash is re-detected in that import. A clash last observed in W33 keeps its W33 filename.
+- Lookups resolve that filename against the newest week's file set for the same test name. Navisworks renumbers `cdNNNNNN.jpg` per export, so the W33 filename either points at an unrelated W36 viewport (wrong image) or, if the W36 export has fewer files, at nothing (placeholder). `IMG-POS` cannot rescue it: the positional fallback only fires when the test's image count equals its clash count, which is rarely true once clashes from earlier weeks persist in the register.
+
+Cleaning up orphans does not change this either way, because those records were already unreachable. Making earlier weeks' images reachable again is a design change — image sets keyed by test name **and** week, with lookups choosing the week the clash was last observed in (`weekTag`) — and needs its own brief. In the meantime the archive re-attach tool restores any single week's images for a test, at the cost of replacing the newer week's.
+
+---
+## Remediation (IMG-ORPHAN-CLEANUP, this PR)
+
+1. **Shared classifier.** `_classifyNwImageKeys(keys, meta)` now holds the referenced/orphaned/missing/overlapping logic. `_auditNwImageStore` and the new cleanup both call it, so the report and the delete can never disagree about what "orphaned" means. Audit output is unchanged.
+
+2. **Cleanup tool, console-callable, dry run by default.**
+
+   ```js
+   await _cleanupNwImageOrphans()               // dry run: reports what would be deleted, changes nothing
+   await _cleanupNwImageOrphans({dryRun:false}) // delete mode
+   ```
+
+   Delete mode removes exactly the keys the classifier calls orphaned (never key 0, never a referenced key), in batches of 500 per transaction, then re-reads the store and verifies that every referenced key is still present and the metadata block is intact before reporting `verified: true`. It refuses to run under `nw:pendingIdbWipe`, while `_dhashBackfill` is mid-pass (the backfill also yields to it, so neither can re-put a key the other is deleting), and when there is no metadata block at all — a store with no `byTest` ranges has no provable referenced set to protect, and `clearNwImageStore` exists for that case.
+
+3. **Root cause, contained.** `loadNwImages` remembers the range it is superseding, and after the new metadata write has landed deletes every slot of that range that no current range (its own new one included) still covers. If the metadata write fails, nothing is deleted, because the old metadata still points at the old slots. The load result gains a `superseded` count. Single function plus one helper (`idbDeleteKeys`), no change to key allocation, so the folder import, the archive re-attach and the per-test loader all inherit it.
+
+Regression protection — `tests/img-orphan-cleanup.spec.js` (9):
+
+- dry run changes nothing; delete mode removes exactly the orphans and leaves referenced records and key 0 byte-identical with verification passing; refuses with no metadata, under a pending wipe, and during a backfill; audit and cleanup agree on the orphan set.
+- re-loading a non-highest test deletes its superseded slots; re-loading the highest range with fewer images overwrites in place and deletes the tail; a failed metadata write keeps the old records; three simulated weekly imports of three tests leave zero orphans.
+
+Image-layer and IndexedDB specs re-run green (84 tests across 9 spec files). Full-suite result in CURRENT_STATUS.md.
+
+---
+## Next Action for the Live Profile (Shane)
+
+After deploying the merged build:
+
+1. `await _cleanupNwImageOrphans()` — confirm the dry run reports 76,682 (or thereabouts) to delete and 4,768 kept.
+2. `await _cleanupNwImageOrphans({dryRun:false})` — expect `verified: true`, `referencedAfter: 4768`, `orphanedAfter: 0`.
+3. `await _auditNwImageStore({sample:0})` — expect 4,769 keys.
+
+Record the three console lines here.
+
+---
+## Final Release Status
+
+Remediation on branch `claude/app-progress-issues-04app5` (second PR). Tracked as KI-010 (Resolved on merge). MI-003 closes when the live-profile cleanup output is recorded above.
+
+---
+

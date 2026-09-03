@@ -332,7 +332,7 @@ None. KI-008 resolved 2026-09-03 under DEC-015 (projection everywhere).
 
 ### Under Investigation
 
-None. INV-010 opened and closed 2026-09-03 (test-harness isolation gap, KI-009).
+None. INV-010 (test-harness isolation gap, KI-009) and INV-011 (orphan image records, KI-010) both opened and closed 2026-09-03.
 
 ### Monitoring
 
@@ -370,7 +370,7 @@ Monitoring — read-only audit required before any action
 
 Description:
 
-The live profile's `images` store held approximately 63,178 records against roughly 3,670 restorable at the time of PR #63; re-running the archive re-attach tool (PR #66) leaves superseded records behind. Origin breakdown unknown. Audit first; wipe nothing. A read-only audit function `_auditNwImageStore()` shipped 2026-09-03 (IMG-STORE-AUDIT); the live-profile run is pending. See KNOWN_ISSUES.md MI-003.
+The live profile's `images` store held approximately 63,178 records against roughly 3,670 restorable at the time of PR #63; re-running the archive re-attach tool (PR #66) leaves superseded records behind. Origin breakdown unknown. Audit run 2026-09-03: 81,451 keys, 4,768 referenced, 76,682 orphaned (2.87 GB). Escalated to INV-011; cleanup tool and root-cause fix shipped (KI-010). Closes when the live-profile cleanup output is recorded.
 
 ---
 
@@ -479,7 +479,7 @@ Note: a full repository-wide suite run surfaced 22 pre-existing intermittent fai
 Ranked backlog as of 2026-09-03 (in execution order):
 
 1. **Governance ledger catch-up** — this update (INV-009 retrospective record, INV-010 opened, KI-007, KI-008, MI-003, CHANGE_LOG for #59–#66, RS-002). Complete on commit of this document set.
-2. **MI-003 orphan audit** — read-only tool shipped (`_auditNwImageStore()`, IMG-STORE-AUDIT, 2026-09-03). Remaining: run it on the live profile from the DevTools console and record the output in KNOWN_ISSUES.md MI-003. Nothing wiped.
+2. **MI-003 orphan audit** — audit run on the live profile 2026-09-03 (76,682 orphans, 2.87 GB). Escalated to INV-011: mechanism confirmed from source, cleanup tool (`_cleanupNwImageOrphans`, dry run by default) and root-cause fix in `loadNwImages` shipped (KI-010). Remaining: run the cleanup on the live profile after deploy and record the output in INV-011.
 3. **PIXEL-DEDUP Phase 2** — ruling made and read side shipped 2026-09-03 (DEC-014, IMG-DHASH-INDEX): record stays authoritative, referenced-slot index rides on the metadata record, `findSimilarImages(maxDistance)` is the query API. Remaining: the consumer half (what a near-duplicate image means for two clashes, threshold, where it surfaces) needs a brief from Shane before it is built.
 4. **INV-010** — done 2026-09-03. Test-harness isolation gap (the demo register stayed in memory and `rDash()` regenerated weekly buckets from it); test-only fix, KI-009. Application logic verified correct. The suite has no known failures left.
 5. **KI-008** — resolved 2026-09-03. Shane ruled option 1 (DEC-015): every weekly snapshot counts each clash once at its end-of-week status; `FROZEN-WEEK-TERMINAL-REFRESH` retired; four new tests replace the two old ones.
@@ -512,6 +512,18 @@ Regression Protection:
 Release Snapshot:
 
 RS-002
+
+---
+
+### INV-011 (Closed - Released on merge)
+
+Title:
+
+Orphaned IndexedDB Image Records — Mechanism, Cleanup and Root Cause
+
+Status:
+
+Closed on 2026-09-03. Live-profile audit: 81,451 keys, 4,768 referenced, 76,682 orphaned in 4 runs (2.87 GB). Mechanism confirmed from source: `loadNwImages` never deleted a superseded range, and every weekly import re-loads all 13 test names. Remediation `IMG-ORPHAN-CLEANUP`: shared classifier, console cleanup tool (dry run default, verified delete), superseded-slot deletion at re-load time. Also answers why the metadata shows 13 tests and why W33/W34 clashes lose their images (see INVESTIGATION_LOG.md INV-011). Tracked as KI-010. Remaining: live-profile cleanup run.
 
 ---
 
@@ -646,6 +658,8 @@ Command: `cd tests; PW_CHROMIUM_PATH=/opt/pw-browsers/chromium npx playwright te
 First full-suite run with no known failures since the suite began being recorded in this ledger.
 
 Post-KI-008 (`7f7c9c8`): 358 total (the two retired `FROZEN-WEEK-TERMINAL-REFRESH` tests replaced by four `KI-008` tests), 358 passed, 0 failed.
+
+Post-INV-011 (branch, on top of `main` `33e6f20`): 367 total (+9 `img-orphan-cleanup`), 367 passed, 0 failed.
 
 ---
 

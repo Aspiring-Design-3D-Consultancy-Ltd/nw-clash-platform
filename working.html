@@ -4717,6 +4717,13 @@ function loadNwImages(files,testName){
   // Drop existing composite-key map entries that belong to this test, and the per-test
   // tracker entry. The IDB slots themselves stay populated and get overwritten by the
   // new indexes — they aren't reachable any more via the cleared map.
+  /* IMG-ORPHAN-CLEANUP start: remember the range being superseded so its
+     records can be deleted once the new metadata is safely written. Before
+     this, every re-load of a test name left its old slots in IndexedDB with
+     nothing referencing them — the INV-011 orphan mechanism. */
+  const _prevRange=_nwImgByTest[testName]
+    ?{firstIdx:_nwImgByTest[testName].firstIdx|0,count:_nwImgByTest[testName].count|0}:null;
+  /* IMG-ORPHAN-CLEANUP end */
   if(_nwImgByTest[testName]){
     const prevFiles=_nwImgByTest[testName].filenames||[];
     prevFiles.forEach(fn=>_nwImages.delete(testName+'::'+fn));
@@ -4824,8 +4831,31 @@ function loadNwImages(files,testName){
       /* IMG-DHASH-INDEX: referenced-slot hash index, pruned to live slots */
       dhashByIdx:_dhashIndexSerialise()
     };
-    try{ await idbPut(0,meta); }
+    let _metaOk=false;
+    try{ await idbPut(0,meta);_metaOk=true; }
     catch(e){ try{console.error('[IMG-BATCH-BACKPRESSURE] image metadata write failed: '+((e&&e.message)||e));}catch(_){} }
+    /* IMG-ORPHAN-CLEANUP start: delete the superseded slots — only those the
+       old range covered that no current range (this test's new one included)
+       still references, and only after the metadata write landed. If that
+       write failed, the old metadata still points at the old slots, so they
+       stay. Failures here are logged and never affect the load result. */
+    let superseded=0;
+    if(_metaOk&&_prevRange&&_prevRange.count>0){
+      try{
+        const live=new Set();
+        Object.values(_nwImgByTest).forEach(t=>{const f=(t&&t.firstIdx)|0,n=(t&&t.count)|0;for(let i=0;i<n;i++)live.add(f+i);});
+        const stale=[];
+        for(let i=0;i<_prevRange.count;i++){const k=_prevRange.firstIdx+i;if(k>0&&!live.has(k))stale.push(k);}
+        if(stale.length){
+          superseded=await idbDeleteKeys(stale);
+          stale.forEach(k=>{_nwImagesByIndex[k]=undefined;try{_dhashIndex.delete(k);}catch(e){}});
+          try{console.log('[IMG-ORPHAN-CLEANUP] "'+testName+'": '+superseded+' superseded image record(s) deleted');}catch(e){}
+        }
+      }catch(e){
+        try{console.warn('[IMG-ORPHAN-CLEANUP] could not delete superseded records for "'+testName+'": '+((e&&e.message)||e));}catch(_){}
+      }
+    }
+    /* IMG-ORPHAN-CLEANUP end */
     const stored=total-failed;
     showToast(failed
       ? `⚠ ${stored} of ${total} images saved for ${testName} — ${failed} failed (${grandTotal} total across all tests)`
@@ -4836,7 +4866,7 @@ function loadNwImages(files,testName){
       const tbr=document.getElementById('tbr');
       if(tbr)tbr.innerHTML=getVA('register')||'';
     }
-    return {testName,total,stored,failed};
+    return {testName,total,stored,failed,superseded};
   })();
   /* IMG-BATCH-BACKPRESSURE end */
   /* IMG-FIX end */
@@ -4990,6 +5020,7 @@ async function _dhashBackfill(){
         // A selective reset or full wipe outranks a backfill: stop touching
         // the store rather than re-opening a DB someone is trying to delete.
         try{ if(localStorage.getItem('nw:pendingIdbWipe'))return; }catch(e){}
+        if(_orphanCleanupRunning)return; /* IMG-ORPHAN-CLEANUP: never re-put a key being deleted */
         try{
           if(_dhashIndex.has(k)){already++;continue;} /* IMG-DHASH-INDEX: no payload read */
           const norm=_dhashUnwrap(await idbGet(k));
@@ -5206,6 +5237,38 @@ async function _auditSampleNwImages(keys){
   r.avgDecodedBytes=r.n?Math.round(r.b64Chars*0.75/r.n):0;
   return r;
 }
+/* Shared classification of the images store's keys against the metadata
+   byTest ranges. Pure: takes the key list and the metadata record, touches
+   nothing. Used by _auditNwImageStore (report) and _cleanupNwImageOrphans
+   (delete), so both cannot disagree about what "orphaned" means. */
+function _classifyNwImageKeys(keys,meta){
+  const numeric=new Set();let nonNumericKeys=0;
+  (keys||[]).forEach(k=>{if(typeof k==='number')numeric.add(k);else nonNumericKeys++;});
+  const byTest=(meta&&typeof meta==='object'&&meta.byTest&&typeof meta.byTest==='object')?meta.byTest:{};
+  const ranges=Object.entries(byTest).map(([tn,info])=>({
+    testName:tn,firstIdx:(info&&info.firstIdx)|0,count:(info&&info.count)|0,
+    filenames:((info&&info.filenames)||[]).length
+  }));
+  const owner=new Map();
+  ranges.forEach(r=>{
+    for(let i=0;i<r.count;i++){
+      const k=r.firstIdx+i;const o=owner.get(k);
+      if(o)o.push(r.testName);else owner.set(k,[r.testName]);
+    }
+  });
+  let overlapping=0,missing=0;
+  owner.forEach((owners,k)=>{if(owners.length>1)overlapping++;if(!numeric.has(k))missing++;});
+  const referencedKeys=[],orphanKeys=[];
+  numeric.forEach(k=>{if(k===0)return;if(owner.has(k))referencedKeys.push(k);else orphanKeys.push(k);});
+  referencedKeys.sort((a,b)=>a-b);orphanKeys.sort((a,b)=>a-b);
+  const runs=[];
+  orphanKeys.forEach(k=>{
+    const last=runs[runs.length-1];
+    if(last&&k===last.to+1){last.to=k;last.n++;}else runs.push({from:k,to:k,n:1});
+  });
+  return {numeric,nonNumericKeys,ranges,owner,overlapping,missing,referencedKeys,orphanKeys,runs,
+    hasMeta:!!(meta&&typeof meta==='object'&&meta.byTest)};
+}
 async function _auditNwImageStore(opts){
   opts=opts||{};
   const sampleSize=Number.isFinite(opts.sample)?Math.max(0,opts.sample|0):200;
@@ -5221,8 +5284,6 @@ async function _auditNwImageStore(opts){
   try{keys=await idbGetAllKeys();}
   catch(e){out.notes.push('could not read image keys: '+((e&&e.message)||e));return out;}
   out.totalKeys=(keys||[]).length;
-  const numeric=new Set();
-  (keys||[]).forEach(k=>{if(typeof k==='number')numeric.add(k);else out.nonNumericKeys++;});
   let meta=null;
   try{meta=await idbGet(0);}
   catch(e){out.notes.push('could not read metadata block: '+((e&&e.message)||e));}
@@ -5233,38 +5294,19 @@ async function _auditNwImageStore(opts){
   }else if(meta!=null){
     out.notes.push('key 0 holds a non-object value — treated as no metadata');
   }
-  const byTest=(meta&&meta.byTest&&typeof meta.byTest==='object')?meta.byTest:{};
-  const ranges=Object.entries(byTest).map(([tn,info])=>({
-    testName:tn,firstIdx:(info&&info.firstIdx)|0,count:(info&&info.count)|0,
-    filenames:((info&&info.filenames)||[]).length
-  }));
+  const cls=_classifyNwImageKeys(keys,meta);
+  const {numeric,ranges,owner,orphanKeys,runs}=cls;
+  out.nonNumericKeys=cls.nonNumericKeys;
   out.tests=ranges.length;
-  // slot -> list of tests that claim it (more than one = overlapping ranges,
-  // which would mean two tests share images — a real defect if it exists)
-  const owner=new Map();
-  ranges.forEach(r=>{
-    for(let i=0;i<r.count;i++){
-      const k=r.firstIdx+i;
-      const o=owner.get(k);
-      if(o)o.push(r.testName);else owner.set(k,[r.testName]);
-    }
-  });
   out.referencedSlots=owner.size;
-  owner.forEach((owners,k)=>{
-    if(owners.length>1)out.overlapping++;
-    if(!numeric.has(k))out.missing++;
-  });
-  numeric.forEach(k=>{if(k===0)return;if(owner.has(k))out.referenced++;else out.orphaned++;});
+  out.overlapping=cls.overlapping;
+  out.missing=cls.missing;
+  out.referenced=cls.referencedKeys.length;
+  out.orphaned=orphanKeys.length;
   out.byTest=ranges.map(r=>{
     let present=0;
     for(let i=0;i<r.count;i++)if(numeric.has(r.firstIdx+i))present++;
     return {testName:r.testName,firstIdx:r.firstIdx,count:r.count,filenames:r.filenames,present,missing:r.count-present};
-  });
-  const orphanKeys=[...numeric].filter(k=>k>0&&!owner.has(k)).sort((a,b)=>a-b);
-  const runs=[];
-  orphanKeys.forEach(k=>{
-    const last=runs[runs.length-1];
-    if(last&&k===last.to+1){last.to=k;last.n++;}else runs.push({from:k,to:k,n:1});
   });
   out.orphanRuns=runs.length;
   out.orphanKeyMin=orphanKeys.length?orphanKeys[0]:null;
@@ -5277,8 +5319,7 @@ async function _auditNwImageStore(opts){
       for(let i=0;i<n;i++)r.push(arr[Math.floor(i*step)]);
       return r;
     };
-    const refKeys=[...numeric].filter(k=>k>0&&owner.has(k)).sort((a,b)=>a-b);
-    const referenced=await _auditSampleNwImages(pick(refKeys,sampleSize));
+    const referenced=await _auditSampleNwImages(pick(cls.referencedKeys,sampleSize));
     const orphaned=await _auditSampleNwImages(pick(orphanKeys,sampleSize));
     out.sample={size:sampleSize,referenced,orphaned};
     out.estDecodedBytes={
@@ -5301,6 +5342,101 @@ async function _auditNwImageStore(opts){
   return out;
 }
 /* IMG-STORE-AUDIT end */
+
+/* IMG-ORPHAN-CLEANUP start: INV-011. The 2026-09-03 live-profile audit found
+   81,451 keys in the images store against 4,768 referenced — 76,682 orphans
+   (2.87 GB) in four contiguous runs. Mechanism (loadNwImages): re-loading a
+   test name drops its byTest entry, allocates the new range after the highest
+   remaining range, and leaves the old range's records in IndexedDB with
+   nothing pointing at them. Every weekly folder import re-loads all 13 test
+   names, so each import strands the previous week's whole set.
+   Two pieces here, both scoped to keys the shared classifier calls orphaned:
+   (1) _cleanupNwImageOrphans — console tool. Dry run by default; delete mode
+       removes exactly the orphan keys, then re-reads and verifies that every
+       referenced key is still present before reporting success. Refuses to
+       run under a pending wipe, while the dHash backfill is mid-pass, or when
+       there is no metadata block (a store with no byTest ranges has no
+       "referenced" set to protect, and clearNwImageStore exists for that).
+   (2) loadNwImages deletes a re-loaded test's superseded slots itself, after
+       the new metadata has been written, so the orphan set stops growing.
+   Key 0 is never a candidate; referenced keys are never candidates. */
+let _orphanCleanupRunning=false;
+async function idbDeleteKeys(keys,batch){
+  const list=(keys||[]).filter(k=>typeof k==='number'&&k>0);
+  const size=Math.max(1,batch|0||500);
+  let deleted=0;
+  for(let i=0;i<list.length;i+=size){
+    const chunk=list.slice(i,i+size);
+    const db=await openIDB();
+    await new Promise((res,rej)=>{
+      const tx=db.transaction('images','readwrite');
+      const st=tx.objectStore('images');
+      chunk.forEach(k=>st.delete(k));
+      tx.oncomplete=()=>res();
+      tx.onerror=e=>rej(e.target.error);
+      tx.onabort=e=>rej((e.target&&e.target.error)||new Error('transaction aborted'));
+    });
+    deleted+=chunk.length;
+  }
+  return deleted;
+}
+async function _cleanupNwImageOrphans(opts){
+  opts=opts||{};
+  const dryRun=opts.dryRun!==false;
+  const out={ok:false,dryRun,at:new Date().toISOString(),totalKeys:0,referenced:0,orphaned:0,
+    wouldDelete:0,deleted:0,referencedAfter:null,orphanedAfter:null,verified:null,
+    orphanKeyMin:null,orphanKeyMax:null,orphanRuns:0,reason:null};
+  const say=m=>{try{console.log('[IMG-ORPHAN-CLEANUP] '+m);}catch(e){}};
+  let wipe=false;
+  try{wipe=!!localStorage.getItem('nw:pendingIdbWipe');}catch(e){}
+  if(wipe){out.reason='a wipe is pending — nothing done';say(out.reason);return out;}
+  if(_dhashBackfillRunning){out.reason='dHash backfill is mid-pass — retry in a moment';say(out.reason);return out;}
+  if(_orphanCleanupRunning){out.reason='already running';say(out.reason);return out;}
+  _orphanCleanupRunning=true;
+  try{
+    let keys,meta=null;
+    try{keys=await idbGetAllKeys();}catch(e){out.reason='could not read keys: '+((e&&e.message)||e);say(out.reason);return out;}
+    try{meta=await idbGet(0);}catch(e){out.reason='could not read metadata: '+((e&&e.message)||e);say(out.reason);return out;}
+    const cls=_classifyNwImageKeys(keys,meta);
+    out.totalKeys=(keys||[]).length;
+    out.referenced=cls.referencedKeys.length;
+    out.orphaned=cls.orphanKeys.length;
+    out.orphanRuns=cls.runs.length;
+    out.orphanKeyMin=cls.orphanKeys.length?cls.orphanKeys[0]:null;
+    out.orphanKeyMax=cls.orphanKeys.length?cls.orphanKeys[cls.orphanKeys.length-1]:null;
+    if(!cls.hasMeta){
+      out.reason='no metadata block with byTest ranges — refusing: nothing is provably referenced. Use Settings → Clear stored images for a full wipe.';
+      say(out.reason);return out;
+    }
+    const candidates=cls.orphanKeys.filter(k=>k!==0&&!cls.owner.has(k));
+    out.wouldDelete=candidates.length;
+    if(dryRun){
+      out.ok=true;
+      say('dry run: '+out.totalKeys+' keys, '+out.referenced+' referenced (kept), '+out.wouldDelete+
+        ' orphaned in '+out.orphanRuns+' runs would be deleted'+(candidates.length?(' (keys '+out.orphanKeyMin+'..'+out.orphanKeyMax+')'):'')+
+        '. Nothing was changed. Run _cleanupNwImageOrphans({dryRun:false}) to delete.');
+      return out;
+    }
+    if(!candidates.length){out.ok=true;out.verified=true;out.referencedAfter=out.referenced;out.orphanedAfter=0;say('nothing to delete');return out;}
+    out.deleted=await idbDeleteKeys(candidates,opts.batch);
+    candidates.forEach(k=>{try{_nwImagesByIndex[k]=undefined;}catch(e){}try{_dhashIndex.delete(k);}catch(e){}});
+    // Verify: every referenced key must still be present, and nothing
+    // referenced may have changed class.
+    const after=_classifyNwImageKeys(await idbGetAllKeys(),await idbGet(0));
+    out.referencedAfter=after.referencedKeys.length;
+    out.orphanedAfter=after.orphanKeys.length;
+    const beforeSet=new Set(cls.referencedKeys);
+    const stillThere=after.referencedKeys.every(k=>beforeSet.has(k))&&after.referencedKeys.length===cls.referencedKeys.length;
+    out.verified=stillThere&&after.numeric.has(0);
+    out.ok=out.verified;
+    say('deleted '+out.deleted+' orphaned records; referenced '+out.referenced+' → '+out.referencedAfter+
+      ', orphaned remaining '+out.orphanedAfter+'; verification '+(out.verified?'PASSED':'FAILED — investigate before doing anything else'));
+    return out;
+  }finally{
+    _orphanCleanupRunning=false;
+  }
+}
+/* IMG-ORPHAN-CLEANUP end */
 
 // Refresh the image panel inside an open modal
 function refreshModalImage(){
@@ -9410,9 +9546,9 @@ function _bifMatchImageJobs(xmlFiles,imagesByFolder){
    Idempotent per test: loadNwImages() drops the test's existing composite-key
    entries and per-test tracker before reallocating, so re-running the same
    week updates that week's mapping in place rather than duplicating it. Other
-   tests are untouched. (Superseded IDB image records from the previous run are
-   left behind — that is the known orphan backlog item, not something this tool
-   changes.) */
+   tests are untouched. Superseded IDB image records from the previous run are
+   deleted by loadNwImages once the new metadata is written (IMG-ORPHAN-CLEANUP,
+   INV-011). */
 async function reattachImagesFromArchive(inputEl){
   const all=[...inputEl.files];
   if(!all.length)return;
