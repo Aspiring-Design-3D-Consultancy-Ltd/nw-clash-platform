@@ -645,6 +645,8 @@ Command: `cd tests; PW_CHROMIUM_PATH=/opt/pw-browsers/chromium npx playwright te
 
 First full-suite run with no known failures since the suite began being recorded in this ledger.
 
+Post-KI-008 (`7f7c9c8`): 358 total (the two retired `FROZEN-WEEK-TERMINAL-REFRESH` tests replaced by four `KI-008` tests), 358 passed, 0 failed.
+
 ---
 
 ## Next Planned Activity
