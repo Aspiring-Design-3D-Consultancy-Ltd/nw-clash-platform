@@ -243,3 +243,20 @@ Notes:
 
 `DATA_VERSION` untouched. Protected blocks `UNCHANGED`. No UI change; console tool only.
 
+---
+
+### 2026-09-03 (release record, INV-011)
+
+Summary:
+
+PR #68 merged (`5f339ff`, `main` `92246f5`). Live-profile cleanup run and verified: 76,682 orphaned image records deleted, 4,768 referenced retained, follow-up audit 4,769 keys / 0 orphaned. MI-003 closed.
+
+Changes:
+
+- INVESTIGATION_LOG.md INV-011: live-run output, per-test ranges after cleanup, two observations (backfill "failed" count, `AHMS`/`AMHS` test-name split).
+- KNOWN_ISSUES.md MI-003 closed, KI-010 outcome; CURRENT_STATUS.md; CLAUDE.md pending list.
+
+Notes:
+
+Documentation only.
+

@@ -332,7 +332,7 @@ None. KI-008 resolved 2026-09-03 under DEC-015 (projection everywhere).
 
 ### Under Investigation
 
-None. INV-010 (test-harness isolation gap, KI-009) and INV-011 (orphan image records, KI-010) both opened and closed 2026-09-03.
+None. INV-010 (test-harness isolation gap, KI-009) and INV-011 (orphan image records, KI-010) both opened, closed and released 2026-09-03.
 
 ### Monitoring
 
@@ -370,7 +370,7 @@ Monitoring — read-only audit required before any action
 
 Description:
 
-The live profile's `images` store held approximately 63,178 records against roughly 3,670 restorable at the time of PR #63; re-running the archive re-attach tool (PR #66) leaves superseded records behind. Origin breakdown unknown. Audit run 2026-09-03: 81,451 keys, 4,768 referenced, 76,682 orphaned (2.87 GB). Escalated to INV-011; cleanup tool and root-cause fix shipped (KI-010). Closes when the live-profile cleanup output is recorded.
+The live profile's `images` store held approximately 63,178 records against roughly 3,670 restorable at the time of PR #63; re-running the archive re-attach tool (PR #66) leaves superseded records behind. Origin breakdown unknown. Closed 2026-09-03. Audit found 76,682 orphaned records (2.87 GB); INV-011 / KI-010 shipped the cleanup and the root-cause fix; live-profile cleanup verified: 4,769 keys, 0 orphaned.
 
 ---
 
@@ -479,7 +479,7 @@ Note: a full repository-wide suite run surfaced 22 pre-existing intermittent fai
 Ranked backlog as of 2026-09-03 (in execution order):
 
 1. **Governance ledger catch-up** — this update (INV-009 retrospective record, INV-010 opened, KI-007, KI-008, MI-003, CHANGE_LOG for #59–#66, RS-002). Complete on commit of this document set.
-2. **MI-003 orphan audit** — audit run on the live profile 2026-09-03 (76,682 orphans, 2.87 GB). Escalated to INV-011: mechanism confirmed from source, cleanup tool (`_cleanupNwImageOrphans`, dry run by default) and root-cause fix in `loadNwImages` shipped (KI-010). Remaining: run the cleanup on the live profile after deploy and record the output in INV-011.
+2. **MI-003 / INV-011 orphan records** — done. Audit, cleanup tool, root-cause fix (PR #68, `main` `92246f5`), and the live-profile cleanup: 76,682 deleted, 4,768 kept, verification passed, store now 4,769 keys. MI-003 closed.
 3. **PIXEL-DEDUP Phase 2** — ruling made and read side shipped 2026-09-03 (DEC-014, IMG-DHASH-INDEX): record stays authoritative, referenced-slot index rides on the metadata record, `findSimilarImages(maxDistance)` is the query API. Remaining: the consumer half (what a near-duplicate image means for two clashes, threshold, where it surfaces) needs a brief from Shane before it is built.
 4. **INV-010** — done 2026-09-03. Test-harness isolation gap (the demo register stayed in memory and `rDash()` regenerated weekly buckets from it); test-only fix, KI-009. Application logic verified correct. The suite has no known failures left.
 5. **KI-008** — resolved 2026-09-03. Shane ruled option 1 (DEC-015): every weekly snapshot counts each clash once at its end-of-week status; `FROZEN-WEEK-TERMINAL-REFRESH` retired; four new tests replace the two old ones.
@@ -523,7 +523,7 @@ Orphaned IndexedDB Image Records — Mechanism, Cleanup and Root Cause
 
 Status:
 
-Closed on 2026-09-03. Live-profile audit: 81,451 keys, 4,768 referenced, 76,682 orphaned in 4 runs (2.87 GB). Mechanism confirmed from source: `loadNwImages` never deleted a superseded range, and every weekly import re-loads all 13 test names. Remediation `IMG-ORPHAN-CLEANUP`: shared classifier, console cleanup tool (dry run default, verified delete), superseded-slot deletion at re-load time. Also answers why the metadata shows 13 tests and why W33/W34 clashes lose their images (see INVESTIGATION_LOG.md INV-011). Tracked as KI-010. Remaining: live-profile cleanup run.
+Closed and released 2026-09-03 (PR #68, `main` `92246f5`); live-profile cleanup verified the same day. Live-profile audit: 81,451 keys, 4,768 referenced, 76,682 orphaned in 4 runs (2.87 GB). Mechanism confirmed from source: `loadNwImages` never deleted a superseded range, and every weekly import re-loads all 13 test names. Remediation `IMG-ORPHAN-CLEANUP`: shared classifier, console cleanup tool (dry run default, verified delete), superseded-slot deletion at re-load time. Also answers why the metadata shows 13 tests and why W33/W34 clashes lose their images (see INVESTIGATION_LOG.md INV-011). Tracked as KI-010. Live cleanup: 76,682 deleted, 4,768 kept, verification passed.
 
 ---
 
@@ -665,7 +665,7 @@ Post-INV-011 (branch, on top of `main` `33e6f20`): 367 total (+9 `img-orphan-cle
 
 ## Next Planned Activity
 
-Work the ranked backlog under "Current Priority" in order. No investigation is open. MI-003 is the only monitoring item with a pending action (run the audit on the live profile).
+Work the ranked backlog under "Current Priority" in order. No investigation is open and no monitoring item has a pending action. Next design brief needed: image sets keyed by test **and** week (INV-011, ruling 3), so clashes last observed in an earlier week resolve to that week's images.
 
 Future investigations should originate from:
 
