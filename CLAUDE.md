@@ -121,7 +121,7 @@ Listed for context — when working near these areas, read the comment headers b
 Ranked order lives in `docs/governance/CURRENT_STATUS.md` → "Current Priority". Summary:
 
 - **MI-003 orphan audit:** ~63,178 image records vs ~3,670 restorable on the live profile. Read-only audit first. Wipe nothing.
-- **PIXEL-DEDUP Phase 2:** dHash is stored on every image record (`{b64, dhash}`) but nothing reads it. Needs a ruling on hash-on-record vs sidecar keys before the consumer is built (#61 flagged the trade).
+- **PIXEL-DEDUP Phase 2 consumer:** the read side shipped (DEC-014, `IMG-DHASH-INDEX`): hashes indexed per referenced slot on the metadata record, `findSimilarImages(maxDistance)` returns cross-test groups. What a near-duplicate image means for two clashes, the threshold, and where it surfaces need a brief before building. Do not touch the Dedup Queue for this without one.
 - **INV-010:** root-cause the `CHART-PERIOD-YEAR-AWARE` failures.
 - **KI-008:** frozen-week double-count; fix is a `clashStatusAt(c, wk, yr)` projection across every counter. Start with a failing test.
 - **Delta Analysis Settings UI (Step 3):** storage/accessors/live-reclass for `nw:designedConditionPatterns` and `nw:republishToleranceMm` exist; no settings surface.

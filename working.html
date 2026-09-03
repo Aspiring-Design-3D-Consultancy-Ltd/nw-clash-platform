@@ -3808,6 +3808,7 @@ async function clearNwImageStore(){
   if(!confirm(`Clear ${_nwImgCount} stored clash images? You will need to reload them from the folder.`))return;
   await idbClear();
   _nwImages.clear();
+  _dhashIndex.clear(); /* IMG-DHASH-INDEX: nothing referenced after a clear */
   _nwImagesByIndex.length=0;
   /* IMG-FIX: wipe per-test tracker too */
   Object.keys(_nwImgByTest).forEach(k=>delete _nwImgByTest[k]);
@@ -4646,6 +4647,7 @@ async function initNwImages(){
         }catch(e){done();}
       });
       try{_nwImages.clear();}catch(e){}
+      try{_dhashIndex.clear();}catch(e){} /* IMG-DHASH-INDEX */
       _nwImagesByIndex.length=0;
       try{Object.keys(_nwImgByTest).forEach(k=>delete _nwImgByTest[k]);}catch(e){}
       _nwImgCount=0;
@@ -4668,6 +4670,7 @@ async function initNwImages(){
       updateNwImgUI();
       // Populate the per-test stat so the UI shows "legacy — please reload"
       Object.keys(_nwImgByTest).forEach(k=>delete _nwImgByTest[k]);
+      _dhashIndex.clear(); /* IMG-DHASH-INDEX: legacy shape has no referenced slots */
       _nwImgByTest['(legacy — please reload per test)']={
         firstIdx:1,count:meta.count||0,filenames:meta.filenames||[]
       };
@@ -4684,6 +4687,7 @@ async function initNwImages(){
     _nwImagesByIndex.length=0;
     _nwImagesByIndex.push(null);
     for(let i=1;i<=meta.count;i++)_nwImagesByIndex.push(undefined); // lazy load
+    _dhashIndexRestore(meta); /* IMG-DHASH-INDEX: hashes for referenced slots, one read */
     _nwImgCount=meta.count;
     _nwFolderName=meta.folderName||'';
     updateNwImgUI();
@@ -4812,6 +4816,9 @@ function loadNwImages(files,testName){
         }
         await idbPut(idx,{b64,dhash:_dh});
         /* IMG-DHASH-PHASE1 end */
+        /* IMG-DHASH-INDEX: record the slot's hash only after the write landed,
+           so the index never claims a hash the store does not hold. */
+        if(_dh)_dhashIndex.set(idx,_dh);else _dhashIndex.delete(idx);
         _nwImages.set(testName+'::'+f.name,idx);
         _nwImagesByIndex[idx]=b64;
       }catch(e){
@@ -4835,7 +4842,9 @@ function loadNwImages(files,testName){
       shape:'imgfix-v1',
       count:grandTotal,
       loadedAt:Date.now(),
-      byTest:JSON.parse(JSON.stringify(_nwImgByTest))
+      byTest:JSON.parse(JSON.stringify(_nwImgByTest)),
+      /* IMG-DHASH-INDEX: referenced-slot hash index, pruned to live slots */
+      dhashByIdx:_dhashIndexSerialise()
     };
     try{ await idbPut(0,meta); }
     catch(e){ try{console.error('[IMG-BATCH-BACKPRESSURE] image metadata write failed: '+((e&&e.message)||e));}catch(_){} }
@@ -4974,7 +4983,7 @@ async function _dhashBackfill(){
   if(_dhashBackfillRunning)return {skippedRun:true};
   _dhashBackfillRunning=true;
   const t0=(typeof performance!=='undefined'&&performance.now)?performance.now():0;
-  let hashed=0,already=0,failed=0,targets=[];
+  let hashed=0,already=0,failed=0,indexed=0,targets=[];
   try{
     try{ if(localStorage.getItem('nw:pendingIdbWipe'))return {hashed:0,already:0,failed:0,total:0}; }catch(e){}
     let keys=[];
@@ -4986,6 +4995,13 @@ async function _dhashBackfill(){
     // Key 0 is the metadata block, never an image.
     targets=(keys||[]).filter(k=>typeof k==='number'&&k>0);
     if(!targets.length)return {hashed:0,already:0,failed:0,total:0};
+    /* IMG-DHASH-INDEX start: slots the current byTest ranges reach. Only these
+       are indexed — an orphaned slot is unreachable, so indexing it would just
+       grow the metadata block for nothing. A slot already in the index is
+       counted as done without reading its payload; that is the per-launch
+       saving this index exists for. */
+    const _ref=_dhashIndexReferencedSlots();
+    /* IMG-DHASH-INDEX end */
 
     const nextRef={i:0};
     async function _dhashWorker(){
@@ -4997,17 +5013,38 @@ async function _dhashBackfill(){
         // the store rather than re-opening a DB someone is trying to delete.
         try{ if(localStorage.getItem('nw:pendingIdbWipe'))return; }catch(e){}
         try{
+          if(_dhashIndex.has(k)){already++;continue;} /* IMG-DHASH-INDEX: no payload read */
           const norm=_dhashUnwrap(await idbGet(k));
           if(!norm){failed++;continue;}
-          if(norm.dhash){already++;continue;}
+          if(norm.dhash){
+            already++;
+            /* IMG-DHASH-INDEX: a record hashed by an earlier build but never
+               indexed — pick it up now so the next launch skips the read. */
+            if(_ref.has(k)){_dhashIndex.set(k,norm.dhash);indexed++;}
+            continue;
+          }
           const dhash=await computeDHash(norm.b64);
           await idbPut(k,{b64:norm.b64,dhash});
           hashed++;
+          if(_ref.has(k)){_dhashIndex.set(k,dhash);indexed++;} /* IMG-DHASH-INDEX */
         }catch(e){failed++;}
       }
     }
     const lanes=Math.min(_IMG_READ_CONCURRENCY,targets.length);
     await Promise.all(Array.from({length:lanes},()=>_dhashWorker()));
+    /* IMG-DHASH-INDEX start: one metadata write for the whole pass, and only
+       when something was added — a store with nothing new to index generates
+       no write at all, so the Phase 1 "metadata untouched" guarantee still
+       holds for stores without byTest ranges. Skipped under a pending wipe. */
+    if(indexed){
+      let _wipe=false;
+      try{ _wipe=!!localStorage.getItem('nw:pendingIdbWipe'); }catch(e){}
+      if(!_wipe){
+        try{ await _dhashIndexPersist(); }
+        catch(e){ try{console.warn('[IMG-DHASH-INDEX] index persist failed: '+((e&&e.message)||e));}catch(_){} }
+      }
+    }
+    /* IMG-DHASH-INDEX end */
   } finally {
     _dhashBackfillRunning=false;
   }
@@ -5015,11 +5052,147 @@ async function _dhashBackfill(){
     const ms=((typeof performance!=='undefined'&&performance.now)?performance.now():0)-t0;
     try{console.log('[IMG-DHASH-PHASE1] backfill: '+hashed+' hashed, '+already+
       ' already had a hash, '+failed+' failed, of '+targets.length+' images in '+
-      Math.round(ms)+'ms');}catch(e){}
+      Math.round(ms)+'ms'+(indexed?(' ('+indexed+' added to the hash index)'):''));}catch(e){}
   }
-  return {hashed,already,failed,total:targets.length};
+  return {hashed,already,failed,indexed,total:targets.length};
 }
 /* IMG-DHASH-PHASE1 end */
+
+/* IMG-DHASH-INDEX start: PIXEL-DEDUP Phase 2 read side. Phase 1 put each
+   image's dHash on its own record ({b64,dhash}), which is the right place for
+   the authoritative value but means "give me every hash" costs a full read of
+   every image payload — and _dhashBackfill was paying exactly that cost on
+   every launch to find out which records still needed hashing. This block adds
+   a small derived index of idx -> dhash for the slots the current byTest
+   ranges reference, kept in memory (_dhashIndex) and serialised into the
+   existing metadata block at key 0 as `dhashByIdx`. Decision record: DEC-014.
+
+   Contract:
+   - The record's own dhash stays authoritative. The index is a cache that is
+     only ever populated from a hash that has already been written to its
+     record (loadNwImages worker, _dhashBackfill), and is rebuilt by the
+     backfill for any referenced slot it does not yet cover.
+   - Referenced slots only. Orphaned slots (MI-003) are never indexed, so the
+     index is bounded by the live image count, not the store size.
+   - No new keys in the images store and no schema bump: `dhashByIdx` rides on
+     the metadata record that loadNwImages already writes at the end of every
+     load, so idbGetAllKeys() and every wipe/verify store list are unchanged.
+   - Consumers read hashes through _dhashIndexGet() / findSimilarImages(); if a
+     referenced slot is not indexed yet they fall back to reading the record.
+   Nothing here touches the Dedup Queue, thresholds, or UI — that is the
+   consumer half of Phase 2 and needs its own brief. */
+const _dhashIndex=new Map(); // idx -> 16-char hex dhash, referenced slots only
+
+function _dhashIndexReferencedSlots(){
+  const s=new Set();
+  Object.values(_nwImgByTest).forEach(t=>{
+    const f=(t&&t.firstIdx)|0,n=(t&&t.count)|0;
+    for(let i=0;i<n;i++)s.add(f+i);
+  });
+  return s;
+}
+/* Plain object for the metadata block. Prunes entries whose slot no test
+   references any more (a re-loaded test that moved or shrank). */
+function _dhashIndexSerialise(){
+  const ref=_dhashIndexReferencedSlots();
+  const o={};
+  [..._dhashIndex.keys()].forEach(k=>{
+    if(ref.has(k))o[k]=_dhashIndex.get(k);else _dhashIndex.delete(k);
+  });
+  return o;
+}
+function _dhashIndexRestore(meta){
+  _dhashIndex.clear();
+  const o=meta&&meta.dhashByIdx;
+  if(!o||typeof o!=='object')return 0;
+  Object.keys(o).forEach(k=>{
+    const n=Number(k),h=o[k];
+    if(Number.isInteger(n)&&n>0&&typeof h==='string'&&/^[0-9a-f]{16}$/.test(h))_dhashIndex.set(n,h);
+  });
+  return _dhashIndex.size;
+}
+/* One read + one write of key 0. No-op (returns false) when there is no
+   new-shape metadata block — nothing is referenced then, so there is nothing
+   to index and a bare-records store stays exactly as Phase 1 left it. */
+async function _dhashIndexPersist(){
+  const meta=await idbGet(0);
+  if(!meta||typeof meta!=='object'||!meta.byTest)return false;
+  meta.dhashByIdx=_dhashIndexSerialise();
+  await idbPut(0,meta);
+  return true;
+}
+/* Hash for one slot: index first, record second. Returns null if the slot
+   has no image or the image was never hashed. */
+async function _dhashIndexGet(idx){
+  const h=_dhashIndex.get(idx);
+  if(h)return h;
+  try{
+    const norm=_dhashUnwrap(await idbGet(idx));
+    if(norm&&norm.dhash){
+      if(_dhashIndexReferencedSlots().has(idx))_dhashIndex.set(idx,norm.dhash);
+      return norm.dhash;
+    }
+  }catch(e){}
+  return null;
+}
+/* Bits that differ between two 16-hex-char hashes (0..64). */
+function _dhashHamming(a,b){
+  if(typeof a!=='string'||typeof b!=='string'||a.length!==16||b.length!==16)return 64;
+  let d=0;
+  for(let i=0;i<16;i++){
+    let x=parseInt(a[i],16)^parseInt(b[i],16);
+    while(x){d+=x&1;x>>=1;}
+  }
+  return d;
+}
+/* Groups of referenced images whose hashes are within maxDistance bits of
+   each other (transitively — union-find). Reads only the in-memory index, so
+   it is synchronous and does no IDB traffic; call after initNwImages has
+   restored the metadata, or after a backfill on a store that predates the
+   index. Each member carries the slot, its test and filename so a consumer
+   can map back to clashes through the same testName::filename composite key
+   the rest of the image layer uses. Distance 0 means byte-for-byte-equivalent
+   fingerprints; 6–10 is the usual "same viewpoint, different capture" band
+   for a 64-bit dHash, but the threshold is the caller's decision. */
+function findSimilarImages(maxDistance){
+  const maxD=Number.isFinite(maxDistance)?Math.max(0,maxDistance|0):0;
+  const slotInfo=new Map();
+  Object.entries(_nwImgByTest).forEach(([tn,t])=>{
+    const f=(t&&t.firstIdx)|0,n=(t&&t.count)|0,fns=(t&&t.filenames)||[];
+    for(let i=0;i<n;i++)slotInfo.set(f+i,{testName:tn,filename:fns[i]||null});
+  });
+  const entries=[];
+  _dhashIndex.forEach((h,idx)=>{ if(slotInfo.has(idx))entries.push({idx,hash:h}); });
+  const parent=new Map();
+  const find=x=>{ while(parent.get(x)!==x){parent.set(x,parent.get(parent.get(x)));x=parent.get(x);} return x; };
+  const union=(a,b)=>{ a=find(a);b=find(b); if(a!==b)parent.set(b,a); };
+  entries.forEach(e=>parent.set(e.idx,e.idx));
+  if(maxD===0){
+    const byHash=new Map();
+    entries.forEach(e=>{ const l=byHash.get(e.hash); if(l){union(l,e.idx);} else byHash.set(e.hash,e.idx); });
+  }else{
+    for(let i=0;i<entries.length;i++)
+      for(let j=i+1;j<entries.length;j++)
+        if(_dhashHamming(entries[i].hash,entries[j].hash)<=maxD)union(entries[i].idx,entries[j].idx);
+  }
+  const groups=new Map();
+  entries.forEach(e=>{
+    const r=find(e.idx);
+    let g=groups.get(r);
+    if(!g){g={members:[]};groups.set(r,g);}
+    const info=slotInfo.get(e.idx);
+    g.members.push({idx:e.idx,hash:e.hash,testName:info.testName,filename:info.filename});
+  });
+  return [...groups.values()]
+    .filter(g=>g.members.length>1)
+    .map(g=>{
+      g.members.sort((a,b)=>a.idx-b.idx);
+      const tests=new Set(g.members.map(m=>m.testName));
+      return {size:g.members.length,crossTest:tests.size>1,tests:[...tests],members:g.members};
+    })
+    .sort((a,b)=>b.size-a.size||a.members[0].idx-b.members[0].idx);
+}
+/* IMG-DHASH-INDEX end */
 
 /* IMG-STORE-AUDIT start: read-only audit of the NWClashImages `images` store
    for MI-003 (Orphaned IndexedDB Image Records). PR #63 reported ~63,178

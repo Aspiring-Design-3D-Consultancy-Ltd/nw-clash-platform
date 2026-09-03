@@ -154,3 +154,21 @@ Notes:
 
 No UI change. `DATA_VERSION` untouched. Protected blocks `UNCHANGED`. Marker `IMG-STORE-AUDIT` 1/1.
 
+---
+
+### 2026-09-03 (code, PIXEL-DEDUP Phase 2 read side)
+
+Summary:
+
+Referenced-slot dHash index on the image metadata record, and the read API the Phase 2 consumer will call. Decision recorded as DEC-014.
+
+Changes:
+
+- `working.html` — IMG-DHASH-INDEX: `_dhashIndex` (in-memory `idx -> dhash` for referenced slots), serialised into the key-0 metadata record as `dhashByIdx` by `loadNwImages` and, once per pass and only when something was indexed, by `_dhashBackfill`. The backfill skips payload reads for indexed slots and still hashes every numeric key (Phase 1 contract). Restored by `initNwImages`; cleared with the other in-memory image caches. Read API: `_dhashIndexGet(idx)`, `_dhashHamming(a,b)`, `findSimilarImages(maxDistance)` (union-find groups with test and filename per member, cross-test flag). No Dedup Queue, threshold, or UI change.
+- `tests/img-dhash-index.spec.js` — 8 tests with real canvas PNGs through `loadNwImages`.
+- `docs/governance/DECISION_LOG.md` — DEC-014.
+
+Notes:
+
+No new keys in the images store, no DB version bump, `DATA_VERSION` untouched, protected blocks `UNCHANGED`. Image-layer and IDB specs re-run green (89 tests across 12 spec files including the new one).
+

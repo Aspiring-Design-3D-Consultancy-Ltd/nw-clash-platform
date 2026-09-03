@@ -480,7 +480,7 @@ Ranked backlog as of 2026-09-03 (in execution order):
 
 1. **Governance ledger catch-up** — this update (INV-009 retrospective record, INV-010 opened, KI-007, KI-008, MI-003, CHANGE_LOG for #59–#66, RS-002). Complete on commit of this document set.
 2. **MI-003 orphan audit** — read-only tool shipped (`_auditNwImageStore()`, IMG-STORE-AUDIT, 2026-09-03). Remaining: run it on the live profile from the DevTools console and record the output in KNOWN_ISSUES.md MI-003. Nothing wiped.
-3. **PIXEL-DEDUP Phase 2** — needs a ruling first: hash-on-record (as shipped) means the bulk-hash read loads every image payload; the sidecar alternative was rejected in #61 because it changes `idbGetAllKeys()` results. Decide before building the consumer.
+3. **PIXEL-DEDUP Phase 2** — ruling made and read side shipped 2026-09-03 (DEC-014, IMG-DHASH-INDEX): record stays authoritative, referenced-slot index rides on the metadata record, `findSimilarImages(maxDistance)` is the query API. Remaining: the consumer half (what a near-duplicate image means for two clashes, threshold, where it surfaces) needs a brief from Shane before it is built.
 4. **INV-010** — root-cause the two `CHART-PERIOD-YEAR-AWARE` failures; classify as harness or application defect; fix.
 5. **KI-008** — frozen-week double-count via `clashStatusAt` projection, starting with a failing Playwright test.
 6. **Delta Analysis Settings UI (Step 3)** — settings surface for `nw:designedConditionPatterns` and `nw:republishToleranceMm`; storage, accessors and live re-classification hook already exist.
