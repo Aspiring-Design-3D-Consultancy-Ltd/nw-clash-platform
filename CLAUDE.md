@@ -120,7 +120,7 @@ Listed for context — when working near these areas, read the comment headers b
 
 Ranked order lives in `docs/governance/CURRENT_STATUS.md` → "Current Priority". Summary:
 
-- **MI-003 / INV-011 orphan cleanup:** live audit found 76,682 orphaned image records (2.87 GB). Mechanism and fix in INV-011 (`IMG-ORPHAN-CLEANUP`). Remaining step is the live-profile run: `await _cleanupNwImageOrphans()` (dry run), then `{dryRun:false}`. Record the output in INV-011. Older weeks' images being unreachable per test name is a separate design item (image sets keyed by test **and** week) and needs a brief.
+- **Image sets keyed by test and week (design brief needed):** INV-011 ruling 3. `byTest` holds one range per report name (the latest week), so a clash last observed in an earlier week resolves against the newest week's renumbered files — wrong or missing image. Orphans themselves are closed (INV-011, live cleanup verified 2026-09-03; `_cleanupNwImageOrphans()` remains available, dry run by default).
 - **PIXEL-DEDUP Phase 2 consumer:** the read side shipped (DEC-014, `IMG-DHASH-INDEX`): hashes indexed per referenced slot on the metadata record, `findSimilarImages(maxDistance)` returns cross-test groups. What a near-duplicate image means for two clashes, the threshold, and where it surfaces need a brief before building. Do not touch the Dedup Queue for this without one.
 - **Phase 2 of PAIR-ID-RESOLVED-COUNT:** auto-flip status to Resolved with confirmation toast + undo. Detection logic is shipped; the status-mutation part is deferred pending Playwright validation against real Muratec XMLs.
 - Building filter additions to Lifecycle and Severity charts

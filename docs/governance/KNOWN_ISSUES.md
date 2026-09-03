@@ -614,7 +614,7 @@ Re-loading a Test Name Strands Its Previous Image Records (Orphan Regeneration)
 
 Status:
 
-Resolved (INV-011)
+Resolved — closed 2026-09-03 on Shane's confirmation of the live-profile figures: dry run 76,682 orphaned / 4,768 referenced as predicted; delete mode verification PASSED, referenced 4,768 → 4,768, orphaned 0; post-audit 4,769 keys, 0 orphaned, 0 missing.
 
 Severity:
 
@@ -650,7 +650,7 @@ Regression Protection:
 
 Outcome:
 
-Resolved in code. The live-profile cleanup run is the remaining step (INV-011 "Next Action").
+Resolved and verified on the live profile: 76,682 records deleted, 4,768 referenced retained, verification passed, follow-up audit 4,769 keys / 0 orphaned.
 
 ---
 
@@ -745,7 +745,7 @@ Orphaned IndexedDB Image Records
 
 Status:
 
-Escalated to INV-011 (2026-09-03) — audit run, mechanism confirmed, remediation KI-010. Closes when the live-profile cleanup output is recorded in INV-011.
+Closed (2026-09-03). Escalated to INV-011; remediation KI-010 released in PR #68; live-profile cleanup run and verified the same day (76,682 deleted, 4,768 kept, 0 orphaned). Superseded slots are now deleted at re-load time, so the store cannot regrow this way.
 
 Description:
 
@@ -817,7 +817,7 @@ Monitoring Items:
 
 - MI-001 — Migration Complexity (updated 2026-09-03: `idbRecordsMigrated` gate and the routed write path added)
 - MI-002 — Test Timing Sensitivity (root cause remediated under INV-007 / KI-005)
-- MI-003 — Orphaned IndexedDB Image Records (escalated to INV-011; closes on the live-profile cleanup run)
+- MI-003 — Orphaned IndexedDB Image Records — Closed (INV-011 / KI-010, live cleanup verified 2026-09-03)
 
 Confirmed Issues:
 

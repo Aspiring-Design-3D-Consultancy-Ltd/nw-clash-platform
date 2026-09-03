@@ -1829,12 +1829,30 @@ After deploying the merged build:
 2. `await _cleanupNwImageOrphans({dryRun:false})` — expect `verified: true`, `referencedAfter: 4768`, `orphanedAfter: 0`.
 3. `await _auditNwImageStore({sample:0})` — expect 4,769 keys.
 
-Record the three console lines here.
+Live-profile run (Shane, 2026-09-03, build `92246f5`):
+
+```
+[IMG-DHASH-PHASE1] backfill: 0 hashed, 80590 already had a hash, 860 failed, of 81450 images in 11455ms
+[IMG-ORPHAN-CLEANUP] dry run: 81451 keys, 4768 referenced (kept), 76682 orphaned in 4 runs would be deleted (keys 1..78453). Nothing was changed.
+[IMG-ORPHAN-CLEANUP] deleted 76682 orphaned records; referenced 4768 → 4768, orphaned remaining 0; verification PASSED
+[IMG-STORE-AUDIT] 4769 keys in images store; metadata present (imgfix-v1, count 4768, 13 tests); referenced 4768, orphaned 0 in 0 runs, missing 0, overlapping 0, non-numeric keys 0.
+```
+
+Per-test ranges after cleanup (all 13 fully present, missing 0): `99_ESMC_v_08_AMHS` 1,766 images at 73691; the eleven current weekly tests contiguous from 78454; two older ranges that were never re-loaded and therefore survived every import — `Exyte AAS_v_08_AMHS` (2 images at 45841) and `12_GMS_v_14_CCD` (3 at 48661). Those two surviving ranges, plus the gap between `99_ESMC` and the weekly block, are what split the stranded set into exactly four runs.
+
+Observations from the run, not acted on:
+
+- [Likely] The backfill's 860 "failed" were orphan records with an empty or unreadable payload; the referenced set is fully indexed and read no payloads. They were inside the deleted set. The next launch's backfill should read `0 hashed, 4768 already had a hash, 0 failed` with no payload reads.
+- Three test names carry `AHMS` where the others carry `AMHS` (`04_CHEM`, `05_WWT`, `06_UPW`). They are distinct names to the app and Navisworks alike. Not a defect in this platform; worth correcting at source if those tests are ever renamed, since a rename would re-load them under the new name and orphan the old range (now cleaned up automatically).
 
 ---
 ## Final Release Status
 
-Remediation on branch `claude/app-progress-issues-04app5` (second PR). Tracked as KI-010 (Resolved on merge). MI-003 closes when the live-profile cleanup output is recorded above.
+Released. Merge commit `5f339ff` (PR #68), `main` head `92246f5` after the build stamp. Tracked as KI-010 (Resolved). MI-003 closed on the live-profile run above.
+
+Closed 2026-09-03 on Shane's confirmation: dry run 76,682 / 4,768 as predicted; delete verification PASSED, referenced 4,768 → 4,768, orphaned 0; post-audit 4,769 keys, 0 orphaned, 0 missing.
+
+Investigation closed.
 
 ---
 
