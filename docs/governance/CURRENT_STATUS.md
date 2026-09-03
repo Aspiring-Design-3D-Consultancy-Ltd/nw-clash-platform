@@ -673,7 +673,7 @@ Post-IMG-WEEK-KEYING (branch, on top of `main` `0089c71`): 381 total (+11 `img-w
 
 ## Next Planned Activity
 
-Work the ranked backlog under "Current Priority" in order. No investigation is open and no monitoring item has a pending action. IMG-WEEK-KEYING (DEC-016) shipped 2026-09-03; the live-profile step is the one-shot migration from the console (`await _imgWeekKeyingMigrate()` dry run, then `{dryRun:false}`), recorded in INV-011 when run. Next design item: a "prune image weeks older than N" tool, now that weeks accumulate by design.
+Work the ranked backlog under "Current Priority" in order. No investigation is open and no monitoring item has a pending action. IMG-WEEK-KEYING (DEC-016) is released on `main` `b77f66b`; its one-shot live migration ran 2026-09-03 (13 sets retagged to their week, read-back verified, gate set — see the INV-011 follow-up). Next design item: a "prune image weeks older than N" tool, now that weeks accumulate by design (~171 MB per weekly import on the live profile).
 
 Future investigations should originate from:
 

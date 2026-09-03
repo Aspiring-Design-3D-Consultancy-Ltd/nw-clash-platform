@@ -278,3 +278,20 @@ Notes:
 
 `DATA_VERSION` untouched. Protected blocks `UNCHANGED`. Zero XML-parser lines. No DB version bump, no new keys. Live-profile migration pending (console, dry run first).
 
+---
+
+### 2026-09-03 (release record, IMG-WEEK-KEYING)
+
+Summary:
+
+PR #70 merged (`1924719`, `main` `b77f66b`). One-shot live migration run and verified: 13 image sets retagged to their week (11 → `week-260831`, `99_ESMC` → `week-260824`, `12_GMS_v_14_CCD` → `week-260804`), read-back verified, gate set.
+
+Changes:
+
+- INVESTIGATION_LOG.md INV-011 follow-up: migration output, assignment table, observations.
+- CURRENT_STATUS.md, CLAUDE.md: next design item is a prune tool for accumulated weekly image sets.
+
+Notes:
+
+Documentation only.
+
