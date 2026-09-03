@@ -43,6 +43,23 @@ Documentation/tooling capability only. No `working.html` changes. No investigati
 
 ---
 
+### 2026-08-24
+
+Summary:
+
+Two hardening releases on the folder batch-import path.
+
+Changes:
+
+- `7c91beb` — IMG-BATCH-BACKPRESSURE (#59): image-load concurrency in folder batch import bounded by `_IMG_READ_CONCURRENCY`; `loadNwImages` becomes awaitable and batch import does not resolve until every image is stored. Tests: `tests/img-batch-backpressure.spec.js` (5).
+- `9117ae2` — STORAGE-WRITE-GUARD (#60): `sv()` returns a boolean and raises a dismissible banner on a rejected localStorage write; folder batch import no longer reports success when writes were rejected. Tests: `tests/storage-write-guard.spec.js` (5).
+
+Notes:
+
+`working.html` changes. `DATA_VERSION` untouched.
+
+---
+
 ### 2026-08-26
 
 Summary:
@@ -63,4 +80,60 @@ Notes:
 
 Documentation only. No `working.html` changes. Both protected blocks were
 verified unchanged at `161894f` before the fingerprints were recorded.
+
+---
+
+### 2026-08-26
+
+Summary:
+
+Storage-layer release day: dHash fingerprints on stored images, the register moved out of localStorage into IndexedDB, and two same-day fixes for a data-loss defect introduced by that move (see INV-009 / KI-007).
+
+Changes:
+
+- `161894f` — IMG-DHASH-PHASE1 (#61): `computeDHash()` and a 16-hex-char dHash stored on every clash image record (`{b64, dhash}`, legacy bare-string records still readable via `_dhashUnwrap()`); resumable, gated, delayed backfill on launch. Nothing reads the hash yet. Tests: `tests/img-dhash-phase1.spec.js` (11).
+- `ef3d620` — IDB-RECORDS-MIGRATION (#63): `nw:clashes` and `nw:weekly` move to a `records` store in `NWClashImages` (DB version 2→3). `sv()`/`lv()` contracts preserved through an in-memory cache and a debounced flush; verify-then-gate migration; flush on `visibilitychange`/`pagehide`, before import summary, and before every reload in `clearAll`/`factoryReset`/selective reset. Tests: `tests/idb-records-migration.spec.js` (15) plus nine existing specs updated.
+- `9a0007e` — IDB-RECORDS-VERIFY-RACE (#64): register-hydration signal; `ORPHAN-IDB-SWEEP` requires it before deleting the database. Root cause of the live-profile image loss. Tests: +4.
+- `d996b8d` — IDB-RECORDS-GATE-QUOTA (#65): verified originals deleted before the gate is written so migration completes on a full profile; gate-write failure non-fatal. Tests: +4.
+
+Notes:
+
+`working.html` changes. `DATA_VERSION` untouched. Protected blocks verified `UNCHANGED` on every PR. The #64/#65 defect and remediation were not recorded in the governance ledger at the time; recorded retrospectively on 2026-09-03 as INV-009 / KI-007.
+
+---
+
+### 2026-09-02
+
+Summary:
+
+Image recovery tool released.
+
+Changes:
+
+- `43705e0` (merged via `f6a9332`) — IMG-REATTACH-ARCHIVE (#66): Data Manager "Re-attach images from archive folder"; images-only by construction; report/`_files` matcher factored into three helpers shared with `importFolderPick`. Tests: `tests/img-reattach-archive.spec.js` (8). Full suite at merge: 338 passed, 2 pre-existing failures.
+
+Notes:
+
+`working.html` changes. Recovery path for images lost under KI-007. Superseded image records left behind by re-runs are tracked as MI-003.
+
+---
+
+### 2026-09-03
+
+Summary:
+
+Governance ledger catch-up covering everything released since INV-008 (PRs #59–#66).
+
+Changes:
+
+- INVESTIGATION_LOG.md: INV-009 (retrospective record of the ORPHAN-IDB-SWEEP data-loss defect and its three remediation PRs), INV-010 opened (persistent `CHART-PERIOD-YEAR-AWARE` test failures).
+- KNOWN_ISSUES.md: KI-007 (resolved), KI-008 (confirmed, deferred — frozen-week double-count), MI-003 (orphaned IndexedDB image records), MI-001 updated for the `idbRecordsMigrated` gate and the routed write path.
+- CURRENT_STATUS.md: rewritten status, release table for #59–#66, ranked backlog.
+- CHANGE_LOG.md: entries for 2026-08-24, 2026-08-26 (code), 2026-09-02.
+- RELEASE_SNAPSHOTS.md: RS-002.
+- CLAUDE.md: line count, storage-layer invariants, pending list refreshed.
+
+Notes:
+
+Documentation only. No `working.html` changes.
 

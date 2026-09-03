@@ -431,6 +431,61 @@ The remediation has been committed, pushed, and released under INV-008 (commit `
 
 ---
 
+## KI-007
+
+Title:
+
+ORPHAN-IDB-SWEEP Deletes the Image Database Under the In-Flight Register Migration
+
+Status:
+
+Resolved
+
+Severity:
+
+High (irreversible deletion of the user's image store, triggered automatically on launch)
+
+Related Investigation:
+
+- INV-009 (retrospective record)
+
+Summary:
+
+PR #63 (IDB-RECORDS-MIGRATION) moved `nw:clashes` and `nw:weekly` from localStorage into an IndexedDB `records` store and, in doing so, made `initAuth()`'s hydration of `S.clashes` asynchronous (`await _recInit()` inserted ahead of the assignment). `window.onload` does not await `initAuth()`, so `initNwImages()` could observe `S.clashes === []` — "not loaded yet" — while image metadata was present, treat that as the `ORPHAN-IDB-SWEEP` precondition, and call `indexedDB.deleteDatabase('NWClashImages')` while the migration was writing into that database. Observed on the live profile as `verify failed for nw:clashes` plus loss of all stored clash images. The register itself was protected by verify-then-gate and was not lost.
+
+A second, independent hazard was found during the same recovery: on a profile at 100% of the localStorage cap the 1-byte gate write threw `QuotaExceededError`, so the migration could never complete on the profile class it exists to rescue, and the resulting throw sent `_recInit()` into fallback — which reads a now-empty localStorage.
+
+Root Cause:
+
+Await-ordering regression: the sweep's "register is empty" precondition (`S.clashes.length === 0`) could no longer distinguish empty from not-yet-loaded, and it guards an irreversible operation.
+
+Approved Remediation:
+
+- `9a0007e` (IDB-RECORDS-VERIFY-RACE, #64): a register-hydration signal raised on both `initAuth()` paths; the sweep waits up to 4 s and requires the positive signal, otherwise skips this launch and reports.
+- `d996b8d` (IDB-RECORDS-GATE-QUOTA, #65): verified originals are deleted before the gate is written; the gate write is non-fatal and reported; a profile left with gate set and originals present is detected and reported, never auto-deleted.
+- `43705e0` (IMG-REATTACH-ARCHIVE, #66): Data Manager recovery tool that re-attaches one week's images from its archive folder, images-only by construction.
+
+Implementation Status:
+
+✅ Completed
+
+QA Retest Status:
+
+✅ PASS — full suite 326 / 330 / 338 passed at each merge (2 pre-existing failures each time, now INV-010). Re-verified 2026-09-03, see RS-002.
+
+Regression Protection:
+
+Added:
+
+- tests/idb-records-migration.spec.js (8 tests across #64 and #65, including the live-profile scenario, exactly-full quota, and crash-between-delete-and-gate recovery)
+- tests/img-reattach-archive.spec.js (8 tests)
+
+Outcome:
+
+Resolved and released. Residual: images lost on the affected profile before `9a0007e` are recoverable only via the archive re-attach tool; superseded image records left behind by re-runs are tracked under MI-003.
+
+---
+
 # Monitoring
 
 ## MI-001
@@ -454,6 +509,11 @@ Examples include:
 - dedupInitialScan (verified defect-free — INV-006)
 - reviewQueueDeltaAnalysisMigrated (verified defect-free — INV-006)
 - dedupRetroCleanup:v1 (verified defect-free — remediated under INV-003)
+- idbRecordsMigrated (added 2026-08-26 by IDB-RECORDS-MIGRATION; verify-then-gate, with delete-before-gate ordering per IDB-RECORDS-GATE-QUOTA — see KI-007 / INV-009)
+
+New since 2026-08-26 — the routed write path:
+
+`sv()` remains synchronous and boolean for callers, but writes to the two routed keys (`nw:clashes`, `nw:weekly`) now land on a debounced IndexedDB flush (400 ms, 2000 ms max latency) rather than synchronously in localStorage. The three earlier one-shot gates that relied on a throwing `localStorage.setItem` for `nw:clashes` now go through `_recWriteDurable()`, which awaits the flush and rethrows, preserving "the gate is never set on a failed write". Any code path that writes a routed key and then immediately reloads, closes, or compares storage must flush first (`_flushPendingWrites()`); INV-009 recorded three such sites (`clearAll`, `factoryReset`, selective reset) that had to be corrected in PR #63 itself.
 
 While functioning correctly, migration behaviour remains an area of elevated regression risk due to the complexity of historical state transitions.
 
@@ -466,9 +526,9 @@ Potential Risks:
 
 Recommended Action:
 
-All five tracked one-shot migration flags have been investigated and verified defect-free through INV-003, INV-005, and INV-006.
+The five original one-shot migration flags were verified defect-free through INV-003, INV-005, and INV-006. The sixth (`idbRecordsMigrated`) was hardened under INV-009 and carries its own regression tests.
 
-Continue monitoring during future persistence-related investigations and test development.
+Treat "write a routed key, then reload or compare" as a review checklist item for any change touching `clearAll`, `factoryReset`, selective reset, import completion, or unload. Continue monitoring during future persistence-related investigations and test development.
 
 ---
 
@@ -509,15 +569,85 @@ Implemented. Human authorization was granted to proceed with the INV-007 remedia
 
 ---
 
+## MI-003
+
+Title:
+
+Orphaned IndexedDB Image Records
+
+Status:
+
+Monitoring — audit required before any action
+
+Description:
+
+PR #63 (IDB-RECORDS-MIGRATION, 2026-08-26) reported the live profile's `NWClashImages.images` store holding approximately 63,178 image records against roughly 3,670 that the current register can restore. PR #66 (IMG-REATTACH-ARCHIVE) adds to this: re-running a week's re-attach replaces that week's mapping but leaves the previous run's image records in the store.
+
+Not yet known:
+
+- How the orphans break down by origin (superseded weekly imports, re-attach re-runs, images for clashes since deleted or merged, pre-`imgfix-v1` metadata shapes).
+- Whether any orphan is referenced by an older metadata block that a restore path could still read.
+- Storage cost on the live profile and whether it affects `navigator.storage.persist()` headroom.
+
+Potential Risks:
+
+- Store growth on every re-import cycle.
+- Slower `_dhashBackfill` and any future PIXEL-DEDUP Phase 2 bulk-hash read, both of which walk every record.
+- A future cleanup that deletes by the wrong key would repeat KI-007's failure mode.
+
+Recommended Action:
+
+Read-only audit first: count, classify, and report; wipe nothing. Cleanup, if any, is a separate change with its own investigation and tests. Escalate to Under Investigation if the audit shows records the app can still reach through any restore path.
+
+---
+
 # Confirmed Issues
 
-None currently recorded.
+## KI-008
+
+Title:
+
+Frozen-Week Terminal Refresh Double-Counts a Clash Across Historical and Refreshed Counters
+
+Status:
+
+Confirmed — Deferred (DEC-010 Special Workflow State)
+
+Severity:
+
+Medium (reporting accuracy on the trend chart; no data loss)
+
+Summary:
+
+`FROZEN-WEEK-TERMINAL-REFRESH` refreshes a frozen weekly snapshot's terminal-status counters (approved / resolved) when a clash dated in that week reaches a terminal status today, while leaving the historical `new` / `active` / priority counters untouched. Documented in the code as a KNOWN EDGE CASE: a clash that was Active during the frozen week and is Approved today appears in both `frozen.active` (historical) and `frozen.approved` (refreshed), so tallying lines across the trend chart double-counts it.
+
+Confirmation basis:
+
+Confirmed by design analysis recorded in the marker block; not yet reproduced under Playwright. The first step of any remediation is a failing test that demonstrates the double count.
+
+Remediation Path Identified:
+
+A `clashStatusAt(c, wk, yr)` projection applied across every counter so each clash is counted once per week at the status it held in that week. Deferred in the original PR to keep scope contained.
+
+Tracked as: task item 5 in the 2026-09-03 backlog (CURRENT_STATUS.md).
 
 ---
 
 # Under Investigation
 
-None currently recorded.
+## INV-010
+
+Title:
+
+Persistent CHART-PERIOD-YEAR-AWARE Failures in frozen-week-and-chart-year.spec.js
+
+Status:
+
+Under Investigation (opened 2026-09-03, Workflow C)
+
+Summary:
+
+Two tests have failed on every recorded full-suite run since at least 2026-08-15 and have been classified each time as pre-existing date-boundary flakiness without being root-caused. See INVESTIGATION_LOG.md INV-010 for scope and questions.
 
 ---
 
@@ -531,16 +661,18 @@ Resolved Issues:
 - KI-004 — Residual Migration Gate / Persistence Divergence (Dedup Initial Scan + Review Queue Delta Analysis Migration) ✅
 - KI-005 — Test-Harness Startup-Sequencing Race (MI-002 root cause) ✅
 - KI-006 — IndexedDB `openIDB()` Check-Then-Act Race / Wrong-Connection `onversionchange` (INV-008 root cause) ✅
+- KI-007 — ORPHAN-IDB-SWEEP Deletes the Image Database Under the In-Flight Register Migration (INV-009, retrospective) ✅
 
 Monitoring Items:
 
-- MI-001 — Migration Complexity
+- MI-001 — Migration Complexity (updated 2026-09-03: `idbRecordsMigrated` gate and the routed write path added)
 - MI-002 — Test Timing Sensitivity (root cause remediated under INV-007 / KI-005)
+- MI-003 — Orphaned IndexedDB Image Records (audit required before any action)
 
 Confirmed Issues:
 
-None outstanding.
+- KI-008 — Frozen-Week Terminal Refresh Double-Count (Confirmed — Deferred)
 
 Active Investigations:
 
-None currently recorded.
+- INV-010 — Persistent CHART-PERIOD-YEAR-AWARE Failures (Under Investigation)
