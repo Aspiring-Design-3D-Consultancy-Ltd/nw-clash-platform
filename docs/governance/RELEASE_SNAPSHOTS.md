@@ -327,3 +327,107 @@ already-completed and already-released INV-008 as the reference
 implementation. No new repository or governance changes were introduced by
 producing this snapshot; it is a documentation-only capture of state that
 was already true.
+
+---
+
+## RS-002: INV-009 ORPHAN-IDB-SWEEP Data-Loss Race (Retrospective Release Record)
+
+Date Captured:
+
+2026-09-03
+
+### Repository State
+
+Branch:
+
+main (release); snapshot captured on `claude/app-progress-issues-04app5`, which is `main` (`dd87585`) plus the governance catch-up commit `5c9f6df`. No `working.html` change exists between `dd87585` and the capture HEAD.
+
+Release Commits:
+
+- `9a0007e` — Stop ORPHAN-IDB-SWEEP deleting the DB under the in-flight migration (IDB-RECORDS-VERIFY-RACE) (#64), 2026-08-26
+- `d996b8d` — Delete verified originals before writing the migration gate (IDB-RECORDS-GATE-QUOTA) (#65), 2026-08-26
+- `43705e0` — Re-attach images from an archive folder (IMG-REATTACH-ARCHIVE) (#66), merged via `f6a9332`, 2026-09-02
+
+Also released since RS-001 and covered by this snapshot's test baseline (not investigations; recorded in CHANGE_LOG.md): `7c91beb` (#59), `9117ae2` (#60), `161894f` (#61), `2860f51` (#62, docs), `ef3d620` (#63).
+
+Current HEAD (at capture time):
+
+`5c9f6df` (`5c9f6dfd324818d5c220cb0da2f6254e497e2edc`) — docs: governance ledger catch-up for PRs #59-#66 (INV-009 retrospective, INV-010 opened) (2026-09-03)
+
+Note: HEAD is ahead of the last release commit by the automated build stamp `dd87585` (for `f6a9332`) and the documentation commit `5c9f6df`. Neither touches `working.html`.
+
+Working Tree:
+
+Clean
+
+Sync State:
+
+Branch not yet pushed at capture time (no upstream configured); `main` in sync with `origin/main` at `dd87585`.
+
+### Governance State
+
+Active Investigations:
+
+- INV-010 — Persistent CHART-PERIOD-YEAR-AWARE Failures in frozen-week-and-chart-year.spec.js — Under Investigation (opened 2026-09-03)
+
+Closed - Released Investigations:
+
+- INV-002 — closeApp() Whitelist Drift (commit `680cfd5`)
+- R1 — Data Resurrection After Reset (commit `a0526bf`)
+- INV-005 — Migration Gate / Persistence Write Divergence Remediation (commit `3f37f72`)
+- INV-006 — Residual Migration Gate / Persistence Divergence Risk Assessment (commit `136c397`)
+- INV-007 — Test Timing Sensitivity (commit `b471e5c`)
+- INV-008 — IndexedDB Reset Reliability Investigation (commit `6995a0e`)
+- INV-009 — ORPHAN-IDB-SWEEP Deletes the Image Database Under the In-Flight Register Migration (commits `9a0007e`, `d996b8d`, `43705e0`; retrospective record)
+
+Monitoring Items:
+
+- MI-001 — Migration Complexity — Monitoring (scope widened 2026-09-03: `idbRecordsMigrated` gate and the routed `sv()` write path)
+- MI-002 — Test Timing Sensitivity — Remediated (INV-007 / KI-005; IndexedDB subset INV-008 / KI-006)
+- MI-003 — Orphaned IndexedDB Image Records — Monitoring, read-only audit required before any action
+
+Confirmed Issues:
+
+- KI-008 — Frozen-Week Terminal Refresh Double-Count — Confirmed, Deferred
+
+### Investigation State
+
+INV-009 is `Closed` (DEC-010) with release commits recorded, but its record was written after release rather than progressing through the workflow states at the time — see INVESTIGATION_LOG.md INV-009 "Governance Observation". INV-010 is in `Under Investigation` (State 2) with no remediation proposed yet. All earlier investigations remain `Closed`.
+
+### Test Baseline
+
+Command:
+
+`cd tests; PW_CHROMIUM_PATH=/opt/pw-browsers/chromium npx playwright test --workers=1` (Playwright 1.62.1, Chromium from the sandbox's system install), run against `working.html` at `dd87585` on 2026-09-03.
+
+Total Tests:
+
+340
+
+Passed:
+
+338
+
+Known Failures:
+
+- `tests/frozen-week-and-chart-year.spec.js` (`CHART-PERIOD-YEAR-AWARE` ×2) — INV-010, Under Investigation. Identical to the failures recorded at every release since RS-001 (286/288 at `6995a0e`; 307, 322, 326, 330, 338 passed at #61, #63, #64, #65, #66 respectively, each with these same 2 failures). No longer classified as flakiness.
+
+New coverage since RS-001: 52 tests across `img-batch-backpressure` (5), `storage-write-guard` (5), `img-dhash-phase1` (11), `idb-records-migration` (23), `img-reattach-archive` (8).
+
+### Release Status
+
+Released Commits:
+
+`9a0007e`, `d996b8d`, `43705e0` (via `f6a9332`) on `main`.
+
+Release Approval Reference:
+
+Pull-request diff review and merge by the repository owner (#64 2026-08-26, #65 2026-08-26, #66 2026-09-02). INVESTIGATION_LOG.md INV-009 "Final Release Status"; CURRENT_STATUS.md "INV-009 (Closed - Released — retrospective record)".
+
+Status:
+
+Closed / Released
+
+### Notes
+
+This snapshot was produced 8 days after the last release commit and 1 day after the recovery tool merged, as part of the 2026-09-03 governance catch-up, because no snapshot was taken at release time. The repository-state block was captured mechanically with `scripts/generate-release-snapshot.mjs RS-002`; governance, investigation and test-baseline fields were sourced from CURRENT_STATUS.md, KNOWN_ISSUES.md and INVESTIGATION_LOG.md as updated in `5c9f6df`, and from the full-suite run recorded there. Protected blocks `REVIEW-QUEUE-DETECT` (`54db97511c97f7ad`) and `APPROVE-TERMINAL-STATUS-FILTER` (`c1173153c15dba7b`) were verified `UNCHANGED` against `origin/main` at capture.
