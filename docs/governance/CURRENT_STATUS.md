@@ -667,6 +667,8 @@ Post-KI-008 (`7f7c9c8`): 358 total (the two retired `FROZEN-WEEK-TERMINAL-REFRES
 
 Post-INV-011 (branch, on top of `main` `33e6f20`): 367 total (+9 `img-orphan-cleanup`), 367 passed, 0 failed.
 
+Post-IMG-WEEK-KEYING (branch, on top of `main` `0089c71`): 381 total (+11 `img-week-keying`, +3 `img-reattach-archive`). Full run 379 passed, 2 failed — both in `dedup-queue.spec.js`, which seeded the derived `_nwImgByTest` view directly; seeding moved to `_nwImgSets`, spec re-run 13/13. Effective 381 / 381. No `working.html` change between the two runs.
+
 ---
 
 ## Next Planned Activity
