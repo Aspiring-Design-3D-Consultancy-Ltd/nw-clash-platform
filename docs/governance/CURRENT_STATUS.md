@@ -29,21 +29,38 @@ The governance framework has been validated through execution of real-world inve
 
 ## Repository Status
 
+Last Updated:
+
+2026-09-03
+
 Current Branch:
 
-main
+main (`dd87585`, 2026-09-02). Governance catch-up prepared on `claude/app-progress-issues-04app5`.
 
 Repository Health:
 
 - Repository healthy
-- Governance framework committed and pushed
-- Project memory established in repository
-- No known governance gaps requiring immediate action
-- INV-002, R1, INV-005, INV-006, INV-007, and INV-008 remediations committed and pushed
+- `working.html` at 19,297 lines
+- Governance ledger brought current on 2026-09-03 after a gap from 2026-08-15 to 2026-09-02 during which eight feature/fix PRs (#59–#66) merged without status, known-issue, or investigation records (see INV-009 "Governance Observation")
+- Protected blocks `REVIEW-QUEUE-DETECT` (`54db97511c97f7ad`) and `APPROVE-TERMINAL-STATUS-FILTER` (`c1173153c15dba7b`) verified `UNCHANGED` against `origin/main` on 2026-09-03
+- `DATA_VERSION` = `v4-correct-dates-jan25`, unchanged
+
+Releases Since INV-008 (all merged to `main` by the repository owner after PR diff review):
+
+| Date | Commit | PR | Marker | Summary |
+| --- | --- | --- | --- | --- |
+| 2026-08-24 | `7c91beb` | #59 | IMG-BATCH-BACKPRESSURE | Bounded image-load concurrency in folder batch import |
+| 2026-08-24 | `9117ae2` | #60 | STORAGE-WRITE-GUARD | Surface localStorage write failures instead of swallowing them |
+| 2026-08-26 | `161894f` | #61 | IMG-DHASH-PHASE1 | dHash fingerprint stored on every clash image (compute + store; nothing reads it yet) |
+| 2026-08-26 | `2860f51` | #62 | DEC-013 | Protected-region invariant gate with corrected fingerprints (docs) |
+| 2026-08-26 | `ef3d620` | #63 | IDB-RECORDS-MIGRATION | `nw:clashes` + `nw:weekly` moved from localStorage to an IndexedDB `records` store |
+| 2026-08-26 | `9a0007e` | #64 | IDB-RECORDS-VERIFY-RACE | Stop ORPHAN-IDB-SWEEP deleting the DB under the in-flight migration (INV-009) |
+| 2026-08-26 | `d996b8d` | #65 | IDB-RECORDS-GATE-QUOTA | Delete verified originals before writing the migration gate (INV-009) |
+| 2026-09-02 | `43705e0` | #66 | IMG-REATTACH-ARCHIVE | Re-attach images from an archive folder (INV-009 recovery tool) |
 
 Current Working Tree:
 
-INV-002 (680cfd5), R1 (a0526bf), INV-005 (3f37f72), INV-006 (136c397), INV-007 (b471e5c), and INV-008 (6995a0e, merging ec6af50/326a93d/f444cfa) remediations are committed and pushed to main.
+INV-002 (680cfd5), R1 (a0526bf), INV-005 (3f37f72), INV-006 (136c397), INV-007 (b471e5c), INV-008 (6995a0e), and INV-009 (9a0007e / d996b8d / 43705e0) remediations are committed and pushed to main.
 
 ---
 
@@ -311,7 +328,11 @@ Committed and pushed.
 
 ### Confirmed
 
-None currently outstanding.
+None. KI-008 resolved 2026-09-03 under DEC-015 (projection everywhere).
+
+### Under Investigation
+
+None. INV-010 opened and closed 2026-09-03 (test-harness isolation gap, KI-009).
 
 ### Monitoring
 
@@ -321,19 +342,11 @@ Migration Complexity
 
 Status:
 
-Monitoring
+Monitoring — scope widened 2026-09-03
 
 Description:
 
-Multiple one-time migration flags remain a long-term regression risk area:
-
-- reviewQueueScopeFixed (verified defect-free — INV-005)
-- reviewQueueDateGuardFixed (verified defect-free — INV-005)
-- dedupInitialScan (verified defect-free — INV-006)
-- reviewQueueDeltaAnalysisMigrated (verified defect-free — INV-006)
-- dedupRetroCleanup:v1 (verified defect-free — INV-003)
-
-Continue monitoring for future migration-related regressions.
+Six one-time migration flags now exist. The original five (`reviewQueueScopeFixed`, `reviewQueueDateGuardFixed`, `dedupInitialScan`, `reviewQueueDeltaAnalysisMigrated`, `dedupRetroCleanup:v1`) were verified defect-free under INV-003/INV-005/INV-006. The sixth, `idbRecordsMigrated` (IDB-RECORDS-MIGRATION, 2026-08-26), uses verify-then-gate with delete-before-gate ordering and was hardened under INV-009. Separately, the routed write path (`sv()` for `nw:clashes`/`nw:weekly` → in-memory cache → debounced IndexedDB flush) is a new ordering-risk class: any path that writes a routed key and then reloads or compares storage must flush first. See KNOWN_ISSUES.md MI-001 for the checklist.
 
 ---
 
@@ -343,20 +356,21 @@ Test Timing Sensitivity
 
 Status:
 
-Resolved under INV-007 / KI-005.
+Resolved under INV-007 / KI-005. The IndexedDB-timing subset was resolved under INV-008 / KI-006.
+
+---
+
+#### MI-003
+
+Orphaned IndexedDB Image Records
+
+Status:
+
+Monitoring — read-only audit required before any action
 
 Description:
 
-Certain Playwright suites continue to exhibit timing-related behaviour.
-
-Areas include:
-
-- Delayed startup tasks
-- Migration execution timers
-- IndexedDB initialization
-- Persistence synchronization
-
-INV-007 confirmed the root cause: test bootstrap helpers race `working.html`'s deferred one-shot migrations (inline `initAuth()` continuation plus `setTimeout(1500/1600)` migrations from `window.onload`). This is a test-harness synchronization gap, not an application defect. The validated, test-file-only fix has now been implemented across all 28 affected spec files, and full-suite QA Retest confirms 278/284 passing with the remaining 6 failures confirmed pre-existing and unrelated (see the INV-007 investigation entry above for full QA Retest detail).
+The live profile's `images` store held approximately 63,178 records against roughly 3,670 restorable at the time of PR #63; re-running the archive re-attach tool (PR #66) leaves superseded records behind. Origin breakdown unknown. Audit first; wipe nothing. A read-only audit function `_auditNwImageStore()` shipped 2026-09-03 (IMG-STORE-AUDIT); the live-profile run is pending. See KNOWN_ISSUES.md MI-003.
 
 ---
 
@@ -462,9 +476,54 @@ Note: a full repository-wide suite run surfaced 22 pre-existing intermittent fai
 
 ## Current Priority
 
-No active investigations.
+Ranked backlog as of 2026-09-03 (in execution order):
 
-All confirmed defects identified through INV-002, R1, INV-005, INV-006, INV-007, and INV-008 have been remediated, verified, committed, pushed, and released.
+1. **Governance ledger catch-up** — this update (INV-009 retrospective record, INV-010 opened, KI-007, KI-008, MI-003, CHANGE_LOG for #59–#66, RS-002). Complete on commit of this document set.
+2. **MI-003 orphan audit** — read-only tool shipped (`_auditNwImageStore()`, IMG-STORE-AUDIT, 2026-09-03). Remaining: run it on the live profile from the DevTools console and record the output in KNOWN_ISSUES.md MI-003. Nothing wiped.
+3. **PIXEL-DEDUP Phase 2** — ruling made and read side shipped 2026-09-03 (DEC-014, IMG-DHASH-INDEX): record stays authoritative, referenced-slot index rides on the metadata record, `findSimilarImages(maxDistance)` is the query API. Remaining: the consumer half (what a near-duplicate image means for two clashes, threshold, where it surfaces) needs a brief from Shane before it is built.
+4. **INV-010** — done 2026-09-03. Test-harness isolation gap (the demo register stayed in memory and `rDash()` regenerated weekly buckets from it); test-only fix, KI-009. Application logic verified correct. The suite has no known failures left.
+5. **KI-008** — resolved 2026-09-03. Shane ruled option 1 (DEC-015): every weekly snapshot counts each clash once at its end-of-week status; `FROZEN-WEEK-TERMINAL-REFRESH` retired; four new tests replace the two old ones.
+6. **Delta Analysis Settings UI (Step 3)** — already shipped. The Settings tab renders "Designed condition patterns & republish tolerance" (tolerance input, per-pattern enable/edit/remove, add pattern; `SETTINGS-DESIGNED-CONDITION-PATTERNS` region 2, ~line 15867). The "deferred to Step 3" comments in the storage region were stale and have been corrected. No test covers the section directly; noted as a coverage gap, not a defect.
+7. **CLAUDE.md horizon list** — PAIR-ID-RESOLVED-COUNT Phase 2 (auto-flip with undo), CUB→CUP IndexedDB key rewrite, `eA`/`eB` flattening, `clashBuilding()` refactor, building filters on Lifecycle/Severity charts, level normalisation at parse time, multi-project capability. Each needs a brief; PAIR-ID Phase 2 and parse-time normalisation additionally need real Muratec XMLs for Playwright validation (dual-parser discipline). Not started.
+
+All confirmed defects identified through INV-002, R1, INV-005, INV-006, INV-007, INV-008, and INV-009 have been remediated, verified, committed, pushed, and released.
+
+---
+
+### INV-009 (Closed - Released — retrospective record)
+
+Title:
+
+ORPHAN-IDB-SWEEP Deletes the Image Database Under the In-Flight Register Migration
+
+Status:
+
+Closed - Released. Remediated 2026-08-26 (`9a0007e`, `d996b8d`) with recovery tooling merged 2026-09-02 (`43705e0`). The investigation record was written on 2026-09-03, after release; see INVESTIGATION_LOG.md INV-009 for the reconstructed evidence, the root cause (await-ordering regression from IDB-RECORDS-MIGRATION making the sweep's "register is empty" precondition ambiguous), both remediations, and the governance observation.
+
+Tracked as:
+
+KI-007 (Resolved), MI-003 (residual orphan records)
+
+Regression Protection:
+
+- tests/idb-records-migration.spec.js (+8 across #64/#65)
+- tests/img-reattach-archive.spec.js (8)
+
+Release Snapshot:
+
+RS-002
+
+---
+
+### INV-010 (Closed - Released, test-only)
+
+Title:
+
+Persistent CHART-PERIOD-YEAR-AWARE Failures in frozen-week-and-chart-year.spec.js
+
+Status:
+
+Closed 2026-09-03. Reproduced deterministically; root cause is the spec leaving the demo register in memory while `rDash()` regenerates weekly buckets from it (see INVESTIGATION_LOG.md INV-010). Test-file-only remediation (`S.clashes = []; S.weekly = []` in `beforeEach`), 15/15 under `--repeat-each=3`. No `working.html` change. Tracked as KI-009.
 
 ---
 
@@ -558,31 +617,46 @@ PASS. Repository state matches governance records. Release verified.
 
 ---
 
-All confirmed defects identified through INV-002, R1, INV-005, INV-006, INV-007, and INV-008 have been remediated, verified, committed, pushed, and released.
+INV-008 remediation committed, pushed, and released on `main` (commit `6995a0e`). Superseded as the most recent release by INV-009 (see above).
 
-Remaining Activities:
+---
 
-- Continue normal application development.
-- Monitor MI-001 (Migration Complexity).
-- Monitor MI-002 residual test-infrastructure observations (the IndexedDB-timing subset separately tracked under INV-008 has now been remediated and released; see KI-006).
-- Use real-world project workflows to identify future enhancements or defects.
+## Test Baseline — 2026-09-03
 
-Repository Status:
+Command:
 
-Healthy.
+`cd tests; PW_CHROMIUM_PATH=/opt/pw-browsers/chromium npx playwright test --workers=1`
 
-INV-008 remediation committed, pushed, and released on `main` (commit `6995a0e`).
+Results:
+
+- Total: 340
+- Passed: 338
+- Failed: 2 — `tests/frozen-week-and-chart-year.spec.js` `CHART-PERIOD-YEAR-AWARE` ×2 (INV-010, Under Investigation)
+
+Matches the counts recorded at the PR #66 merge (338 passed, 2 failed). No regression between `f6a9332` and this baseline.
+
+## Test Baseline — 2026-09-03 (post-INV-010, branch `claude/app-progress-issues-04app5`)
+
+Command: `cd tests; PW_CHROMIUM_PATH=/opt/pw-browsers/chromium npx playwright test --workers=1`, run against the branch at `4df8d59` minus the final comment-only edit.
+
+- Total: 356 (340 at `dd87585` + 8 `img-store-audit` + 8 `img-dhash-index`)
+- Passed: 356
+- Failed: 0
+
+First full-suite run with no known failures since the suite began being recorded in this ledger.
+
+Post-KI-008 (`7f7c9c8`): 358 total (the two retired `FROZEN-WEEK-TERMINAL-REFRESH` tests replaced by four `KI-008` tests), 358 passed, 0 failed.
 
 ---
 
 ## Next Planned Activity
 
-Return to normal application usage and enhancement work.
+Work the ranked backlog under "Current Priority" in order. No investigation is open. MI-003 is the only monitoring item with a pending action (run the audit on the live profile).
 
 Future investigations should originate from:
 
 - Real-world usage feedback
-- Newly discovered defects
+- Newly discovered defects — including defects found during feature work, which must open an investigation record at the time, not after release (INV-009 lesson)
 - Enhancement requests
 - Monitoring-item escalation if new evidence emerges
 

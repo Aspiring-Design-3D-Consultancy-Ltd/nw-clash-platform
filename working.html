@@ -2239,9 +2239,12 @@ function backfillStatusHistory(){
    MML_Maintenance pattern per spec. Setters persist and trigger a live
    re-classification of every pendingReview clash via
    _rqdaReclassifyAll — no re-import required.
-   Settings UI surface is intentionally deferred to Step 3 of this
-   feature; this block owns storage + accessors + live-reclass hook
-   ONLY. */
+   This block owns storage + accessors + live-reclass hook ONLY. The
+   Settings UI (tolerance input, per-pattern enable/edit/remove, add)
+   shipped as region 2 of this marker in the Settings tab — see
+   "Designed condition patterns & republish tolerance" in rSettings and
+   the _rqdaUi* handlers below. (Comment corrected 2026-09-03; it
+   previously said the UI was deferred.) */
 const _RQDA_TOL_MIN=5;
 const _RQDA_TOL_MAX=500;
 const _RQDA_TOL_DEFAULT=25;
@@ -2262,7 +2265,7 @@ const _RQDA_SEED_PATTERNS=[
      users get the correct behaviour out of the box. The classifier's
      either-direction match means either single pattern would cover
      both sides on its own, but shipping both makes the Settings
-     surface (deferred to Step 3) self-explanatory. */
+     surface self-explanatory. */
   {
     name:'Anything vs MML_Maintenance',
     aRegex:'MML_Maintenance',
@@ -2723,9 +2726,10 @@ function regenWeeklyFromRegister(anchorDate){
      row instead of five distinct weekly rows — the bug Shane saw on
      30 Jun where every import collapsed into Wk 27.
      RESTORED BEHAVIOUR: each clash buckets by ITS OWN c.date's ISO week.
-     One snapshot per ISO week that has ≥1 clash. Snapshot counts reflect
-     CURRENT status of clashes whose c.date falls in that week
-     (non-cumulative). Frozen snapshots (capturedAt set) are NEVER touched.
+     One snapshot per ISO week that has ≥1 clash. Snapshot counts reflect the
+     status each clash held at the END of that week (KI-008-WEEKLY-PROJECTION,
+     2026-09-03; previously current status). Non-cumulative. Frozen snapshots
+     (capturedAt set) keep their archived fields; their counters are derived.
      The anchorDate parameter is retained for signature compatibility with
      existing call sites but is no longer used for bucket selection — the
      bucket key for each snapshot is derived per-clash.
@@ -2755,69 +2759,46 @@ function regenWeeklyFromRegister(anchorDate){
     touched.add(yr+'-'+wk);
     const idx=existing.findIndex(w=>w.week===wk&&(w.year||0)===yr);
 
-    /* FROZEN-WEEK-TERMINAL-REFRESH start: frozen weeks preserve their HISTORICAL
-       counts (new, active, critical, high, medium, low) at the moment the freeze
-       ran — that's the design intent (auto-freeze on import via
-       WEEKLY-CAPTURE-AUTOFREEZE). But TERMINAL statuses (approved, reviewed,
-       resolved) are ongoing coordination decisions made against clashes with
-       historical c.date values; they must always reflect the live register.
-       PREVIOUSLY: `if(idx>=0&&existing[idx].capturedAt)return;` — this skipped
-       frozen weeks entirely, so any Approve / Review / Resolve action taken after
-       the freeze on a clash whose c.date fell into that frozen week became
-       invisible in the weekly array. Symptom: user approves 12 clashes today, the
-       sidebar Approved tile reads 12 (live register), but the trend chart's
-       Approved series stays flat zero forever because the approvals landed in
-       already-frozen historical buckets.
-       FIX: for frozen weeks, refresh the three terminal-status counts in place
-       and recompute per-test approved/reviewed/resolved + maturity rate. Leave
-       new/active/critical/high/medium/low + tests[].new/.active/.critical/etc.
-       and label/date/capturedAt/imports untouched via the `return;` at end.
-       KNOWN EDGE CASE: a clash Active during the frozen week that is Approved
-       today will appear in BOTH frozen.active (historical) AND frozen.approved
-       (refreshed) — double-counted if you tally lines across the trend chart.
-       Root fix requires clashStatusAt(c, wk, yr) projection across every
-       counter, deferred to a future PR to keep scope contained. */
-    if(idx>=0&&existing[idx].capturedAt){
-      const frozen=existing[idx];
-      frozen.approved=bcl.filter(c=>c.status==='Approved').length;
-      frozen.reviewed=bcl.filter(c=>c.status==='Reviewed').length;
-      frozen.resolved=bcl.filter(c=>c.status==='Resolved').length;
-      // Recompute per-test terminal counts + maturity rate. Preserve historical
-      // new/active/critical fields on each test row; only touch approved/
-      // reviewed/resolved and the maturity rate computed from them.
-      if(Array.isArray(frozen.tests)){
-        const tCount={}; // testName -> {approved,reviewed,resolved}
-        bcl.forEach(c=>{
-          const n=c.testName||c.name||'Untitled test';
-          if(!tCount[n])tCount[n]={approved:0,reviewed:0,resolved:0};
-          if(c.status==='Approved')tCount[n].approved++;
-          else if(c.status==='Reviewed')tCount[n].reviewed++;
-          else if(c.status==='Resolved')tCount[n].resolved++;
-        });
-        frozen.tests.forEach(t=>{
-          const c=tCount[t.name]||{approved:0,reviewed:0,resolved:0};
-          t.approved=c.approved;
-          t.reviewed=c.reviewed;
-          t.resolved=c.resolved;
-          const tot=(t.new||0)+(t.active||0)+t.reviewed+t.resolved+t.approved;
-          t.rate=tot>0?Math.round((t.resolved+t.approved)/tot*100):0;
-        });
-      }
-      return;
-    }
-    /* FROZEN-WEEK-TERMINAL-REFRESH end */
-
-    // Build per-test breakdown for clashes in THIS bucket only.
+    /* KI-008-WEEKLY-PROJECTION start: one rule for every week, frozen or not.
+       Each clash in this bucket is counted once, at the status it held at the
+       END of the bucket's ISO week (clashStatusAt). This replaces
+       FROZEN-WEEK-TERMINAL-REFRESH (retired 2026-09-03 under DEC-015), which
+       kept a frozen week's historical new/active counts but refreshed its
+       approved/reviewed/resolved from today's status, so a clash Active in
+       the week and Approved today sat in two columns of one row (KI-008).
+       The charts and the PDF/PPTX tables already reconstruct from
+       statusHistory (PR-A-ALWAYS-RECONSTRUCT, PR-A3-EXPORT-PLATFORM-WEEKS);
+       this makes the stored snapshot — the Data Manager table's source — agree
+       with them. Today's approval of an old clash shows where the charts show
+       it: on the current week's cumulative point (statusCountsAt), not in the
+       detection week's row.
+       What "frozen" (capturedAt) still means: the row's capturedAt, imports[],
+       label, date and any other archived fields are preserved. Status and
+       priority counters are derived from the register, not archived, so a
+       clash removed from the register drops out of every week — exactly as it
+       already does on the charts.
+       Fallback when the history starts after the bucket week (detection clock
+       vs import clock, PR-02): the first recorded status, then c.status. */
+    const stAt=c=>{
+      const s=clashStatusAt(c,wk,yr);
+      if(s)return s;
+      const h=Array.isArray(c.statusHistory)?c.statusHistory:[];
+      return (h.length&&h[0]&&h[0].status)||c.status||'New';
+    };
+    const cnt={New:0,Active:0,Reviewed:0,Approved:0,Resolved:0,Critical:0,High:0,Medium:0,Low:0};
     const tMap={};
     bcl.forEach(c=>{
+      const st=stAt(c);
+      if(cnt.hasOwnProperty(st))cnt[st]++;
+      if(c.priority&&cnt.hasOwnProperty(c.priority))cnt[c.priority]++;
       const n=c.testName||c.name||'Untitled test';
       if(!tMap[n])tMap[n]={name:n,new:0,active:0,reviewed:0,resolved:0,approved:0,critical:0,high:0,medium:0,low:0,rate:0};
       const t=tMap[n];
-      if(c.status==='New')t.new++;
-      else if(c.status==='Active')t.active++;
-      else if(c.status==='Reviewed')t.reviewed++;
-      else if(c.status==='Approved')t.approved++;
-      else if(c.status==='Resolved')t.resolved++;
+      if(st==='New')t.new++;
+      else if(st==='Active')t.active++;
+      else if(st==='Reviewed')t.reviewed++;
+      else if(st==='Approved')t.approved++;
+      else if(st==='Resolved')t.resolved++;
       if(c.priority==='Critical')t.critical++;
       else if(c.priority==='High')t.high++;
       else if(c.priority==='Medium')t.medium++;
@@ -2827,29 +2808,26 @@ function regenWeeklyFromRegister(anchorDate){
       const tot=t.new+t.active+t.reviewed+t.resolved+t.approved;
       t.rate=tot>0?Math.round((t.resolved+t.approved)/tot*100):0;return t;
     });
-
-    const monday=isoWeekMonday(yr,wk);
-    const dayMonthYear=monday.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'});
-    const label='Wk '+wk+' \u2014 '+dayMonthYear;
-
-    const snap={
-      week:wk,year:yr,label,date:dayMonthYear,
-      new:bcl.filter(c=>c.status==='New').length,
-      active:bcl.filter(c=>c.status==='Active').length,
-      reviewed:bcl.filter(c=>c.status==='Reviewed').length,
-      resolved:bcl.filter(c=>c.status==='Resolved').length,
-      approved:bcl.filter(c=>c.status==='Approved').length,
-      critical:bcl.filter(c=>c.priority==='Critical').length,
-      high:bcl.filter(c=>c.priority==='High').length,
-      medium:bcl.filter(c=>c.priority==='Medium').length,
-      low:bcl.filter(c=>c.priority==='Low').length,
+    const counters={
+      new:cnt.New,active:cnt.Active,reviewed:cnt.Reviewed,resolved:cnt.Resolved,approved:cnt.Approved,
+      critical:cnt.Critical,high:cnt.High,medium:cnt.Medium,low:cnt.Low,
       tests
     };
-
-    // Preserve imports[] event log when rebuilding an existing week.
-    if(idx>=0&&Array.isArray(existing[idx].imports))snap.imports=existing[idx].imports;
-
+    const prev=idx>=0?existing[idx]:null;
+    let snap;
+    if(prev&&prev.capturedAt){
+      // Frozen: keep every archived field, replace only the derived counters.
+      snap=Object.assign({},prev,counters);
+    }else{
+      const monday=isoWeekMonday(yr,wk);
+      const dayMonthYear=monday.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'});
+      const label='Wk '+wk+' \u2014 '+dayMonthYear;
+      snap=Object.assign({week:wk,year:yr,label,date:dayMonthYear},counters);
+      // Preserve imports[] event log when rebuilding an existing week.
+      if(prev&&Array.isArray(prev.imports))snap.imports=prev.imports;
+    }
     if(idx>=0)existing[idx]=snap;else existing.push(snap);
+    /* KI-008-WEEKLY-PROJECTION end */
   });
   /* WEEKLY-SNAP-PER-CLASH-BUCKET end */
 
@@ -3808,6 +3786,7 @@ async function clearNwImageStore(){
   if(!confirm(`Clear ${_nwImgCount} stored clash images? You will need to reload them from the folder.`))return;
   await idbClear();
   _nwImages.clear();
+  _dhashIndex.clear(); /* IMG-DHASH-INDEX: nothing referenced after a clear */
   _nwImagesByIndex.length=0;
   /* IMG-FIX: wipe per-test tracker too */
   Object.keys(_nwImgByTest).forEach(k=>delete _nwImgByTest[k]);
@@ -4646,6 +4625,7 @@ async function initNwImages(){
         }catch(e){done();}
       });
       try{_nwImages.clear();}catch(e){}
+      try{_dhashIndex.clear();}catch(e){} /* IMG-DHASH-INDEX */
       _nwImagesByIndex.length=0;
       try{Object.keys(_nwImgByTest).forEach(k=>delete _nwImgByTest[k]);}catch(e){}
       _nwImgCount=0;
@@ -4668,6 +4648,7 @@ async function initNwImages(){
       updateNwImgUI();
       // Populate the per-test stat so the UI shows "legacy — please reload"
       Object.keys(_nwImgByTest).forEach(k=>delete _nwImgByTest[k]);
+      _dhashIndex.clear(); /* IMG-DHASH-INDEX: legacy shape has no referenced slots */
       _nwImgByTest['(legacy — please reload per test)']={
         firstIdx:1,count:meta.count||0,filenames:meta.filenames||[]
       };
@@ -4684,6 +4665,7 @@ async function initNwImages(){
     _nwImagesByIndex.length=0;
     _nwImagesByIndex.push(null);
     for(let i=1;i<=meta.count;i++)_nwImagesByIndex.push(undefined); // lazy load
+    _dhashIndexRestore(meta); /* IMG-DHASH-INDEX: hashes for referenced slots, one read */
     _nwImgCount=meta.count;
     _nwFolderName=meta.folderName||'';
     updateNwImgUI();
@@ -4812,6 +4794,9 @@ function loadNwImages(files,testName){
         }
         await idbPut(idx,{b64,dhash:_dh});
         /* IMG-DHASH-PHASE1 end */
+        /* IMG-DHASH-INDEX: record the slot's hash only after the write landed,
+           so the index never claims a hash the store does not hold. */
+        if(_dh)_dhashIndex.set(idx,_dh);else _dhashIndex.delete(idx);
         _nwImages.set(testName+'::'+f.name,idx);
         _nwImagesByIndex[idx]=b64;
       }catch(e){
@@ -4835,7 +4820,9 @@ function loadNwImages(files,testName){
       shape:'imgfix-v1',
       count:grandTotal,
       loadedAt:Date.now(),
-      byTest:JSON.parse(JSON.stringify(_nwImgByTest))
+      byTest:JSON.parse(JSON.stringify(_nwImgByTest)),
+      /* IMG-DHASH-INDEX: referenced-slot hash index, pruned to live slots */
+      dhashByIdx:_dhashIndexSerialise()
     };
     try{ await idbPut(0,meta); }
     catch(e){ try{console.error('[IMG-BATCH-BACKPRESSURE] image metadata write failed: '+((e&&e.message)||e));}catch(_){} }
@@ -4974,7 +4961,7 @@ async function _dhashBackfill(){
   if(_dhashBackfillRunning)return {skippedRun:true};
   _dhashBackfillRunning=true;
   const t0=(typeof performance!=='undefined'&&performance.now)?performance.now():0;
-  let hashed=0,already=0,failed=0,targets=[];
+  let hashed=0,already=0,failed=0,indexed=0,targets=[];
   try{
     try{ if(localStorage.getItem('nw:pendingIdbWipe'))return {hashed:0,already:0,failed:0,total:0}; }catch(e){}
     let keys=[];
@@ -4986,6 +4973,13 @@ async function _dhashBackfill(){
     // Key 0 is the metadata block, never an image.
     targets=(keys||[]).filter(k=>typeof k==='number'&&k>0);
     if(!targets.length)return {hashed:0,already:0,failed:0,total:0};
+    /* IMG-DHASH-INDEX start: slots the current byTest ranges reach. Only these
+       are indexed — an orphaned slot is unreachable, so indexing it would just
+       grow the metadata block for nothing. A slot already in the index is
+       counted as done without reading its payload; that is the per-launch
+       saving this index exists for. */
+    const _ref=_dhashIndexReferencedSlots();
+    /* IMG-DHASH-INDEX end */
 
     const nextRef={i:0};
     async function _dhashWorker(){
@@ -4997,17 +4991,38 @@ async function _dhashBackfill(){
         // the store rather than re-opening a DB someone is trying to delete.
         try{ if(localStorage.getItem('nw:pendingIdbWipe'))return; }catch(e){}
         try{
+          if(_dhashIndex.has(k)){already++;continue;} /* IMG-DHASH-INDEX: no payload read */
           const norm=_dhashUnwrap(await idbGet(k));
           if(!norm){failed++;continue;}
-          if(norm.dhash){already++;continue;}
+          if(norm.dhash){
+            already++;
+            /* IMG-DHASH-INDEX: a record hashed by an earlier build but never
+               indexed — pick it up now so the next launch skips the read. */
+            if(_ref.has(k)){_dhashIndex.set(k,norm.dhash);indexed++;}
+            continue;
+          }
           const dhash=await computeDHash(norm.b64);
           await idbPut(k,{b64:norm.b64,dhash});
           hashed++;
+          if(_ref.has(k)){_dhashIndex.set(k,dhash);indexed++;} /* IMG-DHASH-INDEX */
         }catch(e){failed++;}
       }
     }
     const lanes=Math.min(_IMG_READ_CONCURRENCY,targets.length);
     await Promise.all(Array.from({length:lanes},()=>_dhashWorker()));
+    /* IMG-DHASH-INDEX start: one metadata write for the whole pass, and only
+       when something was added — a store with nothing new to index generates
+       no write at all, so the Phase 1 "metadata untouched" guarantee still
+       holds for stores without byTest ranges. Skipped under a pending wipe. */
+    if(indexed){
+      let _wipe=false;
+      try{ _wipe=!!localStorage.getItem('nw:pendingIdbWipe'); }catch(e){}
+      if(!_wipe){
+        try{ await _dhashIndexPersist(); }
+        catch(e){ try{console.warn('[IMG-DHASH-INDEX] index persist failed: '+((e&&e.message)||e));}catch(_){} }
+      }
+    }
+    /* IMG-DHASH-INDEX end */
   } finally {
     _dhashBackfillRunning=false;
   }
@@ -5015,11 +5030,277 @@ async function _dhashBackfill(){
     const ms=((typeof performance!=='undefined'&&performance.now)?performance.now():0)-t0;
     try{console.log('[IMG-DHASH-PHASE1] backfill: '+hashed+' hashed, '+already+
       ' already had a hash, '+failed+' failed, of '+targets.length+' images in '+
-      Math.round(ms)+'ms');}catch(e){}
+      Math.round(ms)+'ms'+(indexed?(' ('+indexed+' added to the hash index)'):''));}catch(e){}
   }
-  return {hashed,already,failed,total:targets.length};
+  return {hashed,already,failed,indexed,total:targets.length};
 }
 /* IMG-DHASH-PHASE1 end */
+
+/* IMG-DHASH-INDEX start: PIXEL-DEDUP Phase 2 read side. Phase 1 put each
+   image's dHash on its own record ({b64,dhash}), which is the right place for
+   the authoritative value but means "give me every hash" costs a full read of
+   every image payload — and _dhashBackfill was paying exactly that cost on
+   every launch to find out which records still needed hashing. This block adds
+   a small derived index of idx -> dhash for the slots the current byTest
+   ranges reference, kept in memory (_dhashIndex) and serialised into the
+   existing metadata block at key 0 as `dhashByIdx`. Decision record: DEC-014.
+
+   Contract:
+   - The record's own dhash stays authoritative. The index is a cache that is
+     only ever populated from a hash that has already been written to its
+     record (loadNwImages worker, _dhashBackfill), and is rebuilt by the
+     backfill for any referenced slot it does not yet cover.
+   - Referenced slots only. Orphaned slots (MI-003) are never indexed, so the
+     index is bounded by the live image count, not the store size.
+   - No new keys in the images store and no schema bump: `dhashByIdx` rides on
+     the metadata record that loadNwImages already writes at the end of every
+     load, so idbGetAllKeys() and every wipe/verify store list are unchanged.
+   - Consumers read hashes through _dhashIndexGet() / findSimilarImages(); if a
+     referenced slot is not indexed yet they fall back to reading the record.
+   Nothing here touches the Dedup Queue, thresholds, or UI — that is the
+   consumer half of Phase 2 and needs its own brief. */
+const _dhashIndex=new Map(); // idx -> 16-char hex dhash, referenced slots only
+
+function _dhashIndexReferencedSlots(){
+  const s=new Set();
+  Object.values(_nwImgByTest).forEach(t=>{
+    const f=(t&&t.firstIdx)|0,n=(t&&t.count)|0;
+    for(let i=0;i<n;i++)s.add(f+i);
+  });
+  return s;
+}
+/* Plain object for the metadata block. Prunes entries whose slot no test
+   references any more (a re-loaded test that moved or shrank). */
+function _dhashIndexSerialise(){
+  const ref=_dhashIndexReferencedSlots();
+  const o={};
+  [..._dhashIndex.keys()].forEach(k=>{
+    if(ref.has(k))o[k]=_dhashIndex.get(k);else _dhashIndex.delete(k);
+  });
+  return o;
+}
+function _dhashIndexRestore(meta){
+  _dhashIndex.clear();
+  const o=meta&&meta.dhashByIdx;
+  if(!o||typeof o!=='object')return 0;
+  Object.keys(o).forEach(k=>{
+    const n=Number(k),h=o[k];
+    if(Number.isInteger(n)&&n>0&&typeof h==='string'&&/^[0-9a-f]{16}$/.test(h))_dhashIndex.set(n,h);
+  });
+  return _dhashIndex.size;
+}
+/* One read + one write of key 0. No-op (returns false) when there is no
+   new-shape metadata block — nothing is referenced then, so there is nothing
+   to index and a bare-records store stays exactly as Phase 1 left it. */
+async function _dhashIndexPersist(){
+  const meta=await idbGet(0);
+  if(!meta||typeof meta!=='object'||!meta.byTest)return false;
+  meta.dhashByIdx=_dhashIndexSerialise();
+  await idbPut(0,meta);
+  return true;
+}
+/* Hash for one slot: index first, record second. Returns null if the slot
+   has no image or the image was never hashed. */
+async function _dhashIndexGet(idx){
+  const h=_dhashIndex.get(idx);
+  if(h)return h;
+  try{
+    const norm=_dhashUnwrap(await idbGet(idx));
+    if(norm&&norm.dhash){
+      if(_dhashIndexReferencedSlots().has(idx))_dhashIndex.set(idx,norm.dhash);
+      return norm.dhash;
+    }
+  }catch(e){}
+  return null;
+}
+/* Bits that differ between two 16-hex-char hashes (0..64). */
+function _dhashHamming(a,b){
+  if(typeof a!=='string'||typeof b!=='string'||a.length!==16||b.length!==16)return 64;
+  let d=0;
+  for(let i=0;i<16;i++){
+    let x=parseInt(a[i],16)^parseInt(b[i],16);
+    while(x){d+=x&1;x>>=1;}
+  }
+  return d;
+}
+/* Groups of referenced images whose hashes are within maxDistance bits of
+   each other (transitively — union-find). Reads only the in-memory index, so
+   it is synchronous and does no IDB traffic; call after initNwImages has
+   restored the metadata, or after a backfill on a store that predates the
+   index. Each member carries the slot, its test and filename so a consumer
+   can map back to clashes through the same testName::filename composite key
+   the rest of the image layer uses. Distance 0 means byte-for-byte-equivalent
+   fingerprints; 6–10 is the usual "same viewpoint, different capture" band
+   for a 64-bit dHash, but the threshold is the caller's decision. */
+function findSimilarImages(maxDistance){
+  const maxD=Number.isFinite(maxDistance)?Math.max(0,maxDistance|0):0;
+  const slotInfo=new Map();
+  Object.entries(_nwImgByTest).forEach(([tn,t])=>{
+    const f=(t&&t.firstIdx)|0,n=(t&&t.count)|0,fns=(t&&t.filenames)||[];
+    for(let i=0;i<n;i++)slotInfo.set(f+i,{testName:tn,filename:fns[i]||null});
+  });
+  const entries=[];
+  _dhashIndex.forEach((h,idx)=>{ if(slotInfo.has(idx))entries.push({idx,hash:h}); });
+  const parent=new Map();
+  const find=x=>{ while(parent.get(x)!==x){parent.set(x,parent.get(parent.get(x)));x=parent.get(x);} return x; };
+  const union=(a,b)=>{ a=find(a);b=find(b); if(a!==b)parent.set(b,a); };
+  entries.forEach(e=>parent.set(e.idx,e.idx));
+  if(maxD===0){
+    const byHash=new Map();
+    entries.forEach(e=>{ const l=byHash.get(e.hash); if(l){union(l,e.idx);} else byHash.set(e.hash,e.idx); });
+  }else{
+    for(let i=0;i<entries.length;i++)
+      for(let j=i+1;j<entries.length;j++)
+        if(_dhashHamming(entries[i].hash,entries[j].hash)<=maxD)union(entries[i].idx,entries[j].idx);
+  }
+  const groups=new Map();
+  entries.forEach(e=>{
+    const r=find(e.idx);
+    let g=groups.get(r);
+    if(!g){g={members:[]};groups.set(r,g);}
+    const info=slotInfo.get(e.idx);
+    g.members.push({idx:e.idx,hash:e.hash,testName:info.testName,filename:info.filename});
+  });
+  return [...groups.values()]
+    .filter(g=>g.members.length>1)
+    .map(g=>{
+      g.members.sort((a,b)=>a.idx-b.idx);
+      const tests=new Set(g.members.map(m=>m.testName));
+      return {size:g.members.length,crossTest:tests.size>1,tests:[...tests],members:g.members};
+    })
+    .sort((a,b)=>b.size-a.size||a.members[0].idx-b.members[0].idx);
+}
+/* IMG-DHASH-INDEX end */
+
+/* IMG-STORE-AUDIT start: read-only audit of the NWClashImages `images` store
+   for MI-003 (Orphaned IndexedDB Image Records). PR #63 reported ~63,178
+   image records on the live profile against ~3,670 the register can restore,
+   and nobody knows how the difference breaks down. A cleanup that guesses at
+   that answer would repeat KI-007, so the audit comes first and it must be
+   incapable of destroying anything: this block performs no put, no delete
+   and no metadata rewrite — getAllKeys, get(0) and a bounded number of
+   get(k) reads only. Safe to run on a live profile from the DevTools
+   console:  await _auditNwImageStore()
+   Classification is against the metadata block's byTest ranges (the same
+   [firstIdx, firstIdx+count) slots initNwImages restores from), so
+   "referenced" means "reachable by the app today" and "orphaned" means
+   "a numeric key no current test range covers" — the residue loadNwImages
+   leaves behind when a test is re-loaded and its new slots do not overlap
+   its old ones. Payload size is estimated from an evenly spaced sample
+   (default 200 per class) rather than by reading every record, because
+   reading 60k+ payloads is exactly the IO cost MI-003 is worried about. */
+async function _auditSampleNwImages(keys){
+  const r={n:0,legacyShape:0,objectShape:0,hashed:0,unhashed:0,unreadable:0,b64Chars:0,avgB64Chars:0,avgDecodedBytes:0};
+  for(const k of keys){
+    let rec;
+    try{rec=await idbGet(k);}catch(e){r.unreadable++;continue;}
+    if(rec==null){r.unreadable++;continue;}
+    if(typeof rec==='string'){r.n++;r.legacyShape++;r.b64Chars+=rec.length;}
+    else if(rec&&typeof rec.b64==='string'){
+      r.n++;r.objectShape++;r.b64Chars+=rec.b64.length;
+      if(rec.dhash)r.hashed++;else r.unhashed++;
+    }
+    else r.unreadable++;
+  }
+  r.avgB64Chars=r.n?Math.round(r.b64Chars/r.n):0;
+  r.avgDecodedBytes=r.n?Math.round(r.b64Chars*0.75/r.n):0;
+  return r;
+}
+async function _auditNwImageStore(opts){
+  opts=opts||{};
+  const sampleSize=Number.isFinite(opts.sample)?Math.max(0,opts.sample|0):200;
+  const out={
+    ok:false,at:new Date().toISOString(),
+    totalKeys:0,nonNumericKeys:0,
+    metaPresent:false,metaShape:null,metaCount:0,tests:0,
+    referencedSlots:0,referenced:0,orphaned:0,missing:0,overlapping:0,
+    orphanRuns:0,orphanKeyMin:null,orphanKeyMax:null,largestOrphanRuns:[],
+    byTest:[],sample:null,estDecodedBytes:null,notes:[]
+  };
+  let keys=[];
+  try{keys=await idbGetAllKeys();}
+  catch(e){out.notes.push('could not read image keys: '+((e&&e.message)||e));return out;}
+  out.totalKeys=(keys||[]).length;
+  const numeric=new Set();
+  (keys||[]).forEach(k=>{if(typeof k==='number')numeric.add(k);else out.nonNumericKeys++;});
+  let meta=null;
+  try{meta=await idbGet(0);}
+  catch(e){out.notes.push('could not read metadata block: '+((e&&e.message)||e));}
+  if(meta&&typeof meta==='object'){
+    out.metaPresent=true;
+    out.metaShape=meta.shape||'(pre-imgfix)';
+    out.metaCount=meta.count|0;
+  }else if(meta!=null){
+    out.notes.push('key 0 holds a non-object value — treated as no metadata');
+  }
+  const byTest=(meta&&meta.byTest&&typeof meta.byTest==='object')?meta.byTest:{};
+  const ranges=Object.entries(byTest).map(([tn,info])=>({
+    testName:tn,firstIdx:(info&&info.firstIdx)|0,count:(info&&info.count)|0,
+    filenames:((info&&info.filenames)||[]).length
+  }));
+  out.tests=ranges.length;
+  // slot -> list of tests that claim it (more than one = overlapping ranges,
+  // which would mean two tests share images — a real defect if it exists)
+  const owner=new Map();
+  ranges.forEach(r=>{
+    for(let i=0;i<r.count;i++){
+      const k=r.firstIdx+i;
+      const o=owner.get(k);
+      if(o)o.push(r.testName);else owner.set(k,[r.testName]);
+    }
+  });
+  out.referencedSlots=owner.size;
+  owner.forEach((owners,k)=>{
+    if(owners.length>1)out.overlapping++;
+    if(!numeric.has(k))out.missing++;
+  });
+  numeric.forEach(k=>{if(k===0)return;if(owner.has(k))out.referenced++;else out.orphaned++;});
+  out.byTest=ranges.map(r=>{
+    let present=0;
+    for(let i=0;i<r.count;i++)if(numeric.has(r.firstIdx+i))present++;
+    return {testName:r.testName,firstIdx:r.firstIdx,count:r.count,filenames:r.filenames,present,missing:r.count-present};
+  });
+  const orphanKeys=[...numeric].filter(k=>k>0&&!owner.has(k)).sort((a,b)=>a-b);
+  const runs=[];
+  orphanKeys.forEach(k=>{
+    const last=runs[runs.length-1];
+    if(last&&k===last.to+1){last.to=k;last.n++;}else runs.push({from:k,to:k,n:1});
+  });
+  out.orphanRuns=runs.length;
+  out.orphanKeyMin=orphanKeys.length?orphanKeys[0]:null;
+  out.orphanKeyMax=orphanKeys.length?orphanKeys[orphanKeys.length-1]:null;
+  out.largestOrphanRuns=runs.slice().sort((a,b)=>b.n-a.n).slice(0,10);
+  if(sampleSize>0){
+    const pick=(arr,n)=>{
+      if(arr.length<=n)return arr.slice();
+      const step=arr.length/n,r=[];
+      for(let i=0;i<n;i++)r.push(arr[Math.floor(i*step)]);
+      return r;
+    };
+    const refKeys=[...numeric].filter(k=>k>0&&owner.has(k)).sort((a,b)=>a-b);
+    const referenced=await _auditSampleNwImages(pick(refKeys,sampleSize));
+    const orphaned=await _auditSampleNwImages(pick(orphanKeys,sampleSize));
+    out.sample={size:sampleSize,referenced,orphaned};
+    out.estDecodedBytes={
+      referenced:referenced.avgDecodedBytes*out.referenced,
+      orphaned:orphaned.avgDecodedBytes*out.orphaned
+    };
+  }
+  out.ok=true;
+  try{
+    const mb=b=>(b/1048576).toFixed(1)+' MB';
+    console.log('[IMG-STORE-AUDIT] '+out.totalKeys+' keys in images store; metadata '+
+      (out.metaPresent?('present ('+out.metaShape+', count '+out.metaCount+', '+out.tests+' tests)'):'ABSENT')+
+      '; referenced '+out.referenced+', orphaned '+out.orphaned+' in '+out.orphanRuns+' runs'+
+      ', missing '+out.missing+', overlapping '+out.overlapping+', non-numeric keys '+out.nonNumericKeys+
+      (out.estDecodedBytes?('; est. decoded payload referenced '+mb(out.estDecodedBytes.referenced)+
+        ' / orphaned '+mb(out.estDecodedBytes.orphaned)):'')+
+      '. Read-only — nothing was changed.');
+    if(out.byTest.length&&console.table)console.table(out.byTest);
+  }catch(e){}
+  return out;
+}
+/* IMG-STORE-AUDIT end */
 
 // Refresh the image panel inside an open modal
 function refreshModalImage(){

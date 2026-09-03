@@ -1545,3 +1545,205 @@ Committed and pushed.
 Investigation closed.
 
 ---
+# INV-009: ORPHAN-IDB-SWEEP Deletes the Image Database Under the In-Flight Register Migration
+
+Date:
+
+Defect observed and remediated 2026-08-26 (recovery tooling merged 2026-09-02). Investigation record written retrospectively 2026-09-03.
+
+Status:
+
+Closed - Released (retrospective record — see "Governance Observation" below).
+
+Workflow:
+
+Workflow A (Persistence Defect). The remediation ran through pull-request review (#64, #65, #66) without an investigation being opened in this ledger. This entry was produced under Workflow E (Documentation Issue — missing investigation record) and reconstructs the evidence from the merged commit messages, pull-request descriptions, the code markers in `working.html`, and the regression tests those PRs added. Where a statement below is reconstructed rather than directly re-observed in this session, it is attributed to its source.
+
+Roles Completed (reconstructed):
+
+- QA Investigator ✅ (trace and clean-profile reproduction — recorded in commit `9a0007e`)
+- Architect ✅ (root cause and remediation design — recorded in commits `9a0007e`, `d996b8d`)
+- Developer Implementation ✅ (`9a0007e`, `d996b8d`, `43705e0`)
+- QA Retest ✅ (full-suite counts recorded per PR: 326 → 330 → 338 passed; re-verified 2026-09-03, see "QA Retest" below)
+- Repository Steward Review ✅ (pull-request diff review by the repository owner before each merge)
+- Release Manager ✅ (merged to `main` by the repository owner)
+- Governance record ⚠️ written after release, not before — see "Governance Observation"
+
+Primary Scope:
+
+- working.html: `initAuth()` hydration order, `_recInit()` (IDB-RECORDS-MIGRATION), `initNwImages()` ORPHAN-IDB-SWEEP block, the verify-then-gate migration step, Data Manager (IMG-REATTACH-ARCHIVE)
+- tests/idb-records-migration.spec.js
+- tests/img-reattach-archive.spec.js
+
+Trigger:
+
+Immediately after IDB-RECORDS-MIGRATION (`ef3d620`, PR #63) was deployed, the live profile reported `verify failed for nw:clashes` during the register migration and the stored clash images were gone. The register itself was not lost (verify-then-gate aborted with every original intact), but `NWClashImages` had been deleted.
+
+---
+## Executive Summary
+
+A destructive, irreversible defect: on every launch during the migration window, `ORPHAN-IDB-SWEEP` could call `indexedDB.deleteDatabase('NWClashImages')` while the register migration was writing into that same database. Root cause was an await-ordering regression introduced by PR #63, not a data or encoding problem. Remediated by a positive register-hydration signal that the sweep must observe before it is allowed to delete anything (PR #64). During the same recovery a second, independent hazard was found and fixed: on a profile at 100% of the localStorage cap the 1-byte migration gate write itself threw `QuotaExceededError`, so the migration could never complete on the only profile it exists to rescue (PR #65). A recovery tool that re-attaches a week's images from its archive folder without touching the register shipped as PR #66.
+
+---
+## Evidence Collected
+
+Source: commit `9a0007e` message and PR #64 description.
+
+- Ruled out first: encoding, structured clone, payload size. A 4.3 MB register round-trips byte-identically through the `records` store, and eleven content pathologies were tested and all matched.
+- `initAuth()` previously assigned `S.clashes` synchronously ahead of its first `await`. PR #63 inserted `await _recInit()` before that assignment.
+- `window.onload` does not await `initAuth()`. `initNwImages()` therefore ran during the new window, observed `S.clashes === []` — meaning "not loaded yet", not "empty" — combined that with image metadata being present, treated it as the `ORPHAN-IDB-SWEEP` precondition, and called `deleteDatabase()` on the database the migration was writing to.
+- Traced at approximately 664 ms after load; reproduced from a clean profile.
+
+Source: commit `d996b8d` message and PR #65 description.
+
+- On a profile at 100% of the localStorage cap there was no room for even the 1-byte gate value; `setItem('nw:idbRecordsMigrated','1')` threw `QuotaExceededError`.
+- A gate-write failure previously threw out of `_recInit()`, sending it into fallback. Fallback reads localStorage — which by then could be empty — so the user would have been shown an empty register while their data sat safely in IndexedDB.
+
+---
+## Root Cause Findings
+
+1. **[Certain, from source] Await-ordering regression.** The `ORPHAN-IDB-SWEEP` guard used `S.clashes.length === 0` as its "register is empty" precondition. That was safe when `S.clashes` was populated synchronously before any other `window.onload` work could observe it. PR #63 made hydration asynchronous without giving the sweep a way to distinguish "not yet loaded" from "empty". Deletion is irreversible, so an ambiguous precondition is not acceptable for it.
+
+2. **[Certain, from source] Gate write at full quota.** The migration copied, read back and byte-compared every routed key, then wrote the gate, then deleted the originals. On a profile that is full — the exact profile the migration exists for — step two cannot succeed.
+
+---
+## Severity Assessment
+
+High. Irreversible deletion of the user's image store, triggered automatically on launch, on the profile class the feature was built to rescue. The register was protected by verify-then-gate and was not lost.
+
+---
+## Remediation
+
+### PR #64 — `9a0007e` — IDB-RECORDS-VERIFY-RACE
+
+- A register-hydration signal (`_registerHydrated` / `_registerReady`) is raised on both `initAuth()` hydration paths.
+- `ORPHAN-IDB-SWEEP` waits for it (4-second grace) and requires it before sweeping. If hydration has not happened in time, the sweep is skipped for that launch and a console warning says so, rather than deleting a database whose register state is unknown. Failing to sweep costs a stale image count; sweeping wrongly costs the user's images.
+- Verify-then-gate unchanged: same comparison, same abort, same ordering, one gate-set site, one verify-throw site. Only the failure message was enriched to distinguish a vanished record from a content mismatch.
+- Regression tests added (tests/idb-records-migration.spec.js): a register migrates cleanly while image metadata is present (the live-profile defect); a multi-MB register survives the round trip and verifies; ORPHAN-IDB-SWEEP still fires when the register is genuinely empty; the register-hydrated signal is raised on both initAuth paths.
+- Full suite at merge: 326 passed.
+
+### PR #65 — `d996b8d` — IDB-RECORDS-GATE-QUOTA
+
+- The two post-verification steps are swapped: verified originals are deleted first (freeing ~9.7 MB on the live profile), and the gate is written into that space.
+- Nothing destructive happens until every routed key has been copied, read back and byte-compared; a throw there still leaves every original intact and the gate unset.
+- Crash window (originals deleted, gate unwritten): the next boot re-enters the migration, `getItem` returns null for those keys and the loop continues without ever calling `_idbPutRecord` for a key it did not read, so an empty localStorage cannot overwrite the verified records store. The gate is then written with an empty `moved` and the register loads from records.
+- The gate write is now non-fatal and reported instead of throwing into fallback.
+- A profile left by the previous ordering with the gate set and originals still present is detected and reported, not auto-deleted, because those keys may hold newer data written during a fallback session.
+- Regression tests added: migration at exactly-full quota completes; a simulated crash between delete and gate-set loses nothing and the next boot recovers; an empty localStorage with the gate unset never overwrites a populated records store; a gate-write failure is not fatal and does not trigger fallback.
+- Full suite at merge: 330 passed.
+
+### PR #66 — `43705e0` — IMG-REATTACH-ARCHIVE (recovery tooling)
+
+- Data Manager gains "Re-attach images from archive folder": pick one week's archive folder and its images are restored through the existing `loadNwImages` pipeline (bounded concurrency and dHash-on-store both apply).
+- The report/`_files` matcher was factored out of `importFolderPick` into three helpers (`_bifBucketFolderFiles`, `_bifSniffXmlFiles`, `_bifMatchImageJobs`) — one definition, two callers.
+- Images only, by construction: never calls `importToRegister`, never parses an XML body, writes nothing to clashes, weekly, snapshots or dedup state. Asserted by a test that byte-compares the records store and every `nw:*` key before and after.
+- Idempotent: re-running a week replaces that week's mapping rather than duplicating it.
+- Known limitation stated in the PR: superseded IDB image records from a previous run are left behind — this is the orphan-record backlog now tracked as MI-003.
+- 8 regression tests (tests/img-reattach-archive.spec.js); full suite at merge: 338 passed.
+
+---
+## QA Retest
+
+Per-PR full-suite results at merge time are recorded above (326 / 330 / 338 passed, each with the same 2 pre-existing `frozen-week-and-chart-year.spec.js` failures, which are now the subject of INV-010).
+
+Re-verification on `main` at `dd87585` on 2026-09-03 (`cd tests; PW_CHROMIUM_PATH=/opt/pw-browsers/chromium npx playwright test --workers=1`): see the RS-002 test baseline in RELEASE_SNAPSHOTS.md.
+
+---
+## Residual Risk and Follow-ups
+
+- **MI-003** — orphaned IndexedDB image records (PR #63 reported 63,178 image records against roughly 3,670 restorable; PR #66 adds superseded records on every re-run). Audit before any cleanup. Nothing has been wiped.
+- **MI-001** — the migration gate set now includes `nw:idbRecordsMigrated`, and the routed write path (`sv()` → debounced flush → IndexedDB) is a new ordering-risk class. MI-001 updated accordingly.
+- Images lost on the affected profile before PR #64 are recoverable only from the weekly archive folders via the PR #66 tool.
+
+---
+## Governance Observation
+
+A data-loss incident and three remediation PRs shipped between 2026-08-26 and 2026-09-02 while CURRENT_STATUS.md continued to report "No active investigations" and KNOWN_ISSUES.md recorded no confirmed issue. The PR descriptions carried the investigation content; the ledger did not. The Governance Orchestrator's "New Issue" entry condition applies to defects discovered during feature work, not only to user-reported ones. No new decision record is proposed (DEC-008: avoid speculative governance expansion) — the existing rules already cover this case; they were not followed. This retrospective entry, KI-007, MI-003, the CHANGE_LOG entries for PRs #59–#66, and RS-002 close the gap.
+
+---
+## Final Release Status
+
+Released.
+
+Commits (all on `main`):
+
+- `9a0007e` — Stop ORPHAN-IDB-SWEEP deleting the DB under the in-flight migration (IDB-RECORDS-VERIFY-RACE) (#64)
+- `d996b8d` — Delete verified originals before writing the migration gate (IDB-RECORDS-GATE-QUOTA) (#65)
+- `43705e0` — Re-attach images from an archive folder (IMG-REATTACH-ARCHIVE) (#66), merged via `f6a9332`
+
+Status: Committed and pushed. Investigation closed (retrospectively recorded).
+
+---
+
+# INV-010: Persistent CHART-PERIOD-YEAR-AWARE Failures in frozen-week-and-chart-year.spec.js
+
+Date:
+
+Opened 2026-09-03.
+
+Status:
+
+Closed - Released (test-harness defect; no application change). Opened and closed 2026-09-03.
+
+Workflow:
+
+Workflow C (Test Failure).
+
+Primary Scope:
+
+- tests/frozen-week-and-chart-year.spec.js — `CHART-PERIOD-YEAR-AWARE — default range spans a year boundary correctly` and `CHART-PERIOD-YEAR-AWARE — resetChartRange restores full range and clears manual narrowing`
+- working.html: chart period default/reset logic (`CHART-DEFAULT-W14`, `CHART-PERIOD-YEAR-AWARE` marker blocks and `resetChartRange`)
+
+Trigger:
+
+The same two tests have failed on every recorded full-suite run from the INV-008 QA Retest (2026-08-15, 286/288) through PR #66 (2026-09-02, 338 passed + 2 failed). Each time they were classified as "pre-existing, date-boundary-dependent chart-range flakiness, reproduced on the unmodified baseline" and excluded from the change under review. Nobody has root-caused them. INV-007's own risk note — genuine regressions masked by "known flaky" pattern-matching — applies directly: a failure that is red on every run for three weeks is not flaky, it is failing.
+
+Questions to answer:
+
+1. Does the failure depend on the wall-clock date (a test that only passes in certain ISO weeks), on seeded data, or on application logic?
+2. If date-dependent: is the test's expectation wrong, or does the chart range logic misbehave near a year boundary in a way a user would see?
+3. Does the test-harness sequencing fix from INV-007 (KI-005) apply to this spec's bootstrap?
+
+---
+## Reproduction Results
+
+Reproduced in headless Chromium (Playwright 1.62.1, system Chromium) against `working.html` at `dd87585` with a standalone script performing exactly the spec's bootstrap and seeding:
+
+| Step | Observation |
+| --- | --- |
+| After bootstrap (nw:* cleared, auth bypassed) | `S.clashes.length` = 104, `S.projName` = "My Project", clash dates 06/01/25 → 27/01/25, `S.weekly` weeks = [1, 2, 3, 4] (the demo dataset, still in memory) |
+| Seed the spec's five `S.weekly` entries, `nav('dashboard')` | `_chartFrom` = 202502, `_chartTo` = 202628, `S.weekly` = [202502, 202503, 202504, 202505, 202541, 202552, 202601, 202614, 202628], `getDisplayWds().length` = 9, `_platformWeeks()` = [] |
+| Same, but with `S.clashes = []` first | `_chartFrom` = 202541, `_chartTo` = 202628, `S.weekly` = [202541, 202628], `getDisplayWds().length` = 2 — the spec's exact expectations |
+
+The failure is deterministic. It does not depend on the wall-clock date; the spec's year values are hard-coded and the extra weeks come from the demo register's January 2025 dates.
+
+---
+## Root Cause Findings
+
+**[Certain] Test-harness isolation gap, not an application defect.** The spec's `beforeEach` removes every `nw:*` localStorage key and bypasses auth, but does not reset the in-memory `S.clashes`. The demo dataset (104 clashes dated 06–27 Jan 2025) therefore remains loaded. `rDash()` begins with `regenWeeklyFromRegister()`, which — per `WEEKLY-SNAP-PER-CLASH-BUCKET` — adds one snapshot per ISO week that contains at least one clash. Four demo weeks (2025-W02..W05) are prepended to the seeded weeks, and `CHART-PERIOD-YEAR-AWARE`'s "default range = oldest → newest weekly entry" correctly reports 2025-W02 as the oldest. The application did exactly what its documented rule says; the fixture asked it a question with hidden extra input.
+
+This is the same class of gap INV-007 / KI-005 closed for `batch-import-folder.spec.js`, `weekly-incremental-import.spec.js` and `weekly-summary-screenshot.spec.js`, where the fix was an explicit in-memory `S.clashes = []` reset. This spec did not receive it.
+
+**Why the "date-boundary flakiness" label stuck.** Every PR since INV-008 ran the full suite, saw these two failures, confirmed they also failed on the unmodified baseline, and classified them as pre-existing. Each individual classification was correct — they were pre-existing — but "pre-existing" was read as "flaky" and no one asked why a deterministic failure would be date-dependent. The register-hydration and dashboard-regeneration changes of the same period (`PR-A-ALWAYS-RECONSTRUCT`, `WEEKLY-SNAP-PER-CLASH-BUCKET`, INV-007) all landed in the same build-stamp commit as the spec (`3599a8b`, 2026-08-04), so `git log -S` cannot separate which landed first. It does not matter for the remediation.
+
+**Application logic verified correct.** `rDash()` default range, `getDisplayWds()`, `resetChartRange()` and the `_platformWeeks()` fallback all behaved as documented in the reproduction. No `working.html` change is warranted.
+
+---
+## Remediation
+
+Test-file-only, mirroring INV-007:
+
+- `tests/frozen-week-and-chart-year.spec.js` `beforeEach`: add `S.clashes = []; S.weekly = [];` after the auth bypass, with a comment citing INV-010. The two FROZEN-WEEK tests already overwrite both fields; the CHART-XAXIS test uses neither.
+
+QA Retest: `frozen-week-and-chart-year.spec.js` with `--repeat-each=3` → 15/15 passed (previously 2 of 5 failed on every run). Full-suite result recorded in CURRENT_STATUS.md "Test Baseline — 2026-09-03 (post-INV-010)".
+
+Tracked as: KI-009 (Resolved).
+
+---
+## Final Release Status
+
+Test-only remediation committed on `claude/app-progress-issues-04app5` (see CHANGE_LOG.md 2026-09-03). No application code changed; no release snapshot required until the branch merges to `main`, at which point the next snapshot's test baseline should read 340 / 340.
+
+Investigation closed.
+
+---

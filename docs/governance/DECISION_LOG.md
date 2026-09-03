@@ -428,6 +428,101 @@ None.
 
 ---
 
+# DEC-014
+
+Title:
+
+PIXEL-DEDUP Hash Storage — Record Stays Authoritative, Referenced-Slot Index Rides on the Metadata Block
+
+Status:
+
+Approved (decided and delivered 2026-09-03; surfaced for spot-check per Working Preference 5)
+
+Date:
+
+2026-09-03
+
+Decision:
+
+The dHash written by IMG-DHASH-PHASE1 stays on each image record (`{b64, dhash}`) as the authoritative value. A derived index of `idx -> dhash` for the slots the current `byTest` ranges reference is kept in memory (`_dhashIndex`) and serialised into the existing metadata record at key 0 as `dhashByIdx`. It is written by `loadNwImages` (which already writes that record at the end of every load) and by `_dhashBackfill` (one write per pass, only when it indexed something). Orphaned slots are never indexed. Consumers read through `_dhashIndexGet()` / `findSimilarImages()` and fall back to the record for a slot the index does not cover.
+
+Options considered:
+
+- A — hash-on-record only (as shipped). Every bulk read of hashes is a full read of every image payload. `_dhashBackfill` was already paying this on every launch, including for the ~60k orphaned records on the live profile (MI-003).
+- B — sidecar `dh:` keys in the images store. Rejected in PR #61 and still rejected: non-numeric keys change what `idbGetAllKeys()` returns, break the key-count assertions, and would show up as `nonNumericKeys` in the IMG-STORE-AUDIT report.
+- C — index on the metadata record (chosen). No new keys, no schema bump, bounded by the live image count rather than the store size, and the backfill can skip payload reads for indexed slots.
+- D — a fourth object store keyed by idx (DB version 3→4). Cleanest in schema terms but touches `openIDB`'s upgrade path and every wipe/verify/clear store list — PR #63 found exactly that class of bug (pinned versions and incomplete store lists) and INV-009 was its consequence. Not worth the blast radius for a 16-byte-per-image cache.
+
+Reasoning:
+
+The cost that mattered was per-launch and per-consumer full-payload reads, not the size of a hash. The metadata record is already the single place `initNwImages` reads to know what images exist; carrying the hashes there means one read yields every hash the app can use, and a re-loaded test prunes its stale slots for free because the same write that replaces `byTest` replaces the index. Making the record authoritative and the index a rebuildable cache keeps Phase 1's storage shape and its regression suite intact: the "metadata untouched" guarantee still holds for a store with no `byTest` ranges, and the backfill still hashes every numeric key.
+
+Impact:
+
+- `working.html`: IMG-DHASH-INDEX marker (3 regions) plus one-line annotated insertions in `initNwImages`, `loadNwImages`, `clearNwImageStore`, the ORPHAN-IDB-SWEEP clear path, and `_dhashBackfill`. `_dhashBackfill` gains an `indexed` count.
+- Metadata record grows by roughly 30 bytes per referenced image (~110 KB at 3,670 images).
+- The Dedup Queue, thresholds and any UI are untouched. The consumer half of PIXEL-DEDUP Phase 2 (what a near-duplicate image means for two clashes, and where that is surfaced) needs its own brief before it is built; `findSimilarImages(maxDistance)` is the read API it will call.
+- Regression protection: `tests/img-dhash-index.spec.js`.
+
+Related Investigations:
+
+None. MI-003 (orphaned records) is why orphans are excluded from the index.
+
+Related Issues:
+
+PR #61 — PIXEL-DEDUP Phase 1 (IMG-DHASH-PHASE1), commit `161894f`, "Two decisions worth your attention", item 1.
+
+---
+
+# DEC-015
+
+Title:
+
+Weekly Snapshot Counters Are a Projection at End of Week — FROZEN-WEEK-TERMINAL-REFRESH Retired
+
+Status:
+
+Approved (Shane's ruling, 2026-09-03: KI-008 option 1)
+
+Date:
+
+2026-09-03
+
+Decision:
+
+Every weekly snapshot row in `S.weekly`, frozen or not, counts each clash in its detection-week bucket exactly once, at the status the clash held at the end of that ISO week (`clashStatusAt(c, wk, yr)`; fallback to the first recorded status, then `c.status`, when the history starts after the bucket week). Priority counters and the per-test `tests[]` rows follow the same rule. `FROZEN-WEEK-TERMINAL-REFRESH` is retired. "Frozen" (`capturedAt`) now means the row's archived fields — `capturedAt`, `imports[]`, `label`, `date` and anything else stored on it — are preserved; its status and priority counters are derived from the register on every regeneration.
+
+Options considered (KNOWN_ISSUES.md KI-008):
+
+1. Projection everywhere — chosen.
+2. Keep TERMINAL-REFRESH, recompute the Data Manager rate and the week-over-week tiles from `statusCountsAt()` — rejected: the stored fields stay internally inconsistent.
+3. Accept and document — rejected.
+
+Reasoning:
+
+TERMINAL-REFRESH existed to make approvals of old clashes visible on the trend chart. Since PR-A-ALWAYS-RECONSTRUCT and PR-A3-EXPORT-PLATFORM-WEEKS the charts and the PDF/PPTX tables reconstruct cumulative status per week from `statusHistory` and never read the stored counters, so that symptom cannot recur through them, and today's approval of an old clash already shows on the current week's cumulative point. What remained was a stored row in which one clash sat in two columns, surfacing as an inflated maturity rate in the Data Manager table. A single projection rule removes the inconsistency at the source and makes the stored snapshot agree with everything that displays it.
+
+Consequences accepted:
+
+- A frozen week's counters no longer archive the register as it was at freeze time. A clash later removed from the register (per-week reset, dedup merge) drops out of that week's row, exactly as it already does on the charts.
+- An unfrozen past week whose clash was approved later now shows that clash at its end-of-week status, not its current one.
+- The two `FROZEN-WEEK-TERMINAL-REFRESH` tests were replaced by four `KI-008` tests in `tests/frozen-week-and-chart-year.spec.js` asserting the new contract.
+
+Impact:
+
+- `working.html`: `KI-008-WEEKLY-PROJECTION` (1 region) inside `regenWeeklyFromRegister`, replacing the frozen-week branch and the unfrozen rebuild with one path. Comment header of `WEEKLY-SNAP-PER-CLASH-BUCKET` updated. No other function touched.
+- Full suite green after the change (see CURRENT_STATUS.md test baseline).
+
+Related Investigations:
+
+None.
+
+Related Issues:
+
+KI-008 (Resolved by this decision).
+
+---
+
 # Future Decisions
 
 Record future decisions using the following structure:

@@ -8,16 +8,18 @@
 
 This repository follows a role-based governance framework recorded in `docs/governance/` (decisions `DEC-001`–`DEC-012`, `WORKFLOW_ROUTING.md`, `WORKFLOW_TEMPLATES.md`, `GOVERNANCE_ORCHESTRATOR.md`, `RELEASE_SNAPSHOTS.md`) and `.cline/bootstrap.md` / `.cline/roles/*`. Investigation before implementation, evidence before conclusions, minimal-change principle. When work resembles a defect investigation rather than a direct instruction, follow that workflow instead of editing directly.
 
-**Released:** INV-008 (IndexedDB Reset Reliability) has been implemented, QA-verified, and released — `openIDB()` now de-duplicates concurrent callers via a cached in-flight promise (Option A) and its `onversionchange` handler closes over its own connection rather than the shared `_idb` variable (Option B), per `WORKFLOW_ROUTING.md` Workflow A. QA Retest passed (`selective-reset-idb-reliability.spec.js`, `wipe-verify.spec.js`, and the full suite — see `docs/governance/INVESTIGATION_LOG.md` and `docs/governance/CURRENT_STATUS.md`). Committed and pushed to `main` (commit `6995a0e`). Investigation closed.
+**Released:** INV-008 (IndexedDB Reset Reliability) — `openIDB()` in-flight promise de-dup + self-closing `onversionchange` (commit `6995a0e`). INV-009 (ORPHAN-IDB-SWEEP data-loss race after the register moved to IndexedDB) — remediated by `9a0007e` / `d996b8d`, recovery tool `43705e0`; recorded retrospectively 2026-09-03. See `docs/governance/CURRENT_STATUS.md` for the ranked backlog and `KNOWN_ISSUES.md` for KI-007/KI-008/MI-003.
+
+**Test suite has no known failures.** INV-010 (2026-09-03) root-caused the two `CHART-PERIOD-YEAR-AWARE` failures that every PR since INV-008 had labelled "pre-existing flakiness": the spec left the demo register in memory and `rDash()` regenerated weekly buckets from it. Test-only fix (KI-009). A red test is a regression until proven otherwise; specs that seed `S.weekly` or read the dashboard must also reset `S.clashes`.
 
 ---
 
 ## Project at a glance
 
 - **Owner:** Shane (BIM Space Planning Manager, Exyte Ireland) — ESMC project, Muratec AMHS scope, Dresden.
-- **What it is:** Single-file HTML/CSS/JS app (`working.html`, currently ~12,600 lines) that parses Navisworks Clash Detective XML exports, manages clash review workflow, produces PPTX / PDF / BCF / CSV outputs.
+- **What it is:** Single-file HTML/CSS/JS app (`working.html`, 19,297 lines at `dd87585`, 2026-09-02) that parses Navisworks Clash Detective XML exports, manages clash review workflow, produces PPTX / PDF / BCF / CSV outputs.
 - **Deployment:** Copied to SharePoint, opened locally in Chrome/Edge by users.
-- **Hard constraints:** Single file. Chart.js and JSZip are inlined (lines 13 and 34). PptxGenJS is loaded from CDN with jsdelivr/unpkg fallbacks (line 351). This is a known deviation from the 'no external dependencies' preference — accepted because inlining PptxGenJS would add ~700 KB to a rarely-used export path. If deploying to a site with restricted egress, verify the CDN or fallbacks are reachable before shipping. Inlining PptxGenJS is a separate future task.
+- **Hard constraints:** Single file. Chart.js and JSZip are inlined (lines 13 and 34). PptxGenJS is loaded from CDN with jsdelivr/unpkg fallbacks (line 361). This is a known deviation from the 'no external dependencies' preference — accepted because inlining PptxGenJS would add ~700 KB to a rarely-used export path. If deploying to a site with restricted egress, verify the CDN or fallbacks are reachable before shipping. Inlining PptxGenJS is a separate future task.
 
 ---
 
@@ -60,9 +62,10 @@ All pairs must be 1/1 (or N/N if multi-region). Imbalance = stop and fix before 
 ## Anti-regression invariants
 
 - `DATA_VERSION = 'v4-correct-dates-jan25'` — **never bump.** Bumping triggers auto-reset of user data on next load.
-- **Dual-parser discipline:** XML parser 1 is around line 6571, parser 2 around line 6859. Any parsing change must be evaluated against BOTH. Missing this caused the image-matching regression in chat `acfc68f6`.
+- **Dual-parser discipline:** the clash XML is parsed in more than one place. `DOMParser().parseFromString` call sites at `dd87585`: `batchParse()` ~line 9622 (folder batch import), `bparse()` ~line 9959 (single-file import), `_bfParseXml()` ~line 17161, plus `bcfImportRead()` ~line 6909 (BCF, not clash XML). Any parsing change must be evaluated against every clash-XML site. Missing this caused the image-matching regression in chat `acfc68f6`. Re-grep before trusting these line numbers.
 - **Minified library blobs:** Chart.js on line 13, JSZip on line 34. Exclude from grep with `awk 'NR!=13 && NR!=34'`. Don't run `node --check` against the raw file — extract app scripts first.
-- The app uses `localStorage` (`nw:*` keys) + IndexedDB (`NWClashImages` DB: `images` + `plans` stores). Don't introduce new persistence layers.
+- The app uses `localStorage` (`nw:*` keys) + IndexedDB (`NWClashImages` DB, version 3: `images`, `plans`, `records` stores). Since `ef3d620` (IDB-RECORDS-MIGRATION) `nw:clashes` and `nw:weekly` are routed through `sv()`/`lv()` to the `records` store via an in-memory cache and a debounced flush; `_IDB_ROUTED_KEYS` is the whole routing contract. Any path that writes a routed key then reloads, closes, or compares storage must `await _flushPendingWrites()` first. Don't introduce new persistence layers.
+- **Protected regions:** `REVIEW-QUEUE-DETECT` and `APPROVE-TERMINAL-STATUS-FILTER` must be byte-identical to `origin/main`. Run the gate in `docs/governance/PROTECTED_REGIONS.md` before requesting merge.
 
 ---
 
@@ -99,7 +102,7 @@ If any check fails, **stop and ask** — don't edit a stale or wrong-base file. 
 Listed for context — when working near these areas, read the comment headers before editing:
 
 - `SELECTIVE-RESET`, `SELECTIVE-RESET-BTN`, `SELECTIVE-RESET-HELP` — granular reset feature in Settings
-- `WEEKLY-SNAP-PER-CLASH-BUCKET` — each clash buckets to its own ISO week
+- `WEEKLY-SNAP-PER-CLASH-BUCKET` — each clash buckets to its own ISO week; `KI-008-WEEKLY-PROJECTION` inside it counts each clash at its end-of-week status (DEC-015). `FROZEN-WEEK-TERMINAL-REFRESH` is retired; do not reintroduce it.
 - `MATURITY-BAR-EMPTY-STATE` — layout-identical empty states
 - `CHART-DEFAULT-W14` — chart period floors at W14
 - `FILE-MTIME-AS-DATE`, `FILE-MTIME-AS-DATE-USE` — file mtime overrides XML `<createddate>`
@@ -115,11 +118,15 @@ Listed for context — when working near these areas, read the comment headers b
 
 ## Pending / on the horizon
 
+Ranked order lives in `docs/governance/CURRENT_STATUS.md` → "Current Priority". Summary:
+
+- **MI-003 orphan audit:** ~63,178 image records vs ~3,670 restorable on the live profile. Read-only audit first. Wipe nothing.
+- **PIXEL-DEDUP Phase 2 consumer:** the read side shipped (DEC-014, `IMG-DHASH-INDEX`): hashes indexed per referenced slot on the metadata record, `findSimilarImages(maxDistance)` returns cross-test groups. What a near-duplicate image means for two clashes, the threshold, and where it surfaces need a brief before building. Do not touch the Dedup Queue for this without one.
 - **Phase 2 of PAIR-ID-RESOLVED-COUNT:** auto-flip status to Resolved with confirmation toast + undo. Detection logic is shipped; the status-mutation part is deferred pending Playwright validation against real Muratec XMLs.
 - Building filter additions to Lifecycle and Severity charts
 - Layer A `eA`/`eB` flattening fix (storage flattens parsed nested objects, dropping `baseLevel`/`gridHead`)
 - `clashBuilding()` reverse-lookup refactor
-- CUB→CUP IndexedDB key rewrite (`_migrateCUBtoCUP()` exists but key rewrite is separate)
+- CUB→CUP IndexedDB key rewrite (`_migrateCUBtoCUP()` exists but key rewrite is separate); level-name normalisation (`CUP_L30_NN` → `CUP_L30`) moved to parse time
 - Multi-project / multi-user capability (client interest noted; three paths outlined in chat history)
 
 ---
@@ -138,7 +145,8 @@ Listed for context — when working near these areas, read the comment headers b
   });
   ```
 - Clean state per test: `await page.evaluate(() => { Object.keys(localStorage).filter(k=>k.startsWith('nw:')).forEach(k=>localStorage.removeItem(k)); });`
-- Run with `npx playwright test`. CI optional via GitHub Actions later.
+- Run from `tests/` (`cd tests && npm install && npx playwright test --workers=1`). Running from the repo root loads two `@playwright/test` instances and fails with a `test.describe()` error (INV-008). In the cloud sandbox set `PW_CHROMIUM_PATH=/opt/pw-browsers/chromium`. CI optional via GitHub Actions later.
+- New tests wait for the terminal migration gate before seeding state: `await page.waitForFunction(() => localStorage.getItem('nw:dedupInitialScan') === '1');` (INV-007 / KI-005).
 
 ---
 
