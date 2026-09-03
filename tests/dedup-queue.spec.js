@@ -202,12 +202,11 @@ test.describe('DEDUP-QUEUE', () => {
       // built with a data:image/jpeg;base64,... src.
       await idbPut(1, 'AAAA'); // clashA.jpg blob
       await idbPut(2, 'BBBB'); // clashB.jpg blob
-      _nwImages.set('[H] Dedup Test::clashA.jpg', 1);
-      _nwImages.set('[H] Dedup Test::clashB.jpg', 2);
+      // IMG-WEEK-KEYING: sets are the source of truth; _nwImages / _nwImgByTest are derived.
+      _nwImgSets.set(_iwkKey('[H] Dedup Test', 'untagged'), { testName: '[H] Dedup Test', weekTag: 'untagged', firstIdx: 1, count: 2, filenames: ['clashA.jpg', 'clashB.jpg'] });
       _nwImagesByIndex[1] = 'AAAA';
       _nwImagesByIndex[2] = 'BBBB';
-      _nwImgByTest['[H] Dedup Test'] = { firstIdx: 1, count: 2, filenames: ['clashA.jpg', 'clashB.jpg'] };
-      _nwImgCount = 2;
+      _nwImgCount = _iwkRebuildViews();
     });
     await page.evaluate(() => nav('dedup'));
 
@@ -239,10 +238,10 @@ test.describe('DEDUP-QUEUE', () => {
     await seed(page, pair);
     await page.evaluate(async () => {
       await idbPut(1, 'AAAA');
-      _nwImages.set('[H] Dedup Test::clashA.jpg', 1);
+      // IMG-WEEK-KEYING: seed through the sets.
+      _nwImgSets.set(_iwkKey('[H] Dedup Test', 'untagged'), { testName: '[H] Dedup Test', weekTag: 'untagged', firstIdx: 1, count: 1, filenames: ['clashA.jpg'] });
       _nwImagesByIndex[1] = 'AAAA';
-      _nwImgByTest['[H] Dedup Test'] = { firstIdx: 1, count: 1, filenames: ['clashA.jpg'] };
-      _nwImgCount = 1;
+      _nwImgCount = _iwkRebuildViews();
     });
     await page.evaluate(() => nav('dedup'));
 

@@ -523,6 +523,53 @@ KI-008 (Resolved by this decision).
 
 ---
 
+# DEC-016
+
+Title:
+
+Image Sets Keyed by Test and Week (IMG-WEEK-KEYING, Option A)
+
+Status:
+
+Approved (Shane, 2026-09-03: Option A; Stage 1 evidence report accepted with both surfaced decisions)
+
+Date:
+
+2026-09-03
+
+Decision:
+
+Stored clash images are keyed by `(testName, weekTag)`. Each weekly load of a test is its own slot range (a "set"); a clash resolves its image through the set for its own `weekTag` when one exists — and only that set, so a file missing from the right week renders the placeholder rather than a neighbouring week's viewport — and falls back to the test's latest set only when its week has no set (legacy and untagged clashes). Same-week re-loads supersede that week's set; different weeks accumulate by design.
+
+Sub-decisions:
+
+1. The latest set per test is chosen by week **date** (`_parseWeekDate` order), never by load order; an untagged set is latest only when no tagged set exists. Re-attaching an older week can never make it the fallback.
+2. A load with no valid `week-YYMMDD` tag (the Load NWC Images modal, paste imports) goes into the test's current latest set, so that path keeps replacing "the test's images" exactly as before.
+3. The archive re-attach tool derives the week from the picked folder with the same helper the importer and both parsers use, and refuses a pick whose top folder is not a `week-YYMMDD` wrapper rather than guessing. Same parent-folder convention as the weekly import.
+4. Metadata stays `shape:'imgfix-v1'` with `sets` and `latest` added. `byTest` is kept as the derived latest-per-test view, so an older build reading the store behaves as it always did and the twelve existing readers of `_nwImgByTest` are untouched.
+5. "Referenced" — for the audit, the orphan cleanup, the dHash index and the INV-011 superseded-slot deletion — means the union of every set's range. Older weeks are never orphans.
+6. Migration of a pre-change store is additive and manual from the console (`_imgWeekKeyingMigrate()`, dry run by default): each set synthesised from `byTest` is retagged to the latest `weekTag` among register clashes with that raw test name, written, read back and byte-compared, then gated by `nw:imgWeekKeyingMigrated`. No slot moves and nothing is deleted.
+
+Reasoning:
+
+INV-011 ruling 3: `byTest` held one range per report name, so a clash last observed in W33 resolved its renumbered filename against the W36 set. Keying by week is the only shape that makes that lookup correct without re-importing history. Keeping `byTest` as a derived view and adding fields rather than bumping the shape confines the change to the image layer and preserves downgrade safety. Storage grows by one weekly set per import (about 4,768 records, 171 MB on the live profile); a "prune weeks older than N" tool is a separate future item now that the orphan cleanup respects every week.
+
+Impact:
+
+- `working.html`: marker `IMG-WEEK-KEYING` (3 regions: helpers and in-memory model; `loadNwImages`; migration), `IMG-REATTACH-ARCHIVE` second region (week derivation and refusal), plus single-line annotated insertions in `initNwImages`, the three lookup functions, the clash-detail label, `clearNwImageStore`, the ORPHAN-IDB-SWEEP clear path, the classifier, `_dhashIndexReferencedSlots`, `findSimilarImages` and both `importFolderPick` call sites. `loadNwImages(files, testName, weekTag)` gains an optional third argument; result gains `weekTag`.
+- Tests: `tests/img-week-keying.spec.js` (11); `tests/img-reattach-archive.spec.js` +3; three specs that seeded the derived view directly now seed sets.
+- Live profile: run `await _imgWeekKeyingMigrate()` then `{dryRun:false}` once after deploy; record the output in INVESTIGATION_LOG.md INV-011 follow-up.
+
+Related Investigations:
+
+INV-011 (ruling 3).
+
+Related Issues:
+
+None.
+
+---
+
 # Future Decisions
 
 Record future decisions using the following structure:

@@ -83,6 +83,9 @@ async function runReattach(page, opts) {
       byTest: Object.fromEntries(Object.entries(_nwImgByTest).map(([k, v]) => [k, v.count])),
       mapSize: _nwImages.size,
       nwImgCount: _nwImgCount,
+      // IMG-WEEK-KEYING
+      sets: [..._nwImgSets.keys()].sort(),
+      latest: Object.assign({}, _nwImgLatest),
     };
   }, { BUILD, opts });
 }
@@ -172,9 +175,9 @@ test.describe('IMG-REATTACH-ARCHIVE', () => {
     page.on('console', m => { if (m.text().includes('IMG-REATTACH-ARCHIVE')) logs.push(m.text()); });
     await bootstrap(page);
     await runReattach(page, { week: 'week-260622', tests: ['T1', 'T2'], imgs: 2 });
-    expect(logs.some(l => /"T1" → 2 of 2 image\(s\) attached/.test(l))).toBe(true);
-    expect(logs.some(l => /"T2" → 2 of 2 image\(s\) attached/.test(l))).toBe(true);
-    expect(logs.some(l => /Re-attached 4 of 4 images across 2 of 2 tests/.test(l))).toBe(true);
+    expect(logs.some(l => /"T1" \(week-260622\) → 2 of 2 image\(s\) attached/.test(l))).toBe(true);
+    expect(logs.some(l => /"T2" \(week-260622\) → 2 of 2 image\(s\) attached/.test(l))).toBe(true);
+    expect(logs.some(l => /Re-attached 4 of 4 images across 2 of 2 tests into week-260622/.test(l))).toBe(true);
   });
 
   test('a folder with no Navisworks report is refused without touching anything', async ({ page }) => {
@@ -222,5 +225,42 @@ test.describe('IMG-REATTACH-ARCHIVE', () => {
     expect(html).toContain('Re-attach images from archive folder');
     expect(html).toContain('reattach-folder');
     expect(html).toContain('Images only');
+  });
+
+  /* IMG-WEEK-KEYING: the tool loads into (test, week) sets. */
+  test('IMG-WEEK-KEYING — images land in the (test, week) set derived from the picked folder', async ({ page }) => {
+    test.setTimeout(90000);
+    await bootstrap(page);
+    const r = await runReattach(page, { week: 'week-260622', tests: ['T1', 'T2'], imgs: 2 });
+    expect(r.sets).toEqual(['T1\u241Fweek-260622', 'T2\u241Fweek-260622']);
+    expect(r.latest).toEqual({ T1: 'week-260622', T2: 'week-260622' });
+    expect(r.byTest).toEqual({ T1: 2, T2: 2 });
+  });
+
+  test('IMG-WEEK-KEYING — a second week accumulates alongside the first; the latest pointer follows the week date', async ({ page }) => {
+    test.setTimeout(150000);
+    await bootstrap(page);
+    const later = await runReattach(page, { week: 'week-260629', tests: ['T1', 'T2'], imgs: 3 });
+    const earlier = await runReattach(page, { week: 'week-260622', tests: ['T1', 'T2'], imgs: 2 });
+    expect(later.imageRecords).toBe(6);
+    expect(earlier.imageRecords).toBe(10);                      // 6 + 4, nothing superseded across weeks
+    expect(earlier.sets).toEqual(['T1\u241Fweek-260622', 'T1\u241Fweek-260629', 'T2\u241Fweek-260622', 'T2\u241Fweek-260629']);
+    expect(earlier.latest).toEqual({ T1: 'week-260629', T2: 'week-260629' });   // by date, though loaded first
+    expect(earlier.byTest).toEqual({ T1: 3, T2: 3 });                            // derived view mirrors the latest week
+    expect(earlier.nwImgCount).toBe(10);
+    // Re-running the earlier week supersedes only that week.
+    const again = await runReattach(page, { week: 'week-260622', tests: ['T1', 'T2'], imgs: 2 });
+    expect(again.imageRecords).toBe(10);
+    expect(again.sets.length).toBe(4);
+    expect(again.toasts[again.toasts.length - 1]).toContain('into week-260622');
+  });
+
+  test('IMG-WEEK-KEYING — a pick whose top folder is not a week-YYMMDD wrapper is refused and changes nothing', async ({ page }) => {
+    test.setTimeout(90000);
+    await bootstrap(page);
+    const r = await runReattach(page, { week: 'CUP arch', tests: ['T1'], imgs: 2 });
+    expect(r.imageRecords).toBe(0);
+    expect(r.sets).toEqual([]);
+    expect(r.toasts.some(t => /week-YYMMDD/.test(t) && /nothing was changed/.test(t))).toBe(true);
   });
 });

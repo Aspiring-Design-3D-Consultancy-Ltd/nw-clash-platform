@@ -515,6 +515,12 @@ RS-002
 
 ---
 
+### IMG-WEEK-KEYING (DEC-016, enhancement — released on merge)
+
+Image sets keyed by (test, week) so a clash last observed in an earlier week resolves that week's image (INV-011 ruling 3, Option A). Week-scoped lookups with latest-set fallback for legacy/untagged clashes; same-week supersede, cross-week accumulate; archive re-attach loads into the picked week and refuses non-week picks; additive metadata (`sets`, `latest`), `byTest` kept as the derived view. Migration is manual from the console with verify-then-gate. Tests: `img-week-keying.spec.js` (11), `img-reattach-archive.spec.js` (+3).
+
+---
+
 ### INV-011 (Closed - Released on merge)
 
 Title:
@@ -661,11 +667,13 @@ Post-KI-008 (`7f7c9c8`): 358 total (the two retired `FROZEN-WEEK-TERMINAL-REFRES
 
 Post-INV-011 (branch, on top of `main` `33e6f20`): 367 total (+9 `img-orphan-cleanup`), 367 passed, 0 failed.
 
+Post-IMG-WEEK-KEYING (branch, on top of `main` `0089c71`): 381 total (+11 `img-week-keying`, +3 `img-reattach-archive`). Full run 379 passed, 2 failed — both in `dedup-queue.spec.js`, which seeded the derived `_nwImgByTest` view directly; seeding moved to `_nwImgSets`, spec re-run 13/13. Effective 381 / 381. No `working.html` change between the two runs.
+
 ---
 
 ## Next Planned Activity
 
-Work the ranked backlog under "Current Priority" in order. No investigation is open and no monitoring item has a pending action. Next design brief needed: image sets keyed by test **and** week (INV-011, ruling 3), so clashes last observed in an earlier week resolve to that week's images.
+Work the ranked backlog under "Current Priority" in order. No investigation is open and no monitoring item has a pending action. IMG-WEEK-KEYING (DEC-016) shipped 2026-09-03; the live-profile step is the one-shot migration from the console (`await _imgWeekKeyingMigrate()` dry run, then `{dryRun:false}`), recorded in INV-011 when run. Next design item: a "prune image weeks older than N" tool, now that weeks accumulate by design.
 
 Future investigations should originate from:
 

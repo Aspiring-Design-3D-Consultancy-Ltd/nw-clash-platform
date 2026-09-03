@@ -40,20 +40,16 @@ function seedImages(page, entries) {
   return page.evaluate((entries) => {
     _nwImages.clear();
     Object.keys(_nwImgByTest).forEach(k => delete _nwImgByTest[k]);
+    _nwImgSets.clear(); // IMG-WEEK-KEYING: sets are the source of truth; _nwImgByTest and _nwImages are derived
     _nwImagesByIndex.length = 0;
     _nwImagesByIndex.push(null);
     // 1x1 JPEG so the image resolver returns a truthy b64.
     const B64 = '/9j/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD3+iiigD//2Q==';
     entries.forEach(({rawTn, filenames, firstIdx}) => {
-      _nwImgByTest[rawTn] = { firstIdx, count: filenames.length, filenames };
-      filenames.forEach((fn, j) => {
-        _nwImages.set(rawTn + '::' + fn, firstIdx + j);
-        _nwImagesByIndex[firstIdx + j] = B64;
-      });
+      _nwImgSets.set(_iwkKey(rawTn, 'untagged'), { testName: rawTn, weekTag: 'untagged', firstIdx, count: filenames.length, filenames });
+      filenames.forEach((fn, j) => { _nwImagesByIndex[firstIdx + j] = B64; });
     });
-    let grand = 0;
-    Object.values(_nwImgByTest).forEach(t => { grand += t.count || 0; });
-    _nwImgCount = grand;
+    _nwImgCount = _iwkRebuildViews();
   }, entries);
 }
 

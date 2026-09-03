@@ -260,3 +260,21 @@ Notes:
 
 Documentation only.
 
+---
+
+### 2026-09-03 (code, IMG-WEEK-KEYING / DEC-016)
+
+Summary:
+
+Image sets keyed by test **and** week; archive re-attach loads into the picked week; manual additive migration for the existing store.
+
+Changes:
+
+- `working.html` — `IMG-WEEK-KEYING` (3 regions): `_nwImgSets` / `_nwImgLatest` model with `_nwImgByTest` as the derived latest view; week-scoped lookups in `getNwImageB64`, `getNwImageB64Sync`, `hasNwImage` and the clash-detail label; `loadNwImages(files, testName, weekTag)` supersedes only the same (test, week) set and allocates after every set; metadata gains `sets` + `latest` (shape unchanged); classifier, dHash index and superseded-slot deletion treat every set as referenced; `_imgWeekKeyingMigrate()` (dry run default, verify-then-gate). `IMG-REATTACH-ARCHIVE` region 2: week derived from the pick, non-week picks refused. Both `importFolderPick` call sites pass the week.
+- `tests/img-week-keying.spec.js` (11 new); `tests/img-reattach-archive.spec.js` (+3, console line now carries the week); `img-dhash-index`, `pr-a11`, `pr-a12` specs seed sets instead of the derived view.
+- DECISION_LOG.md DEC-016; CURRENT_STATUS.md; CLAUDE.md.
+
+Notes:
+
+`DATA_VERSION` untouched. Protected blocks `UNCHANGED`. Zero XML-parser lines. No DB version bump, no new keys. Live-profile migration pending (console, dry run first).
+

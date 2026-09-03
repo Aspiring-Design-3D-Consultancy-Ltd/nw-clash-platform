@@ -98,7 +98,7 @@ test.describe('IMG-DHASH-INDEX — referenced-slot hash index', () => {
       // Store as an earlier build left it: bare-string records, no index. Slots
       // 1..3 are referenced by T1; 4 and 5 are orphans.
       await idbPut(0, { shape: 'imgfix-v1', count: 3, byTest: { T1: { firstIdx: 1, count: 3, filenames: ['a.png', 'b.png', 'c.png'] } } });
-      _nwImgByTest.T1 = { firstIdx: 1, count: 3, filenames: ['a.png', 'b.png', 'c.png'] };
+      _iwkRestore(await idbGet(0)); // IMG-WEEK-KEYING: referenced slots come from the sets, derived from metadata
       const g = b64Of(gradient), s = b64Of(stripes);
       await idbPut(1, g); await idbPut(2, s); await idbPut(3, g); await idbPut(4, s); await idbPut(5, g);
 
@@ -212,7 +212,7 @@ test.describe('IMG-DHASH-INDEX — referenced-slot hash index', () => {
     await bootstrap(page);
     const r = await page.evaluate(`(async () => {
       await idbPut(0, { shape: 'imgfix-v1', count: 2, byTest: { T1: { firstIdx: 1, count: 1, filenames: ['a.png'] } } });
-      _nwImgByTest.T1 = { firstIdx: 1, count: 1, filenames: ['a.png'] };
+      _iwkRestore(await idbGet(0)); // IMG-WEEK-KEYING
       await idbPut(1, { b64: 'AA==', dhash: '0123456789abcdef' });
       await idbPut(2, { b64: 'AA==', dhash: 'fedcba9876543210' });   // orphan
       await idbPut(3, 'AA==');                                         // never hashed

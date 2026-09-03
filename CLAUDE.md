@@ -64,7 +64,7 @@ All pairs must be 1/1 (or N/N if multi-region). Imbalance = stop and fix before 
 - `DATA_VERSION = 'v4-correct-dates-jan25'` — **never bump.** Bumping triggers auto-reset of user data on next load.
 - **Dual-parser discipline:** the clash XML is parsed in more than one place. `DOMParser().parseFromString` call sites at `dd87585`: `batchParse()` ~line 9622 (folder batch import), `bparse()` ~line 9959 (single-file import), `_bfParseXml()` ~line 17161, plus `bcfImportRead()` ~line 6909 (BCF, not clash XML). Any parsing change must be evaluated against every clash-XML site. Missing this caused the image-matching regression in chat `acfc68f6`. Re-grep before trusting these line numbers.
 - **Minified library blobs:** Chart.js on line 13, JSZip on line 34. Exclude from grep with `awk 'NR!=13 && NR!=34'`. Don't run `node --check` against the raw file — extract app scripts first.
-- The app uses `localStorage` (`nw:*` keys) + IndexedDB (`NWClashImages` DB, version 3: `images`, `plans`, `records` stores). Since `ef3d620` (IDB-RECORDS-MIGRATION) `nw:clashes` and `nw:weekly` are routed through `sv()`/`lv()` to the `records` store via an in-memory cache and a debounced flush; `_IDB_ROUTED_KEYS` is the whole routing contract. Any path that writes a routed key then reloads, closes, or compares storage must `await _flushPendingWrites()` first. Don't introduce new persistence layers.
+- The app uses `localStorage` (`nw:*` keys) + IndexedDB (`NWClashImages` DB, version 3: `images`, `plans`, `records` stores). Image metadata is key 0 of `images`, shape `imgfix-v1` with `byTest` (derived), `sets`, `latest`, `dhashByIdx`. Since `ef3d620` (IDB-RECORDS-MIGRATION) `nw:clashes` and `nw:weekly` are routed through `sv()`/`lv()` to the `records` store via an in-memory cache and a debounced flush; `_IDB_ROUTED_KEYS` is the whole routing contract. Any path that writes a routed key then reloads, closes, or compares storage must `await _flushPendingWrites()` first. Don't introduce new persistence layers.
 - **Protected regions:** `REVIEW-QUEUE-DETECT` and `APPROVE-TERMINAL-STATUS-FILTER` must be byte-identical to `origin/main`. Run the gate in `docs/governance/PROTECTED_REGIONS.md` before requesting merge.
 
 ---
@@ -111,6 +111,7 @@ Listed for context — when working near these areas, read the comment headers b
 - `DUP-FILES-FIX` — per-file import event logging
 - `STATUS-HIST` — statusHistory append on status change
 - `IMG-REF-REFRESH`, `IMG-POS` — image reference refresh + positional fallback
+- `IMG-WEEK-KEYING` — image sets keyed by (test, week); `_nwImgSets` is the source of truth and `_nwImgByTest` is a derived latest-per-test view — never write `_nwImgByTest` directly (DEC-016). `IMG-STORE-AUDIT`, `IMG-ORPHAN-CLEANUP`, `IMG-DHASH-INDEX` all define "referenced" as the union of every set.
 - `OWNER-MAP-FIX` — sourceA/sourceB persistence
 - `XTEST-DUP-IMPORT`, `WEEKLY-SNAP-CONDITIONAL-*` — cross-test dedup + historical-anchor snapshots
 
@@ -120,7 +121,7 @@ Listed for context — when working near these areas, read the comment headers b
 
 Ranked order lives in `docs/governance/CURRENT_STATUS.md` → "Current Priority". Summary:
 
-- **Image sets keyed by test and week (design brief needed):** INV-011 ruling 3. `byTest` holds one range per report name (the latest week), so a clash last observed in an earlier week resolves against the newest week's renumbered files — wrong or missing image. Orphans themselves are closed (INV-011, live cleanup verified 2026-09-03; `_cleanupNwImageOrphans()` remains available, dry run by default).
+- **IMG-WEEK-KEYING live migration (one-shot, console):** `await _imgWeekKeyingMigrate()` (dry run) then `{dryRun:false}`; record the output in INV-011. Until it runs, pre-change sets are synthesised as untagged and lookups behave exactly as before. Image sets now accumulate per week by design (DEC-016); a "prune weeks older than N" tool is the next design item. `_cleanupNwImageOrphans()` stays available and treats every week as referenced.
 - **PIXEL-DEDUP Phase 2 consumer:** the read side shipped (DEC-014, `IMG-DHASH-INDEX`): hashes indexed per referenced slot on the metadata record, `findSimilarImages(maxDistance)` returns cross-test groups. What a near-duplicate image means for two clashes, the threshold, and where it surfaces need a brief before building. Do not touch the Dedup Queue for this without one.
 - **Phase 2 of PAIR-ID-RESOLVED-COUNT:** auto-flip status to Resolved with confirmation toast + undo. Detection logic is shipped; the status-mutation part is deferred pending Playwright validation against real Muratec XMLs.
 - Building filter additions to Lifecycle and Severity charts
