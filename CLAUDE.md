@@ -102,7 +102,7 @@ If any check fails, **stop and ask** — don't edit a stale or wrong-base file. 
 Listed for context — when working near these areas, read the comment headers before editing:
 
 - `SELECTIVE-RESET`, `SELECTIVE-RESET-BTN`, `SELECTIVE-RESET-HELP` — granular reset feature in Settings
-- `WEEKLY-SNAP-PER-CLASH-BUCKET` — each clash buckets to its own ISO week
+- `WEEKLY-SNAP-PER-CLASH-BUCKET` — each clash buckets to its own ISO week; `KI-008-WEEKLY-PROJECTION` inside it counts each clash at its end-of-week status (DEC-015). `FROZEN-WEEK-TERMINAL-REFRESH` is retired; do not reintroduce it.
 - `MATURITY-BAR-EMPTY-STATE` — layout-identical empty states
 - `CHART-DEFAULT-W14` — chart period floors at W14
 - `FILE-MTIME-AS-DATE`, `FILE-MTIME-AS-DATE-USE` — file mtime overrides XML `<createddate>`
@@ -122,7 +122,6 @@ Ranked order lives in `docs/governance/CURRENT_STATUS.md` → "Current Priority"
 
 - **MI-003 orphan audit:** ~63,178 image records vs ~3,670 restorable on the live profile. Read-only audit first. Wipe nothing.
 - **PIXEL-DEDUP Phase 2 consumer:** the read side shipped (DEC-014, `IMG-DHASH-INDEX`): hashes indexed per referenced slot on the metadata record, `findSimilarImages(maxDistance)` returns cross-test groups. What a near-duplicate image means for two clashes, the threshold, and where it surfaces need a brief before building. Do not touch the Dedup Queue for this without one.
-- **KI-008:** frozen-week double-count. Blocked on a decision: the projection fix contradicts the tested `FROZEN-WEEK-TERMINAL-REFRESH` contract. Options and recommendation in `KNOWN_ISSUES.md` KI-008. Do not change either without Shane's ruling.
 - **Phase 2 of PAIR-ID-RESOLVED-COUNT:** auto-flip status to Resolved with confirmation toast + undo. Detection logic is shipped; the status-mutation part is deferred pending Playwright validation against real Muratec XMLs.
 - Building filter additions to Lifecycle and Severity charts
 - Layer A `eA`/`eB` flattening fix (storage flattens parsed nested objects, dropping `baseLevel`/`gridHead`)

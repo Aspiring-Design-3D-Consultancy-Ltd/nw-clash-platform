@@ -5,7 +5,7 @@ import url from 'node:url';
 const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
 const HTML = 'file://' + path.resolve(__dirname, '..', 'working.html');
 
-test.describe('FROZEN-WEEK-TERMINAL-REFRESH + CHART year-aware fixes', () => {
+test.describe('KI-008 weekly projection + CHART year-aware fixes', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto(HTML, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => typeof S !== 'undefined' && Array.isArray(S.clashes) && S.projName);
@@ -31,107 +31,126 @@ test.describe('FROZEN-WEEK-TERMINAL-REFRESH + CHART year-aware fixes', () => {
     });
   });
 
-  test('FROZEN-WEEK-TERMINAL-REFRESH — approving a clash whose c.date is in a frozen week updates snap.approved', async ({ page }) => {
-    // Seed: one clash in Wk 25 2026, one Active. Manually build a frozen
-    // weekly snap for that week with capturedAt set so regen treats it
-    // as historical.
-    await page.evaluate(() => {
-      S.clashes = [{
-        uid: 'CLX-401',
-        name: 'CLX-401 — Frozen bucket approve',
-        testName: 'FrozenTest',
-        disciplineA: 'S', disciplineB: 'M',
-        elementA: 'a', elementB: 'b',
-        penetration: '10mm', priority: 'High',
-        status: 'Active',
-        // 15/06/26 is inside ISO Wk 25 2026.
-        date: '15/06/26',
-        x: 1, y: 2, z: 3,
-        statusHistory: [{ week: 25, year: 2026, status: 'Active' }],
-      }];
-      S.weekly = [{
-        week: 25, year: 2026, label: 'Wk 25 — 15 Jun 2026', date: '15 Jun 2026',
-        new: 0, active: 1, reviewed: 0, approved: 0, resolved: 0,
-        critical: 0, high: 1, medium: 0, low: 0,
-        tests: [{ name: 'FrozenTest', new: 0, active: 1, reviewed: 0, approved: 0, resolved: 0, critical: 0, high: 1, medium: 0, low: 0, rate: 0 }],
-        capturedAt: '2026-06-22T00:00:00.000Z',
-      }];
+  // KI-008 / DEC-015 (2026-09-03): every week's snapshot counts each clash once,
+  // at the status it held at the END of that ISO week. This replaced
+  // FROZEN-WEEK-TERMINAL-REFRESH, which kept a frozen week's historical
+  // new/active counts but refreshed approved/reviewed/resolved from today's
+  // status — so one clash could sit in two columns of the same row.
+  const FROZEN_CLASH = (over) => Object.assign({
+    uid: 'CLX-401',
+    name: 'CLX-401 — Frozen bucket',
+    testName: 'FrozenTest',
+    disciplineA: 'S', disciplineB: 'M',
+    elementA: 'a', elementB: 'b',
+    penetration: '10mm', priority: 'High',
+    status: 'Active',
+    // 15/06/26 is inside ISO Wk 25 2026.
+    date: '15/06/26',
+    x: 1, y: 2, z: 3,
+    statusHistory: [{ week: 25, year: 2026, status: 'Active' }],
+  }, over || {});
+  const FROZEN_SNAP = (over) => Object.assign({
+    week: 25, year: 2026, label: 'Wk 25 — 15 Jun 2026', date: '15 Jun 2026',
+    new: 0, active: 1, reviewed: 0, approved: 0, resolved: 0,
+    critical: 0, high: 1, medium: 0, low: 0,
+    tests: [{ name: 'FrozenTest', new: 0, active: 1, reviewed: 0, approved: 0, resolved: 0, critical: 0, high: 1, medium: 0, low: 0, rate: 0 }],
+    capturedAt: '2026-06-22T00:00:00.000Z',
+  }, over || {});
+
+  test('KI-008 — a clash Active in a frozen week and Approved today is counted once, at its end-of-week status', async ({ page }) => {
+    await page.evaluate(([clash, snap]) => {
+      S.clashes = [clash];
+      S.weekly = [snap];
       sv('clashes', S.clashes);
       sv('weekly', S.weekly);
-    });
+    }, [FROZEN_CLASH(), FROZEN_SNAP()]);
 
-    // Approve the clash today. Handler triggers regenWeeklyFromRegister
-    // internally on status change.
-    await page.evaluate(() => {
-      _markClashesAsApproved(['CLX-401'], 'ClashRegister');
-    });
+    // Approve today. The handler calls regenWeeklyFromRegister on status change.
+    await page.evaluate(() => { _markClashesAsApproved(['CLX-401'], 'ClashRegister'); });
 
-    const snap = await page.evaluate(() => {
+    const r = await page.evaluate(() => {
       const w = (S.weekly || []).find(x => x.week === 25 && x.year === 2026);
+      const now = _weekYearNow();
+      const t = w.tests && w.tests[0];
       return {
-        capturedAt: w && w.capturedAt,      // must remain (frozen preserved)
-        active: w && w.active,               // historical, unchanged
-        approved: w && w.approved,           // terminal, refreshed
-        testApproved: w && w.tests && w.tests[0] && w.tests[0].approved,
-        testActive: w && w.tests && w.tests[0] && w.tests[0].active,
-        testRate: w && w.tests && w.tests[0] && w.tests[0].rate,
+        capturedAt: w.capturedAt,
+        counters: { new: w.new, active: w.active, reviewed: w.reviewed, approved: w.approved, resolved: w.resolved },
+        sum: w.new + w.active + w.reviewed + w.approved + w.resolved,
+        test: t && { active: t.active, approved: t.approved, rate: t.rate },
+        // The cumulative projection the charts and exports use: approved shows in the current week.
+        nowApproved: statusCountsAt(now.week, now.year, 'all', 'all').approved,
+        clashStatus: S.clashes[0].status,
       };
     });
-    // Frozen flag preserved.
-    expect(snap.capturedAt).toBe('2026-06-22T00:00:00.000Z');
-    // Historical open-lifecycle fields unchanged.
-    expect(snap.active).toBe(1);
-    // Terminal field refreshed to reflect the approve.
-    expect(snap.approved).toBe(1);
-    // Per-test terminal + rate refreshed; historical .active kept.
-    expect(snap.testApproved).toBe(1);
-    expect(snap.testActive).toBe(1);
-    // Maturity rate = (approved+resolved)/(new+active+reviewed+approved+resolved) = 1/2 = 50%.
-    expect(snap.testRate).toBe(50);
+    expect(r.clashStatus).toBe('Approved');
+    expect(r.capturedAt).toBe('2026-06-22T00:00:00.000Z');
+    // Once, as Active — the status it held at the end of week 25.
+    expect(r.counters).toEqual({ new: 0, active: 1, reviewed: 0, approved: 0, resolved: 0 });
+    expect(r.sum).toBe(1);
+    expect(r.test).toEqual({ active: 1, approved: 0, rate: 0 });
+    // The approval is visible where it belongs: the current week's cumulative point.
+    expect(r.nowApproved).toBe(1);
   });
 
-  test('FROZEN-WEEK-TERMINAL-REFRESH — historical new/active/priorities on frozen snap NOT mutated', async ({ page }) => {
-    // Seed a frozen week with distinctive historical values that MUST stay
-    // frozen. Add a clash to that week and change its status — historical
-    // counts must not shift.
-    await page.evaluate(() => {
-      S.clashes = [{
-        uid: 'CLX-402',
-        name: 'CLX-402',
-        testName: 'FrozenTest',
-        disciplineA: 'S', disciplineB: 'M',
-        elementA: 'a', elementB: 'b',
-        penetration: '10mm', priority: 'Critical',
-        status: 'Reviewed',
-        date: '15/06/26',
-        x: 1, y: 2, z: 3,
-        statusHistory: [{ week: 25, year: 2026, status: 'Reviewed' }],
-      }];
-      S.weekly = [{
-        week: 25, year: 2026, label: 'Wk 25', date: '15 Jun 2026',
-        new: 3, active: 5, reviewed: 2, approved: 0, resolved: 0,
-        critical: 4, high: 2, medium: 1, low: 3,
-        tests: [{ name: 'FrozenTest', new: 3, active: 5, reviewed: 2, approved: 0, resolved: 0, critical: 4, high: 2, medium: 1, low: 3, rate: 0 }],
-        capturedAt: '2026-06-22T00:00:00.000Z',
-      }];
+  test('KI-008 — frozen snapshot counters are rebuilt from the register; capturedAt, imports, label and date survive', async ({ page }) => {
+    const r = await page.evaluate(([clash, snap]) => {
+      S.clashes = [clash];
+      S.weekly = [snap];
       sv('clashes', S.clashes);
       sv('weekly', S.weekly);
       regenWeeklyFromRegister();
-    });
-    const snap = await page.evaluate(() => (S.weekly || []).find(x => x.week === 25 && x.year === 2026));
-    // Historical fields — must equal seed.
-    expect(snap.new).toBe(3);
-    expect(snap.active).toBe(5);
-    expect(snap.critical).toBe(4);
-    expect(snap.high).toBe(2);
-    expect(snap.medium).toBe(1);
-    expect(snap.low).toBe(3);
-    // Terminal-refresh fields — reflect the single Reviewed clash in the register.
-    expect(snap.reviewed).toBe(1);
-    expect(snap.approved).toBe(0);
-    expect(snap.resolved).toBe(0);
-    // capturedAt preserved.
-    expect(snap.capturedAt).toBe('2026-06-22T00:00:00.000Z');
+      const w = (S.weekly || []).find(x => x.week === 25 && x.year === 2026);
+      return w;
+    }, [
+      FROZEN_CLASH({ uid: 'CLX-402', status: 'Reviewed', priority: 'Critical', statusHistory: [{ week: 25, year: 2026, status: 'Reviewed' }] }),
+      FROZEN_SNAP({
+        // Stale archived numbers that no longer match the register.
+        new: 3, active: 5, reviewed: 2, approved: 0, resolved: 0, critical: 4, high: 2, medium: 1, low: 3,
+        tests: [{ name: 'FrozenTest', new: 3, active: 5, reviewed: 2, approved: 0, resolved: 0, critical: 4, high: 2, medium: 1, low: 3, rate: 0 }],
+        imports: [{ date: '15/06/26', count: 1, added: 1, updated: 0 }],
+      }),
+    ]);
+    // Derived from the one clash in the bucket, at its end-of-week status.
+    expect([r.new, r.active, r.reviewed, r.approved, r.resolved]).toEqual([0, 0, 1, 0, 0]);
+    expect([r.critical, r.high, r.medium, r.low]).toEqual([1, 0, 0, 0]);
+    expect(r.tests).toEqual([{ name: 'FrozenTest', new: 0, active: 0, reviewed: 1, resolved: 0, approved: 0, critical: 1, high: 0, medium: 0, low: 0, rate: 0 }]);
+    // What "frozen" still preserves.
+    expect(r.capturedAt).toBe('2026-06-22T00:00:00.000Z');
+    expect(r.imports).toEqual([{ date: '15/06/26', count: 1, added: 1, updated: 0 }]);
+    expect(r.label).toBe('Wk 25 — 15 Jun 2026');
+    expect(r.date).toBe('15 Jun 2026');
+  });
+
+  test('KI-008 — an unfrozen past week projects too: approved later, still Active in its own week', async ({ page }) => {
+    const r = await page.evaluate((clash) => {
+      S.clashes = [clash];
+      S.weekly = [];
+      sv('clashes', S.clashes);
+      sv('weekly', S.weekly);
+      regenWeeklyFromRegister();
+      return (S.weekly || []).find(x => x.week === 25 && x.year === 2026);
+    }, FROZEN_CLASH({ status: 'Approved', statusHistory: [{ week: 25, year: 2026, status: 'Active' }, { week: 30, year: 2026, status: 'Approved' }] }));
+    expect(r.capturedAt).toBeUndefined();
+    expect([r.new, r.active, r.reviewed, r.approved, r.resolved]).toEqual([0, 1, 0, 0, 0]);
+    expect(r.tests[0].approved).toBe(0);
+    expect(r.tests[0].active).toBe(1);
+  });
+
+  test('KI-008 — history that starts after the detection week falls back to the first recorded status, then c.status', async ({ page }) => {
+    const r = await page.evaluate((clashes) => {
+      S.clashes = clashes;
+      S.weekly = [];
+      sv('clashes', S.clashes);
+      sv('weekly', S.weekly);
+      regenWeeklyFromRegister();
+      return (S.weekly || []).find(x => x.week === 25 && x.year === 2026);
+    }, [
+      // Imported in week 30 (history starts there), detected in week 25, approved in week 36.
+      FROZEN_CLASH({ uid: 'CLX-403', status: 'Approved', statusHistory: [{ week: 30, year: 2026, status: 'Active' }, { week: 36, year: 2026, status: 'Approved' }] }),
+      // Legacy clash with no history at all: counts at its current status.
+      FROZEN_CLASH({ uid: 'CLX-404', status: 'Reviewed', statusHistory: [] }),
+    ]);
+    expect([r.new, r.active, r.reviewed, r.approved, r.resolved]).toEqual([0, 1, 1, 0, 0]);
   });
 
   test('CHART-PERIOD-YEAR-AWARE — default range spans a year boundary correctly', async ({ page }) => {

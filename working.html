@@ -2726,9 +2726,10 @@ function regenWeeklyFromRegister(anchorDate){
      row instead of five distinct weekly rows — the bug Shane saw on
      30 Jun where every import collapsed into Wk 27.
      RESTORED BEHAVIOUR: each clash buckets by ITS OWN c.date's ISO week.
-     One snapshot per ISO week that has ≥1 clash. Snapshot counts reflect
-     CURRENT status of clashes whose c.date falls in that week
-     (non-cumulative). Frozen snapshots (capturedAt set) are NEVER touched.
+     One snapshot per ISO week that has ≥1 clash. Snapshot counts reflect the
+     status each clash held at the END of that week (KI-008-WEEKLY-PROJECTION,
+     2026-09-03; previously current status). Non-cumulative. Frozen snapshots
+     (capturedAt set) keep their archived fields; their counters are derived.
      The anchorDate parameter is retained for signature compatibility with
      existing call sites but is no longer used for bucket selection — the
      bucket key for each snapshot is derived per-clash.
@@ -2758,69 +2759,46 @@ function regenWeeklyFromRegister(anchorDate){
     touched.add(yr+'-'+wk);
     const idx=existing.findIndex(w=>w.week===wk&&(w.year||0)===yr);
 
-    /* FROZEN-WEEK-TERMINAL-REFRESH start: frozen weeks preserve their HISTORICAL
-       counts (new, active, critical, high, medium, low) at the moment the freeze
-       ran — that's the design intent (auto-freeze on import via
-       WEEKLY-CAPTURE-AUTOFREEZE). But TERMINAL statuses (approved, reviewed,
-       resolved) are ongoing coordination decisions made against clashes with
-       historical c.date values; they must always reflect the live register.
-       PREVIOUSLY: `if(idx>=0&&existing[idx].capturedAt)return;` — this skipped
-       frozen weeks entirely, so any Approve / Review / Resolve action taken after
-       the freeze on a clash whose c.date fell into that frozen week became
-       invisible in the weekly array. Symptom: user approves 12 clashes today, the
-       sidebar Approved tile reads 12 (live register), but the trend chart's
-       Approved series stays flat zero forever because the approvals landed in
-       already-frozen historical buckets.
-       FIX: for frozen weeks, refresh the three terminal-status counts in place
-       and recompute per-test approved/reviewed/resolved + maturity rate. Leave
-       new/active/critical/high/medium/low + tests[].new/.active/.critical/etc.
-       and label/date/capturedAt/imports untouched via the `return;` at end.
-       KNOWN EDGE CASE: a clash Active during the frozen week that is Approved
-       today will appear in BOTH frozen.active (historical) AND frozen.approved
-       (refreshed) — double-counted if you tally lines across the trend chart.
-       Root fix requires clashStatusAt(c, wk, yr) projection across every
-       counter, deferred to a future PR to keep scope contained. */
-    if(idx>=0&&existing[idx].capturedAt){
-      const frozen=existing[idx];
-      frozen.approved=bcl.filter(c=>c.status==='Approved').length;
-      frozen.reviewed=bcl.filter(c=>c.status==='Reviewed').length;
-      frozen.resolved=bcl.filter(c=>c.status==='Resolved').length;
-      // Recompute per-test terminal counts + maturity rate. Preserve historical
-      // new/active/critical fields on each test row; only touch approved/
-      // reviewed/resolved and the maturity rate computed from them.
-      if(Array.isArray(frozen.tests)){
-        const tCount={}; // testName -> {approved,reviewed,resolved}
-        bcl.forEach(c=>{
-          const n=c.testName||c.name||'Untitled test';
-          if(!tCount[n])tCount[n]={approved:0,reviewed:0,resolved:0};
-          if(c.status==='Approved')tCount[n].approved++;
-          else if(c.status==='Reviewed')tCount[n].reviewed++;
-          else if(c.status==='Resolved')tCount[n].resolved++;
-        });
-        frozen.tests.forEach(t=>{
-          const c=tCount[t.name]||{approved:0,reviewed:0,resolved:0};
-          t.approved=c.approved;
-          t.reviewed=c.reviewed;
-          t.resolved=c.resolved;
-          const tot=(t.new||0)+(t.active||0)+t.reviewed+t.resolved+t.approved;
-          t.rate=tot>0?Math.round((t.resolved+t.approved)/tot*100):0;
-        });
-      }
-      return;
-    }
-    /* FROZEN-WEEK-TERMINAL-REFRESH end */
-
-    // Build per-test breakdown for clashes in THIS bucket only.
+    /* KI-008-WEEKLY-PROJECTION start: one rule for every week, frozen or not.
+       Each clash in this bucket is counted once, at the status it held at the
+       END of the bucket's ISO week (clashStatusAt). This replaces
+       FROZEN-WEEK-TERMINAL-REFRESH (retired 2026-09-03 under DEC-015), which
+       kept a frozen week's historical new/active counts but refreshed its
+       approved/reviewed/resolved from today's status, so a clash Active in
+       the week and Approved today sat in two columns of one row (KI-008).
+       The charts and the PDF/PPTX tables already reconstruct from
+       statusHistory (PR-A-ALWAYS-RECONSTRUCT, PR-A3-EXPORT-PLATFORM-WEEKS);
+       this makes the stored snapshot — the Data Manager table's source — agree
+       with them. Today's approval of an old clash shows where the charts show
+       it: on the current week's cumulative point (statusCountsAt), not in the
+       detection week's row.
+       What "frozen" (capturedAt) still means: the row's capturedAt, imports[],
+       label, date and any other archived fields are preserved. Status and
+       priority counters are derived from the register, not archived, so a
+       clash removed from the register drops out of every week — exactly as it
+       already does on the charts.
+       Fallback when the history starts after the bucket week (detection clock
+       vs import clock, PR-02): the first recorded status, then c.status. */
+    const stAt=c=>{
+      const s=clashStatusAt(c,wk,yr);
+      if(s)return s;
+      const h=Array.isArray(c.statusHistory)?c.statusHistory:[];
+      return (h.length&&h[0]&&h[0].status)||c.status||'New';
+    };
+    const cnt={New:0,Active:0,Reviewed:0,Approved:0,Resolved:0,Critical:0,High:0,Medium:0,Low:0};
     const tMap={};
     bcl.forEach(c=>{
+      const st=stAt(c);
+      if(cnt.hasOwnProperty(st))cnt[st]++;
+      if(c.priority&&cnt.hasOwnProperty(c.priority))cnt[c.priority]++;
       const n=c.testName||c.name||'Untitled test';
       if(!tMap[n])tMap[n]={name:n,new:0,active:0,reviewed:0,resolved:0,approved:0,critical:0,high:0,medium:0,low:0,rate:0};
       const t=tMap[n];
-      if(c.status==='New')t.new++;
-      else if(c.status==='Active')t.active++;
-      else if(c.status==='Reviewed')t.reviewed++;
-      else if(c.status==='Approved')t.approved++;
-      else if(c.status==='Resolved')t.resolved++;
+      if(st==='New')t.new++;
+      else if(st==='Active')t.active++;
+      else if(st==='Reviewed')t.reviewed++;
+      else if(st==='Approved')t.approved++;
+      else if(st==='Resolved')t.resolved++;
       if(c.priority==='Critical')t.critical++;
       else if(c.priority==='High')t.high++;
       else if(c.priority==='Medium')t.medium++;
@@ -2830,29 +2808,26 @@ function regenWeeklyFromRegister(anchorDate){
       const tot=t.new+t.active+t.reviewed+t.resolved+t.approved;
       t.rate=tot>0?Math.round((t.resolved+t.approved)/tot*100):0;return t;
     });
-
-    const monday=isoWeekMonday(yr,wk);
-    const dayMonthYear=monday.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'});
-    const label='Wk '+wk+' \u2014 '+dayMonthYear;
-
-    const snap={
-      week:wk,year:yr,label,date:dayMonthYear,
-      new:bcl.filter(c=>c.status==='New').length,
-      active:bcl.filter(c=>c.status==='Active').length,
-      reviewed:bcl.filter(c=>c.status==='Reviewed').length,
-      resolved:bcl.filter(c=>c.status==='Resolved').length,
-      approved:bcl.filter(c=>c.status==='Approved').length,
-      critical:bcl.filter(c=>c.priority==='Critical').length,
-      high:bcl.filter(c=>c.priority==='High').length,
-      medium:bcl.filter(c=>c.priority==='Medium').length,
-      low:bcl.filter(c=>c.priority==='Low').length,
+    const counters={
+      new:cnt.New,active:cnt.Active,reviewed:cnt.Reviewed,resolved:cnt.Resolved,approved:cnt.Approved,
+      critical:cnt.Critical,high:cnt.High,medium:cnt.Medium,low:cnt.Low,
       tests
     };
-
-    // Preserve imports[] event log when rebuilding an existing week.
-    if(idx>=0&&Array.isArray(existing[idx].imports))snap.imports=existing[idx].imports;
-
+    const prev=idx>=0?existing[idx]:null;
+    let snap;
+    if(prev&&prev.capturedAt){
+      // Frozen: keep every archived field, replace only the derived counters.
+      snap=Object.assign({},prev,counters);
+    }else{
+      const monday=isoWeekMonday(yr,wk);
+      const dayMonthYear=monday.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'});
+      const label='Wk '+wk+' \u2014 '+dayMonthYear;
+      snap=Object.assign({week:wk,year:yr,label,date:dayMonthYear},counters);
+      // Preserve imports[] event log when rebuilding an existing week.
+      if(prev&&Array.isArray(prev.imports))snap.imports=prev.imports;
+    }
     if(idx>=0)existing[idx]=snap;else existing.push(snap);
+    /* KI-008-WEEKLY-PROJECTION end */
   });
   /* WEEKLY-SNAP-PER-CLASH-BUCKET end */
 

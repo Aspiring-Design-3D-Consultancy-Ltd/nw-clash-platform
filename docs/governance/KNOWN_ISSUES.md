@@ -534,6 +534,78 @@ Resolved. The full suite should now read 340 / 340; a residual failure in this f
 
 ---
 
+## KI-008
+
+Title:
+
+Frozen-Week Terminal Refresh Double-Counts a Clash Across Historical and Refreshed Counters
+
+Status:
+
+Resolved (DEC-015, 2026-09-03 — option 1, projection everywhere)
+
+Severity:
+
+Medium (reporting accuracy on the trend chart; no data loss)
+
+Summary:
+
+`FROZEN-WEEK-TERMINAL-REFRESH` refreshes a frozen weekly snapshot's terminal-status counters (approved / resolved) when a clash dated in that week reaches a terminal status today, while leaving the historical `new` / `active` / priority counters untouched. Documented in the code as a KNOWN EDGE CASE: a clash that was Active during the frozen week and is Approved today appears in both `frozen.active` (historical) and `frozen.approved` (refreshed), so tallying lines across the trend chart double-counts it.
+
+Confirmation basis:
+
+Confirmed by design analysis recorded in the marker block; not yet reproduced under Playwright. The first step of any remediation is a failing test that demonstrates the double count.
+
+Remediation Path Identified (original):
+
+A `clashStatusAt(c, wk, yr)` projection applied across every counter so each clash is counted once per week at the status it held in that week. Deferred in the original PR to keep scope contained.
+
+Analysis (2026-09-03):
+
+The projection fix and the shipped `FROZEN-WEEK-TERMINAL-REFRESH` contract are in direct conflict, and the contract is what the regression test asserts: `frozen-week-and-chart-year.spec.js` seeds a clash Active in frozen week 25, approves it today, and requires `snap.active === 1` **and** `snap.approved === 1` with the per-test maturity rate reading 50%. That is the double count, written down as the expected result. A projection would make the frozen week read `active 1, approved 0` (the clash was Active at the end of that week), which is exactly the "approvals invisible in frozen buckets" symptom TERMINAL-REFRESH was written to remove.
+
+What has changed since TERMINAL-REFRESH shipped: the three dashboard charts (`scopedWds()` → `statusCountsAt()`, PR-A-ALWAYS-RECONSTRUCT) and the PDF/PPTX weekly tables (`_reportWeeklyRows()`, PR-A3-EXPORT-PLATFORM-WEEKS) no longer read snapshot counters at all — they reconstruct cumulative status at each week's end from `statusHistory`, so today's approval of an old clash already appears in the current week's point. The remaining raw readers of frozen snapshot counters are:
+
+- `rData()` — the Data Manager "Weekly clash register" table, including its per-row maturity rate `(resolved+approved) / (new+active+reviewed+resolved+approved)`, where the double count inflates the denominator and the rate.
+- `rDash()` week-over-week delta tiles (`wd` vs `pw`), only when the previous week is frozen.
+- `frozen.tests[].rate` written by TERMINAL-REFRESH itself.
+
+Decision required (Shane):
+
+1. **Projection everywhere** — frozen and unfrozen snapshots both count each clash once at its end-of-week status; TERMINAL-REFRESH is retired; the test contract changes. Cleanest, and consistent with what the charts and exports already show. Risk: anyone reading the Data Manager table expecting today's approvals to appear in an old week loses that.
+2. **Keep TERMINAL-REFRESH, fix the readers** — leave snapshot semantics as tested, but make the Data Manager rate and the delta tiles compute from `statusCountsAt()` so no displayed number double-counts. Snapshot fields stay non-exclusive (documented as historical-open vs live-terminal).
+3. **Accept and document** — no code change; the Data Manager rate is the only visible artefact.
+
+Recommendation: option 1, because it removes the inconsistency at the source and the original motivating symptom no longer exists on any chart or export. Not applied without a decision, because it reverses a behaviour that was explicitly requested and is asserted by a shipped test.
+
+Decision:
+
+Shane ruled option 1 on 2026-09-03 (DEC-015).
+
+Approved Remediation:
+
+`KI-008-WEEKLY-PROJECTION` in `regenWeeklyFromRegister`: one path for every bucket, each clash counted once at `clashStatusAt(c, wk, yr)` (fallback: first recorded status, then `c.status`); frozen rows keep their archived fields and get derived counters; `FROZEN-WEEK-TERMINAL-REFRESH` retired.
+
+Implementation Status:
+
+✅ Completed
+
+QA Retest Status:
+
+✅ PASS — the four new `KI-008` tests fail on the previous code and pass after; 86/86 across the weekly, import, approve and report specs; full suite per CURRENT_STATUS.md.
+
+Regression Protection:
+
+- tests/frozen-week-and-chart-year.spec.js — four `KI-008` tests replacing the two `FROZEN-WEEK-TERMINAL-REFRESH` tests (counted once at end-of-week status; frozen fields preserved while counters are derived; unfrozen past weeks project; history-after-detection fallback).
+
+Outcome:
+
+Resolved. The stored weekly snapshot now agrees with the charts and exports.
+
+---
+
+---
+
 # Monitoring
 
 ## MI-001
@@ -662,51 +734,7 @@ It reports total keys, metadata shape and count, referenced vs orphaned keys aga
 
 # Confirmed Issues
 
-## KI-008
-
-Title:
-
-Frozen-Week Terminal Refresh Double-Counts a Clash Across Historical and Refreshed Counters
-
-Status:
-
-Confirmed — Deferred (DEC-010 Special Workflow State)
-
-Severity:
-
-Medium (reporting accuracy on the trend chart; no data loss)
-
-Summary:
-
-`FROZEN-WEEK-TERMINAL-REFRESH` refreshes a frozen weekly snapshot's terminal-status counters (approved / resolved) when a clash dated in that week reaches a terminal status today, while leaving the historical `new` / `active` / priority counters untouched. Documented in the code as a KNOWN EDGE CASE: a clash that was Active during the frozen week and is Approved today appears in both `frozen.active` (historical) and `frozen.approved` (refreshed), so tallying lines across the trend chart double-counts it.
-
-Confirmation basis:
-
-Confirmed by design analysis recorded in the marker block; not yet reproduced under Playwright. The first step of any remediation is a failing test that demonstrates the double count.
-
-Remediation Path Identified (original):
-
-A `clashStatusAt(c, wk, yr)` projection applied across every counter so each clash is counted once per week at the status it held in that week. Deferred in the original PR to keep scope contained.
-
-Analysis (2026-09-03):
-
-The projection fix and the shipped `FROZEN-WEEK-TERMINAL-REFRESH` contract are in direct conflict, and the contract is what the regression test asserts: `frozen-week-and-chart-year.spec.js` seeds a clash Active in frozen week 25, approves it today, and requires `snap.active === 1` **and** `snap.approved === 1` with the per-test maturity rate reading 50%. That is the double count, written down as the expected result. A projection would make the frozen week read `active 1, approved 0` (the clash was Active at the end of that week), which is exactly the "approvals invisible in frozen buckets" symptom TERMINAL-REFRESH was written to remove.
-
-What has changed since TERMINAL-REFRESH shipped: the three dashboard charts (`scopedWds()` → `statusCountsAt()`, PR-A-ALWAYS-RECONSTRUCT) and the PDF/PPTX weekly tables (`_reportWeeklyRows()`, PR-A3-EXPORT-PLATFORM-WEEKS) no longer read snapshot counters at all — they reconstruct cumulative status at each week's end from `statusHistory`, so today's approval of an old clash already appears in the current week's point. The remaining raw readers of frozen snapshot counters are:
-
-- `rData()` — the Data Manager "Weekly clash register" table, including its per-row maturity rate `(resolved+approved) / (new+active+reviewed+resolved+approved)`, where the double count inflates the denominator and the rate.
-- `rDash()` week-over-week delta tiles (`wd` vs `pw`), only when the previous week is frozen.
-- `frozen.tests[].rate` written by TERMINAL-REFRESH itself.
-
-Decision required (Shane):
-
-1. **Projection everywhere** — frozen and unfrozen snapshots both count each clash once at its end-of-week status; TERMINAL-REFRESH is retired; the test contract changes. Cleanest, and consistent with what the charts and exports already show. Risk: anyone reading the Data Manager table expecting today's approvals to appear in an old week loses that.
-2. **Keep TERMINAL-REFRESH, fix the readers** — leave snapshot semantics as tested, but make the Data Manager rate and the delta tiles compute from `statusCountsAt()` so no displayed number double-counts. Snapshot fields stay non-exclusive (documented as historical-open vs live-terminal).
-3. **Accept and document** — no code change; the Data Manager rate is the only visible artefact.
-
-Recommendation: option 1, because it removes the inconsistency at the source and the original motivating symptom no longer exists on any chart or export. Not applied without a decision, because it reverses a behaviour that was explicitly requested and is asserted by a shipped test.
-
-Tracked as: task item 5 in the 2026-09-03 backlog (CURRENT_STATUS.md). Status remains Confirmed — Deferred pending the decision above.
+None currently recorded.
 
 ---
 
@@ -727,6 +755,7 @@ Resolved Issues:
 - KI-005 — Test-Harness Startup-Sequencing Race (MI-002 root cause) ✅
 - KI-006 — IndexedDB `openIDB()` Check-Then-Act Race / Wrong-Connection `onversionchange` (INV-008 root cause) ✅
 - KI-007 — ORPHAN-IDB-SWEEP Deletes the Image Database Under the In-Flight Register Migration (INV-009, retrospective) ✅
+- KI-008 — Frozen-Week Terminal Refresh Double-Count (DEC-015, projection everywhere) ✅
 - KI-009 — frozen-week-and-chart-year.spec.js register isolation (INV-010, test-only) ✅
 
 Monitoring Items:
@@ -737,7 +766,7 @@ Monitoring Items:
 
 Confirmed Issues:
 
-- KI-008 — Frozen-Week Terminal Refresh Double-Count (Confirmed — Deferred)
+None outstanding.
 
 Active Investigations:
 

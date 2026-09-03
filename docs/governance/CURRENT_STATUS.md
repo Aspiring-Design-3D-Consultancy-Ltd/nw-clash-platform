@@ -328,7 +328,7 @@ Committed and pushed.
 
 ### Confirmed
 
-- KI-008 — Frozen-Week Terminal Refresh Double-Count. Confirmed by design analysis (documented in the `FROZEN-WEEK-TERMINAL-REFRESH` block), not yet reproduced under Playwright. Deferred; remediation path is a `clashStatusAt(c, wk, yr)` projection across every counter.
+None. KI-008 resolved 2026-09-03 under DEC-015 (projection everywhere).
 
 ### Under Investigation
 
@@ -482,7 +482,7 @@ Ranked backlog as of 2026-09-03 (in execution order):
 2. **MI-003 orphan audit** — read-only tool shipped (`_auditNwImageStore()`, IMG-STORE-AUDIT, 2026-09-03). Remaining: run it on the live profile from the DevTools console and record the output in KNOWN_ISSUES.md MI-003. Nothing wiped.
 3. **PIXEL-DEDUP Phase 2** — ruling made and read side shipped 2026-09-03 (DEC-014, IMG-DHASH-INDEX): record stays authoritative, referenced-slot index rides on the metadata record, `findSimilarImages(maxDistance)` is the query API. Remaining: the consumer half (what a near-duplicate image means for two clashes, threshold, where it surfaces) needs a brief from Shane before it is built.
 4. **INV-010** — done 2026-09-03. Test-harness isolation gap (the demo register stayed in memory and `rDash()` regenerated weekly buckets from it); test-only fix, KI-009. Application logic verified correct. The suite has no known failures left.
-5. **KI-008** — analysed 2026-09-03; blocked on a decision. The projection fix contradicts the shipped, tested `FROZEN-WEEK-TERMINAL-REFRESH` contract, while charts and exports already reconstruct from status history and are unaffected. Three options and a recommendation (projection everywhere) are recorded in KNOWN_ISSUES.md KI-008. Needs Shane's ruling before code changes.
+5. **KI-008** — resolved 2026-09-03. Shane ruled option 1 (DEC-015): every weekly snapshot counts each clash once at its end-of-week status; `FROZEN-WEEK-TERMINAL-REFRESH` retired; four new tests replace the two old ones.
 6. **Delta Analysis Settings UI (Step 3)** — already shipped. The Settings tab renders "Designed condition patterns & republish tolerance" (tolerance input, per-pattern enable/edit/remove, add pattern; `SETTINGS-DESIGNED-CONDITION-PATTERNS` region 2, ~line 15867). The "deferred to Step 3" comments in the storage region were stale and have been corrected. No test covers the section directly; noted as a coverage gap, not a defect.
 7. **CLAUDE.md horizon list** — PAIR-ID-RESOLVED-COUNT Phase 2 (auto-flip with undo), CUB→CUP IndexedDB key rewrite, `eA`/`eB` flattening, `clashBuilding()` refactor, building filters on Lifecycle/Severity charts, level normalisation at parse time, multi-project capability. Each needs a brief; PAIR-ID Phase 2 and parse-time normalisation additionally need real Muratec XMLs for Playwright validation (dual-parser discipline). Not started.
 

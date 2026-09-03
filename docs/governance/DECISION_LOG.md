@@ -474,6 +474,55 @@ PR #61 — PIXEL-DEDUP Phase 1 (IMG-DHASH-PHASE1), commit `161894f`, "Two decisi
 
 ---
 
+# DEC-015
+
+Title:
+
+Weekly Snapshot Counters Are a Projection at End of Week — FROZEN-WEEK-TERMINAL-REFRESH Retired
+
+Status:
+
+Approved (Shane's ruling, 2026-09-03: KI-008 option 1)
+
+Date:
+
+2026-09-03
+
+Decision:
+
+Every weekly snapshot row in `S.weekly`, frozen or not, counts each clash in its detection-week bucket exactly once, at the status the clash held at the end of that ISO week (`clashStatusAt(c, wk, yr)`; fallback to the first recorded status, then `c.status`, when the history starts after the bucket week). Priority counters and the per-test `tests[]` rows follow the same rule. `FROZEN-WEEK-TERMINAL-REFRESH` is retired. "Frozen" (`capturedAt`) now means the row's archived fields — `capturedAt`, `imports[]`, `label`, `date` and anything else stored on it — are preserved; its status and priority counters are derived from the register on every regeneration.
+
+Options considered (KNOWN_ISSUES.md KI-008):
+
+1. Projection everywhere — chosen.
+2. Keep TERMINAL-REFRESH, recompute the Data Manager rate and the week-over-week tiles from `statusCountsAt()` — rejected: the stored fields stay internally inconsistent.
+3. Accept and document — rejected.
+
+Reasoning:
+
+TERMINAL-REFRESH existed to make approvals of old clashes visible on the trend chart. Since PR-A-ALWAYS-RECONSTRUCT and PR-A3-EXPORT-PLATFORM-WEEKS the charts and the PDF/PPTX tables reconstruct cumulative status per week from `statusHistory` and never read the stored counters, so that symptom cannot recur through them, and today's approval of an old clash already shows on the current week's cumulative point. What remained was a stored row in which one clash sat in two columns, surfacing as an inflated maturity rate in the Data Manager table. A single projection rule removes the inconsistency at the source and makes the stored snapshot agree with everything that displays it.
+
+Consequences accepted:
+
+- A frozen week's counters no longer archive the register as it was at freeze time. A clash later removed from the register (per-week reset, dedup merge) drops out of that week's row, exactly as it already does on the charts.
+- An unfrozen past week whose clash was approved later now shows that clash at its end-of-week status, not its current one.
+- The two `FROZEN-WEEK-TERMINAL-REFRESH` tests were replaced by four `KI-008` tests in `tests/frozen-week-and-chart-year.spec.js` asserting the new contract.
+
+Impact:
+
+- `working.html`: `KI-008-WEEKLY-PROJECTION` (1 region) inside `regenWeeklyFromRegister`, replacing the frozen-week branch and the unfrozen rebuild with one path. Comment header of `WEEKLY-SNAP-PER-CLASH-BUCKET` updated. No other function touched.
+- Full suite green after the change (see CURRENT_STATUS.md test baseline).
+
+Related Investigations:
+
+None.
+
+Related Issues:
+
+KI-008 (Resolved by this decision).
+
+---
+
 # Future Decisions
 
 Record future decisions using the following structure:

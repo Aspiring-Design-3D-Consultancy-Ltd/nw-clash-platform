@@ -207,3 +207,21 @@ Notes:
 
 No behavioural change to `working.html`.
 
+---
+
+### 2026-09-03 (code, KI-008 / DEC-015)
+
+Summary:
+
+Weekly snapshot counters become an end-of-week projection; the frozen-week double count is gone.
+
+Changes:
+
+- `working.html` — `KI-008-WEEKLY-PROJECTION` inside `regenWeeklyFromRegister`: each clash in a bucket counted once at `clashStatusAt(c, wk, yr)` (fallback first recorded status, then `c.status`); frozen rows keep archived fields, counters derived; `FROZEN-WEEK-TERMINAL-REFRESH` block removed. Marker 1/1.
+- `tests/frozen-week-and-chart-year.spec.js` — four `KI-008` tests replace the two `FROZEN-WEEK-TERMINAL-REFRESH` tests; describe title updated.
+- DECISION_LOG.md DEC-015; KNOWN_ISSUES.md KI-008 resolved; CURRENT_STATUS.md and CLAUDE.md updated.
+
+Notes:
+
+`DATA_VERSION` untouched. Protected blocks `UNCHANGED`. Behavioural change to stored `S.weekly` counters, ruled by Shane (option 1).
+
