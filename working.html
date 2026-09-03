@@ -2239,9 +2239,12 @@ function backfillStatusHistory(){
    MML_Maintenance pattern per spec. Setters persist and trigger a live
    re-classification of every pendingReview clash via
    _rqdaReclassifyAll — no re-import required.
-   Settings UI surface is intentionally deferred to Step 3 of this
-   feature; this block owns storage + accessors + live-reclass hook
-   ONLY. */
+   This block owns storage + accessors + live-reclass hook ONLY. The
+   Settings UI (tolerance input, per-pattern enable/edit/remove, add)
+   shipped as region 2 of this marker in the Settings tab — see
+   "Designed condition patterns & republish tolerance" in rSettings and
+   the _rqdaUi* handlers below. (Comment corrected 2026-09-03; it
+   previously said the UI was deferred.) */
 const _RQDA_TOL_MIN=5;
 const _RQDA_TOL_MAX=500;
 const _RQDA_TOL_DEFAULT=25;
@@ -2262,7 +2265,7 @@ const _RQDA_SEED_PATTERNS=[
      users get the correct behaviour out of the box. The classifier's
      either-direction match means either single pattern would cover
      both sides on its own, but shipping both makes the Settings
-     surface (deferred to Step 3) self-explanatory. */
+     surface self-explanatory. */
   {
     name:'Anything vs MML_Maintenance',
     aRegex:'MML_Maintenance',

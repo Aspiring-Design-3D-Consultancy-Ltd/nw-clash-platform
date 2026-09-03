@@ -637,7 +637,13 @@ Matches the counts recorded at the PR #66 merge (338 passed, 2 failed). No regre
 
 ## Test Baseline — 2026-09-03 (post-INV-010, branch `claude/app-progress-issues-04app5`)
 
-Full-suite re-run in progress at the time of this commit; result recorded in the next commit.
+Command: `cd tests; PW_CHROMIUM_PATH=/opt/pw-browsers/chromium npx playwright test --workers=1`, run against the branch at `4df8d59` minus the final comment-only edit.
+
+- Total: 356 (340 at `dd87585` + 8 `img-store-audit` + 8 `img-dhash-index`)
+- Passed: 356
+- Failed: 0
+
+First full-suite run with no known failures since the suite began being recorded in this ledger.
 
 ---
 
