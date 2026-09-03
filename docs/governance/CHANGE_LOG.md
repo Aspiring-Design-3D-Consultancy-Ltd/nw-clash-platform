@@ -172,3 +172,38 @@ Notes:
 
 No new keys in the images store, no DB version bump, `DATA_VERSION` untouched, protected blocks `UNCHANGED`. Image-layer and IDB specs re-run green (89 tests across 12 spec files including the new one).
 
+---
+
+### 2026-09-03 (tests, INV-010)
+
+Summary:
+
+The two `CHART-PERIOD-YEAR-AWARE` failures present on every full-suite run since 2026-08-15 root-caused and fixed. Test-harness isolation gap; application logic verified correct.
+
+Changes:
+
+- `tests/frozen-week-and-chart-year.spec.js` — `beforeEach` now resets `S.clashes` and `S.weekly` in memory (the demo register was surviving the `nw:*` clear and `rDash()` regenerated four January-2025 weeks from it). 15/15 under `--repeat-each=3`.
+- INVESTIGATION_LOG.md INV-010 closed; KNOWN_ISSUES.md KI-009; CURRENT_STATUS.md and CLAUDE.md updated.
+
+Notes:
+
+No `working.html` change. The suite now has no known failures; the "pre-existing flakiness" classification must not be reused.
+
+---
+
+### 2026-09-03 (backlog review, items 5–7)
+
+Summary:
+
+KI-008 analysed to a decision point; Delta Analysis Settings UI found already shipped; horizon list assessed.
+
+Changes:
+
+- KNOWN_ISSUES.md KI-008: raw-reader inventory, the conflict with the tested TERMINAL-REFRESH contract, three options and a recommendation. No code change.
+- `working.html`: stale "deferred to Step 3" / "will be added by a follow-up" comments in the `SETTINGS-DESIGNED-CONDITION-PATTERNS` storage region corrected to point at the shipped Settings UI. Comment-only.
+- CURRENT_STATUS.md, CLAUDE.md: backlog items 5–7 updated.
+
+Notes:
+
+No behavioural change to `working.html`.
+

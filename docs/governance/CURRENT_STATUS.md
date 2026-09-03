@@ -332,7 +332,7 @@ Committed and pushed.
 
 ### Under Investigation
 
-- INV-010 — Persistent `CHART-PERIOD-YEAR-AWARE` failures in `tests/frozen-week-and-chart-year.spec.js`. Two tests red on every full-suite run since at least 2026-08-15; never root-caused. Opened 2026-09-03 under Workflow C.
+None. INV-010 opened and closed 2026-09-03 (test-harness isolation gap, KI-009).
 
 ### Monitoring
 
@@ -481,10 +481,10 @@ Ranked backlog as of 2026-09-03 (in execution order):
 1. **Governance ledger catch-up** — this update (INV-009 retrospective record, INV-010 opened, KI-007, KI-008, MI-003, CHANGE_LOG for #59–#66, RS-002). Complete on commit of this document set.
 2. **MI-003 orphan audit** — read-only tool shipped (`_auditNwImageStore()`, IMG-STORE-AUDIT, 2026-09-03). Remaining: run it on the live profile from the DevTools console and record the output in KNOWN_ISSUES.md MI-003. Nothing wiped.
 3. **PIXEL-DEDUP Phase 2** — ruling made and read side shipped 2026-09-03 (DEC-014, IMG-DHASH-INDEX): record stays authoritative, referenced-slot index rides on the metadata record, `findSimilarImages(maxDistance)` is the query API. Remaining: the consumer half (what a near-duplicate image means for two clashes, threshold, where it surfaces) needs a brief from Shane before it is built.
-4. **INV-010** — root-cause the two `CHART-PERIOD-YEAR-AWARE` failures; classify as harness or application defect; fix.
-5. **KI-008** — frozen-week double-count via `clashStatusAt` projection, starting with a failing Playwright test.
-6. **Delta Analysis Settings UI (Step 3)** — settings surface for `nw:designedConditionPatterns` and `nw:republishToleranceMm`; storage, accessors and live re-classification hook already exist.
-7. **CLAUDE.md horizon list** — PAIR-ID-RESOLVED-COUNT Phase 2 (auto-flip with undo), CUB→CUP IndexedDB key rewrite, `eA`/`eB` flattening, `clashBuilding()` refactor, building filters on Lifecycle/Severity charts, level normalisation at parse time, multi-project capability.
+4. **INV-010** — done 2026-09-03. Test-harness isolation gap (the demo register stayed in memory and `rDash()` regenerated weekly buckets from it); test-only fix, KI-009. Application logic verified correct. The suite has no known failures left.
+5. **KI-008** — analysed 2026-09-03; blocked on a decision. The projection fix contradicts the shipped, tested `FROZEN-WEEK-TERMINAL-REFRESH` contract, while charts and exports already reconstruct from status history and are unaffected. Three options and a recommendation (projection everywhere) are recorded in KNOWN_ISSUES.md KI-008. Needs Shane's ruling before code changes.
+6. **Delta Analysis Settings UI (Step 3)** — already shipped. The Settings tab renders "Designed condition patterns & republish tolerance" (tolerance input, per-pattern enable/edit/remove, add pattern; `SETTINGS-DESIGNED-CONDITION-PATTERNS` region 2, ~line 15867). The "deferred to Step 3" comments in the storage region were stale and have been corrected. No test covers the section directly; noted as a coverage gap, not a defect.
+7. **CLAUDE.md horizon list** — PAIR-ID-RESOLVED-COUNT Phase 2 (auto-flip with undo), CUB→CUP IndexedDB key rewrite, `eA`/`eB` flattening, `clashBuilding()` refactor, building filters on Lifecycle/Severity charts, level normalisation at parse time, multi-project capability. Each needs a brief; PAIR-ID Phase 2 and parse-time normalisation additionally need real Muratec XMLs for Playwright validation (dual-parser discipline). Not started.
 
 All confirmed defects identified through INV-002, R1, INV-005, INV-006, INV-007, INV-008, and INV-009 have been remediated, verified, committed, pushed, and released.
 
@@ -515,7 +515,7 @@ RS-002
 
 ---
 
-### INV-010 (Under Investigation)
+### INV-010 (Closed - Released, test-only)
 
 Title:
 
@@ -523,7 +523,7 @@ Persistent CHART-PERIOD-YEAR-AWARE Failures in frozen-week-and-chart-year.spec.j
 
 Status:
 
-Under Investigation (DEC-010 State 2), Workflow C. Opened 2026-09-03. Next action: QA Investigator reproduction under Playwright and classification as harness or application defect.
+Closed 2026-09-03. Reproduced deterministically; root cause is the spec leaving the demo register in memory while `rDash()` regenerates weekly buckets from it (see INVESTIGATION_LOG.md INV-010). Test-file-only remediation (`S.clashes = []; S.weekly = []` in `beforeEach`), 15/15 under `--repeat-each=3`. No `working.html` change. Tracked as KI-009.
 
 ---
 
@@ -635,11 +635,15 @@ Results:
 
 Matches the counts recorded at the PR #66 merge (338 passed, 2 failed). No regression between `f6a9332` and this baseline.
 
+## Test Baseline — 2026-09-03 (post-INV-010, branch `claude/app-progress-issues-04app5`)
+
+Full-suite re-run in progress at the time of this commit; result recorded in the next commit.
+
 ---
 
 ## Next Planned Activity
 
-Work the ranked backlog under "Current Priority" in order. INV-010 is the only open investigation; MI-003 is the only monitoring item with a pending action (audit).
+Work the ranked backlog under "Current Priority" in order. No investigation is open. MI-003 is the only monitoring item with a pending action (run the audit on the live profile).
 
 Future investigations should originate from:
 

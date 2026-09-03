@@ -486,6 +486,54 @@ Resolved and released. Residual: images lost on the affected profile before `9a0
 
 ---
 
+## KI-009
+
+Title:
+
+frozen-week-and-chart-year.spec.js Did Not Isolate the In-Memory Register (CHART-PERIOD-YEAR-AWARE ×2)
+
+Status:
+
+Resolved
+
+Severity:
+
+Medium (test infrastructure; two deterministic failures on every full-suite run for three weeks, mislabelled as flakiness)
+
+Related Investigation:
+
+- INV-010
+
+Summary:
+
+The spec's `beforeEach` cleared `nw:*` localStorage and bypassed auth but left the 104-clash demo register in `S.clashes`. `rDash()` regenerates one weekly snapshot per ISO week with clashes, so four January-2025 demo weeks were prepended to the seeded weeks and the default chart range started at 2025-W02 instead of the seeded 2025-W41. Deterministic; not date-dependent. Application behaviour was correct throughout.
+
+Root Cause:
+
+Same class as KI-005: a bootstrap that relied on storage state alone while the application also carries in-memory state. Three specs received the `S.clashes = []` reset under INV-007; this one did not.
+
+Approved Remediation:
+
+Test-file-only: `S.clashes = []; S.weekly = [];` added to the spec's `beforeEach`.
+
+Implementation Status:
+
+✅ Completed
+
+QA Retest Status:
+
+✅ PASS — 15/15 under `--repeat-each=3`
+
+Regression Protection:
+
+The corrected spec itself. Review checklist item: a spec that seeds `S.weekly` or reads the dashboard must also reset `S.clashes`, because `rDash()` regenerates weekly buckets from the register.
+
+Outcome:
+
+Resolved. The full suite should now read 340 / 340; a residual failure in this file is a real regression, not "known flakiness".
+
+---
+
 # Monitoring
 
 ## MI-001
@@ -636,29 +684,35 @@ Confirmation basis:
 
 Confirmed by design analysis recorded in the marker block; not yet reproduced under Playwright. The first step of any remediation is a failing test that demonstrates the double count.
 
-Remediation Path Identified:
+Remediation Path Identified (original):
 
 A `clashStatusAt(c, wk, yr)` projection applied across every counter so each clash is counted once per week at the status it held in that week. Deferred in the original PR to keep scope contained.
 
-Tracked as: task item 5 in the 2026-09-03 backlog (CURRENT_STATUS.md).
+Analysis (2026-09-03):
+
+The projection fix and the shipped `FROZEN-WEEK-TERMINAL-REFRESH` contract are in direct conflict, and the contract is what the regression test asserts: `frozen-week-and-chart-year.spec.js` seeds a clash Active in frozen week 25, approves it today, and requires `snap.active === 1` **and** `snap.approved === 1` with the per-test maturity rate reading 50%. That is the double count, written down as the expected result. A projection would make the frozen week read `active 1, approved 0` (the clash was Active at the end of that week), which is exactly the "approvals invisible in frozen buckets" symptom TERMINAL-REFRESH was written to remove.
+
+What has changed since TERMINAL-REFRESH shipped: the three dashboard charts (`scopedWds()` → `statusCountsAt()`, PR-A-ALWAYS-RECONSTRUCT) and the PDF/PPTX weekly tables (`_reportWeeklyRows()`, PR-A3-EXPORT-PLATFORM-WEEKS) no longer read snapshot counters at all — they reconstruct cumulative status at each week's end from `statusHistory`, so today's approval of an old clash already appears in the current week's point. The remaining raw readers of frozen snapshot counters are:
+
+- `rData()` — the Data Manager "Weekly clash register" table, including its per-row maturity rate `(resolved+approved) / (new+active+reviewed+resolved+approved)`, where the double count inflates the denominator and the rate.
+- `rDash()` week-over-week delta tiles (`wd` vs `pw`), only when the previous week is frozen.
+- `frozen.tests[].rate` written by TERMINAL-REFRESH itself.
+
+Decision required (Shane):
+
+1. **Projection everywhere** — frozen and unfrozen snapshots both count each clash once at its end-of-week status; TERMINAL-REFRESH is retired; the test contract changes. Cleanest, and consistent with what the charts and exports already show. Risk: anyone reading the Data Manager table expecting today's approvals to appear in an old week loses that.
+2. **Keep TERMINAL-REFRESH, fix the readers** — leave snapshot semantics as tested, but make the Data Manager rate and the delta tiles compute from `statusCountsAt()` so no displayed number double-counts. Snapshot fields stay non-exclusive (documented as historical-open vs live-terminal).
+3. **Accept and document** — no code change; the Data Manager rate is the only visible artefact.
+
+Recommendation: option 1, because it removes the inconsistency at the source and the original motivating symptom no longer exists on any chart or export. Not applied without a decision, because it reverses a behaviour that was explicitly requested and is asserted by a shipped test.
+
+Tracked as: task item 5 in the 2026-09-03 backlog (CURRENT_STATUS.md). Status remains Confirmed — Deferred pending the decision above.
 
 ---
 
 # Under Investigation
 
-## INV-010
-
-Title:
-
-Persistent CHART-PERIOD-YEAR-AWARE Failures in frozen-week-and-chart-year.spec.js
-
-Status:
-
-Under Investigation (opened 2026-09-03, Workflow C)
-
-Summary:
-
-Two tests have failed on every recorded full-suite run since at least 2026-08-15 and have been classified each time as pre-existing date-boundary flakiness without being root-caused. See INVESTIGATION_LOG.md INV-010 for scope and questions.
+None currently recorded.
 
 ---
 
@@ -673,6 +727,7 @@ Resolved Issues:
 - KI-005 — Test-Harness Startup-Sequencing Race (MI-002 root cause) ✅
 - KI-006 — IndexedDB `openIDB()` Check-Then-Act Race / Wrong-Connection `onversionchange` (INV-008 root cause) ✅
 - KI-007 — ORPHAN-IDB-SWEEP Deletes the Image Database Under the In-Flight Register Migration (INV-009, retrospective) ✅
+- KI-009 — frozen-week-and-chart-year.spec.js register isolation (INV-010, test-only) ✅
 
 Monitoring Items:
 
@@ -686,4 +741,4 @@ Confirmed Issues:
 
 Active Investigations:
 
-- INV-010 — Persistent CHART-PERIOD-YEAR-AWARE Failures (Under Investigation)
+None currently recorded.

@@ -1683,7 +1683,7 @@ Opened 2026-09-03.
 
 Status:
 
-Under Investigation (DEC-010 State 2).
+Closed - Released (test-harness defect; no application change). Opened and closed 2026-09-03.
 
 Workflow:
 
@@ -1704,8 +1704,46 @@ Questions to answer:
 2. If date-dependent: is the test's expectation wrong, or does the chart range logic misbehave near a year boundary in a way a user would see?
 3. Does the test-harness sequencing fix from INV-007 (KI-005) apply to this spec's bootstrap?
 
-Next Action:
+---
+## Reproduction Results
 
-QA Investigator: reproduce under Playwright against the real `working.html`, capture console output and the computed range, then classify as harness defect or application defect before proposing a fix.
+Reproduced in headless Chromium (Playwright 1.62.1, system Chromium) against `working.html` at `dd87585` with a standalone script performing exactly the spec's bootstrap and seeding:
+
+| Step | Observation |
+| --- | --- |
+| After bootstrap (nw:* cleared, auth bypassed) | `S.clashes.length` = 104, `S.projName` = "My Project", clash dates 06/01/25 → 27/01/25, `S.weekly` weeks = [1, 2, 3, 4] (the demo dataset, still in memory) |
+| Seed the spec's five `S.weekly` entries, `nav('dashboard')` | `_chartFrom` = 202502, `_chartTo` = 202628, `S.weekly` = [202502, 202503, 202504, 202505, 202541, 202552, 202601, 202614, 202628], `getDisplayWds().length` = 9, `_platformWeeks()` = [] |
+| Same, but with `S.clashes = []` first | `_chartFrom` = 202541, `_chartTo` = 202628, `S.weekly` = [202541, 202628], `getDisplayWds().length` = 2 — the spec's exact expectations |
+
+The failure is deterministic. It does not depend on the wall-clock date; the spec's year values are hard-coded and the extra weeks come from the demo register's January 2025 dates.
+
+---
+## Root Cause Findings
+
+**[Certain] Test-harness isolation gap, not an application defect.** The spec's `beforeEach` removes every `nw:*` localStorage key and bypasses auth, but does not reset the in-memory `S.clashes`. The demo dataset (104 clashes dated 06–27 Jan 2025) therefore remains loaded. `rDash()` begins with `regenWeeklyFromRegister()`, which — per `WEEKLY-SNAP-PER-CLASH-BUCKET` — adds one snapshot per ISO week that contains at least one clash. Four demo weeks (2025-W02..W05) are prepended to the seeded weeks, and `CHART-PERIOD-YEAR-AWARE`'s "default range = oldest → newest weekly entry" correctly reports 2025-W02 as the oldest. The application did exactly what its documented rule says; the fixture asked it a question with hidden extra input.
+
+This is the same class of gap INV-007 / KI-005 closed for `batch-import-folder.spec.js`, `weekly-incremental-import.spec.js` and `weekly-summary-screenshot.spec.js`, where the fix was an explicit in-memory `S.clashes = []` reset. This spec did not receive it.
+
+**Why the "date-boundary flakiness" label stuck.** Every PR since INV-008 ran the full suite, saw these two failures, confirmed they also failed on the unmodified baseline, and classified them as pre-existing. Each individual classification was correct — they were pre-existing — but "pre-existing" was read as "flaky" and no one asked why a deterministic failure would be date-dependent. The register-hydration and dashboard-regeneration changes of the same period (`PR-A-ALWAYS-RECONSTRUCT`, `WEEKLY-SNAP-PER-CLASH-BUCKET`, INV-007) all landed in the same build-stamp commit as the spec (`3599a8b`, 2026-08-04), so `git log -S` cannot separate which landed first. It does not matter for the remediation.
+
+**Application logic verified correct.** `rDash()` default range, `getDisplayWds()`, `resetChartRange()` and the `_platformWeeks()` fallback all behaved as documented in the reproduction. No `working.html` change is warranted.
+
+---
+## Remediation
+
+Test-file-only, mirroring INV-007:
+
+- `tests/frozen-week-and-chart-year.spec.js` `beforeEach`: add `S.clashes = []; S.weekly = [];` after the auth bypass, with a comment citing INV-010. The two FROZEN-WEEK tests already overwrite both fields; the CHART-XAXIS test uses neither.
+
+QA Retest: `frozen-week-and-chart-year.spec.js` with `--repeat-each=3` → 15/15 passed (previously 2 of 5 failed on every run). Full-suite result recorded in CURRENT_STATUS.md "Test Baseline — 2026-09-03 (post-INV-010)".
+
+Tracked as: KI-009 (Resolved).
+
+---
+## Final Release Status
+
+Test-only remediation committed on `claude/app-progress-issues-04app5` (see CHANGE_LOG.md 2026-09-03). No application code changed; no release snapshot required until the branch merges to `main`, at which point the next snapshot's test baseline should read 340 / 340.
+
+Investigation closed.
 
 ---

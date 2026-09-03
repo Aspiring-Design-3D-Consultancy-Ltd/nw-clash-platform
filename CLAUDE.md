@@ -10,7 +10,7 @@ This repository follows a role-based governance framework recorded in `docs/gove
 
 **Released:** INV-008 (IndexedDB Reset Reliability) — `openIDB()` in-flight promise de-dup + self-closing `onversionchange` (commit `6995a0e`). INV-009 (ORPHAN-IDB-SWEEP data-loss race after the register moved to IndexedDB) — remediated by `9a0007e` / `d996b8d`, recovery tool `43705e0`; recorded retrospectively 2026-09-03. See `docs/governance/CURRENT_STATUS.md` for the ranked backlog and `KNOWN_ISSUES.md` for KI-007/KI-008/MI-003.
 
-**Open:** INV-010 — the two `CHART-PERIOD-YEAR-AWARE` tests in `tests/frozen-week-and-chart-year.spec.js` fail on every run and have never been root-caused. Do not classify them as "pre-existing flakiness" in a PR again; they are under investigation.
+**Test suite has no known failures.** INV-010 (2026-09-03) root-caused the two `CHART-PERIOD-YEAR-AWARE` failures that every PR since INV-008 had labelled "pre-existing flakiness": the spec left the demo register in memory and `rDash()` regenerated weekly buckets from it. Test-only fix (KI-009). A red test is a regression until proven otherwise; specs that seed `S.weekly` or read the dashboard must also reset `S.clashes`.
 
 ---
 
@@ -122,9 +122,7 @@ Ranked order lives in `docs/governance/CURRENT_STATUS.md` → "Current Priority"
 
 - **MI-003 orphan audit:** ~63,178 image records vs ~3,670 restorable on the live profile. Read-only audit first. Wipe nothing.
 - **PIXEL-DEDUP Phase 2 consumer:** the read side shipped (DEC-014, `IMG-DHASH-INDEX`): hashes indexed per referenced slot on the metadata record, `findSimilarImages(maxDistance)` returns cross-test groups. What a near-duplicate image means for two clashes, the threshold, and where it surfaces need a brief before building. Do not touch the Dedup Queue for this without one.
-- **INV-010:** root-cause the `CHART-PERIOD-YEAR-AWARE` failures.
-- **KI-008:** frozen-week double-count; fix is a `clashStatusAt(c, wk, yr)` projection across every counter. Start with a failing test.
-- **Delta Analysis Settings UI (Step 3):** storage/accessors/live-reclass for `nw:designedConditionPatterns` and `nw:republishToleranceMm` exist; no settings surface.
+- **KI-008:** frozen-week double-count. Blocked on a decision: the projection fix contradicts the tested `FROZEN-WEEK-TERMINAL-REFRESH` contract. Options and recommendation in `KNOWN_ISSUES.md` KI-008. Do not change either without Shane's ruling.
 - **Phase 2 of PAIR-ID-RESOLVED-COUNT:** auto-flip status to Resolved with confirmation toast + undo. Detection logic is shipped; the status-mutation part is deferred pending Playwright validation against real Muratec XMLs.
 - Building filter additions to Lifecycle and Severity charts
 - Layer A `eA`/`eB` flattening fix (storage flattens parsed nested objects, dropping `baseLevel`/`gridHead`)

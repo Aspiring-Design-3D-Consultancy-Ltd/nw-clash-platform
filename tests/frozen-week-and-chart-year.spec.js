@@ -18,6 +18,16 @@ test.describe('FROZEN-WEEK-TERMINAL-REFRESH + CHART year-aware fixes', () => {
       document.getElementById('auth').style.display = 'none';
       document.getElementById('app').classList.add('show');
       _ROLE = 'admin';
+      // INV-010: isolate the register. Clearing nw:* keys does not empty the
+      // in-memory demo dataset (104 clashes dated Jan 2025), and rDash() calls
+      // regenWeeklyFromRegister(), which adds one snapshot per ISO week that
+      // has clashes (WEEKLY-SNAP-PER-CLASH-BUCKET). With the demo register
+      // present the two CHART-PERIOD-YEAR-AWARE tests saw 2025-W02..W05
+      // prepended to their seeded weeks and _chartFrom came back 202502
+      // instead of 202541 — on every run, not on a date boundary. Same
+      // in-memory reset INV-007 / KI-005 applied to the folder-import specs.
+      S.clashes = [];
+      S.weekly = [];
     });
   });
 
