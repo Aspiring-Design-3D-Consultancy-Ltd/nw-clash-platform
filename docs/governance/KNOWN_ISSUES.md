@@ -614,7 +614,7 @@ Re-loading a Test Name Strands Its Previous Image Records (Orphan Regeneration)
 
 Status:
 
-Resolved (INV-011)
+Resolved — closed 2026-09-03 on Shane's confirmation of the live-profile figures: dry run 76,682 orphaned / 4,768 referenced as predicted; delete mode verification PASSED, referenced 4,768 → 4,768, orphaned 0; post-audit 4,769 keys, 0 orphaned, 0 missing.
 
 Severity:
 

@@ -1850,6 +1850,8 @@ Observations from the run, not acted on:
 
 Released. Merge commit `5f339ff` (PR #68), `main` head `92246f5` after the build stamp. Tracked as KI-010 (Resolved). MI-003 closed on the live-profile run above.
 
+Closed 2026-09-03 on Shane's confirmation: dry run 76,682 / 4,768 as predicted; delete verification PASSED, referenced 4,768 → 4,768, orphaned 0; post-audit 4,769 keys, 0 orphaned, 0 missing.
+
 Investigation closed.
 
 ---
