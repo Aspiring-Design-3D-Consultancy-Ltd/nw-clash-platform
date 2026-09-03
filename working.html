@@ -5682,6 +5682,112 @@ async function _imgWeekKeyingMigrate(opts){
 }
 /* IMG-WEEK-KEYING end */
 
+/* PIXEL-DEDUP-AUTOMERGE start: Stage 1 evidence probe — READ-ONLY. Computes
+   the dHash Hamming distance for every Dedup Queue pair the coordinate scan
+   has already surfaced (never for pairs it did not), split into the groups a
+   threshold decision needs: live (unresolved) pairs, pairs a human marked
+   keep-separate (the negatives), and pairs a human merged (the positives —
+   mostly uncomputable, because Merge deletes the newer clash and its image
+   reference with it). Buckets 0-4 / 5-8 / 9-12 / 13-16 / >16 bits with pair
+   counts and example ids, plus the coordinate distance of each pair so the
+   two signals can be read against each other. Reads S.clashes, S.dedupQueue,
+   nw:dedupActionHistory and image hashes via the DEC-014 index (record
+   fallback); writes nothing anywhere.
+   Console:  await _dedupSimilarityProbe()
+   The auto-merge itself is NOT in this block yet — Stage 2 waits on the
+   distribution this prints from the live profile. */
+async function _dedupSimilarityProbe(opts){
+  opts=opts||{};
+  const maxExamples=Number.isFinite(opts.examples)?Math.max(0,opts.examples|0):3;
+  const byUid=new Map((S.clashes||[]).map(c=>[c.uid,c]));
+  const HAM=[{label:'0-4',min:0,max:4},{label:'5-8',min:5,max:8},{label:'9-12',min:9,max:12},{label:'13-16',min:13,max:16},{label:'>16',min:17,max:64}];
+  const DIST=[{label:'<=1mm',min:-Infinity,max:1},{label:'1-5mm',min:1,max:5},{label:'5-25mm',min:5,max:25},{label:'25-100mm',min:25,max:100},{label:'100-500mm',min:100,max:500},{label:'>500mm',min:500,max:Infinity}];
+  const hamBucket=d=>HAM.find(b=>d>=b.min&&d<=b.max);
+  const distBucket=d=>DIST.find(b=>d>b.min&&d<=b.max)||DIST[0];
+  const hashFor=async c=>{
+    if(!c)return null;
+    const idx=_iwkLookupIdx(c);
+    if(idx===null)return null;
+    try{return await _dhashIndexGet(idx);}catch(e){return null;}
+  };
+  const q=Array.isArray(S.dedupQueue)?S.dedupQueue:[];
+  let hist=[];
+  try{hist=JSON.parse(localStorage.getItem('nw:dedupActionHistory')||'[]');}catch(e){hist=[];}
+  if(!Array.isArray(hist))hist=[];
+  // Groups: live queue pairs; human keep-separate (queue + history, de-duplicated
+  // by pair id); human merges (queue + history; computable only where both
+  // clashes still exist, which after a Merge is rare by design).
+  const live=q.filter(p=>p&&!p.resolved&&!p.skipped);
+  const skipped=q.filter(p=>p&&!p.resolved&&p.skipped);
+  const keepMap=new Map();
+  q.filter(p=>p&&p.resolved&&p.resolvedAction==='keep-separate').forEach(p=>keepMap.set(p.dedupPairId,{pairId:p.dedupPairId,a:p.a,b:p.b,distMm:p.distMm}));
+  hist.filter(e=>e&&e.type==='action'&&e.action==='keep-separate'&&e.pairId).forEach(e=>{if(!keepMap.has(e.pairId))keepMap.set(e.pairId,{pairId:e.pairId,a:e.aClashId,b:e.bClashId,distMm:e.distMm});});
+  const mergeMap=new Map();
+  q.filter(p=>p&&p.resolved&&p.resolvedAction==='merge').forEach(p=>mergeMap.set(p.dedupPairId,{pairId:p.dedupPairId,a:p.a,b:p.b,distMm:p.distMm}));
+  hist.filter(e=>e&&e.type==='action'&&e.action==='merge'&&e.pairId).forEach(e=>{if(!mergeMap.has(e.pairId))mergeMap.set(e.pairId,{pairId:e.pairId,a:e.aClashId,b:e.bClashId,distMm:e.distMm});});
+  const rows=[];
+  const summarise=async(list,group)=>{
+    const out={group,pairs:list.length,computable:0,missingClash:0,noImage:0,noHash:0,hamming:{},distMm:{},cross:{}};
+    HAM.forEach(b=>{out.hamming[b.label]={count:0,examples:[]};});
+    DIST.forEach(b=>{out.distMm[b.label]=0;});
+    for(const p of list){
+      const a=byUid.get(p.a),b=byUid.get(p.b);
+      const dm=(typeof p.distMm==='number')?p.distMm:null;
+      if(dm!==null)out.distMm[distBucket(dm).label]++;
+      if(!a||!b){out.missingClash++;continue;}
+      const ia=_iwkLookupIdx(a),ib=_iwkLookupIdx(b);
+      if(ia===null||ib===null){out.noImage++;continue;}
+      const ha=await hashFor(a),hb=await hashFor(b);
+      if(!ha||!hb){out.noHash++;continue;}
+      const d=_dhashHamming(ha,hb);
+      out.computable++;
+      const hb2=hamBucket(d);
+      if(hb2){
+        out.hamming[hb2.label].count++;
+        if(out.hamming[hb2.label].examples.length<maxExamples)out.hamming[hb2.label].examples.push(p.pairId);
+        const dl=dm!==null?distBucket(dm).label:'n/a';
+        const ck=hb2.label+' bits x '+dl;
+        out.cross[ck]=(out.cross[ck]||0)+1;
+      }
+      rows.push({group,pairId:p.pairId,a:p.a,b:p.b,distMm:dm,hamming:d});
+    }
+    return out;
+  };
+  const strip=p=>({pairId:p.dedupPairId,a:p.a,b:p.b,distMm:p.distMm});
+  const result={
+    at:new Date().toISOString(),
+    register:byUid.size,
+    queue:{total:q.length,live:live.length,skipped:skipped.length,
+      resolvedKeepSeparate:q.filter(p=>p&&p.resolved&&p.resolvedAction==='keep-separate').length,
+      resolvedMerge:q.filter(p=>p&&p.resolved&&p.resolvedAction==='merge').length},
+    history:{events:hist.length,merges:hist.filter(e=>e&&e.action==='merge').length,keepSeparate:hist.filter(e=>e&&e.action==='keep-separate').length},
+    live:await summarise(live.map(strip),'live'),
+    skipped:await summarise(skipped.map(strip),'skipped'),
+    keepSeparate:await summarise([...keepMap.values()],'keep-separate'),
+    merged:await summarise([...mergeMap.values()],'merged'),
+    rows
+  };
+  try{
+    const line=g=>g.group+': '+g.pairs+' pairs, '+g.computable+' computable ('+g.missingClash+' missing a clash, '+g.noImage+' without an image on one side, '+g.noHash+' without a hash); '+
+      HAM.map(b=>b.label+'='+g.hamming[b.label].count).join(' ')+' bits';
+    console.log('[PIXEL-DEDUP-PROBE] register '+result.register+' clashes; queue '+result.queue.total+' ('+result.queue.live+' live, '+result.queue.skipped+' skipped, '+
+      result.queue.resolvedKeepSeparate+' keep-separate, '+result.queue.resolvedMerge+' merged); history '+result.history.events+' events ('+result.history.merges+' merges, '+
+      result.history.keepSeparate+' keep-separate). Read-only — nothing was changed.');
+    [result.live,result.skipped,result.keepSeparate,result.merged].forEach(g=>console.log('[PIXEL-DEDUP-PROBE] '+line(g)));
+    const table=[];
+    [result.live,result.keepSeparate,result.merged].forEach(g=>HAM.forEach(b=>table.push({group:g.group,bits:b.label,pairs:g.hamming[b.label].count,examples:g.hamming[b.label].examples.join(', ')})));
+    if(console.table)console.table(table);
+    const cross=[];
+    Object.keys(result.live.cross).sort().forEach(k=>cross.push({live_pairs:k,count:result.live.cross[k]}));
+    if(cross.length&&console.table)console.table(cross);
+    const dtab=[];
+    DIST.forEach(b=>dtab.push({distMm:b.label,live:result.live.distMm[b.label],keepSeparate:result.keepSeparate.distMm[b.label],merged:result.merged.distMm[b.label]}));
+    if(console.table)console.table(dtab);
+  }catch(e){}
+  return result;
+}
+/* PIXEL-DEDUP-AUTOMERGE end */
+
 // Refresh the image panel inside an open modal
 function refreshModalImage(){
   const panel=document.getElementById('cm-nw-img-panel');
