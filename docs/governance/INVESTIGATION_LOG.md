@@ -1795,7 +1795,14 @@ Four in five records in the store are unreachable, and they hold 94% of the payl
 - `IMG-REF-REFRESH` updates a clash's `nwImageRef` and `testIdx` to the newest export's values only when the clash is re-detected in that import. A clash last observed in W33 keeps its W33 filename.
 - Lookups resolve that filename against the newest week's file set for the same test name. Navisworks renumbers `cdNNNNNN.jpg` per export, so the W33 filename either points at an unrelated W36 viewport (wrong image) or, if the W36 export has fewer files, at nothing (placeholder). `IMG-POS` cannot rescue it: the positional fallback only fires when the test's image count equals its clash count, which is rarely true once clashes from earlier weeks persist in the register.
 
-Cleaning up orphans does not change this either way, because those records were already unreachable. Making earlier weeks' images reachable again is a design change — image sets keyed by test name **and** week, with lookups choosing the week the clash was last observed in (`weekTag`) — and needs its own brief. In the meantime the archive re-attach tool restores any single week's images for a test, at the cost of replacing the newer week's.
+Cleaning up orphans does not change this either way, because those records were already unreachable. Making earlier weeks' images reachable again is a design change — image sets keyed by test name **and** week, with lookups choosing the week the clash was last observed in (`weekTag`).
+
+Follow-up (2026-09-03): shipped as IMG-WEEK-KEYING under DEC-016 (Option A). Live-profile migration output to be recorded here when run:
+
+```
+await _imgWeekKeyingMigrate()               // dry run
+await _imgWeekKeyingMigrate({dryRun:false}) // apply
+```
 
 ---
 ## Remediation (IMG-ORPHAN-CLEANUP, this PR)

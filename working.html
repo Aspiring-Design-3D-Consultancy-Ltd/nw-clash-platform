@@ -3786,6 +3786,7 @@ async function clearNwImageStore(){
   if(!confirm(`Clear ${_nwImgCount} stored clash images? You will need to reload them from the folder.`))return;
   await idbClear();
   _nwImages.clear();
+  _nwImgSets.clear();Object.keys(_nwImgLatest).forEach(k=>delete _nwImgLatest[k]); /* IMG-WEEK-KEYING */
   _dhashIndex.clear(); /* IMG-DHASH-INDEX: nothing referenced after a clear */
   _nwImagesByIndex.length=0;
   /* IMG-FIX: wipe per-test tracker too */
@@ -3810,7 +3811,143 @@ const _nwImagesByIndex=[]; // 1-based in-memory cache
    collide. Loading is per-test (modal asks which clash test the images belong to)
    so the lookup key always carries the test context. */
 const _nwImages=new Map();  // "testName::filename" → idx
-const _nwImgByTest={};      // testName -> { firstIdx, count, filenames:[] }
+const _nwImgByTest={};      // testName -> { firstIdx, count, filenames:[] }  (IMG-WEEK-KEYING: derived view of the latest set per test)
+/* IMG-WEEK-KEYING start: image sets keyed by (testName, weekTag). Before this,
+   one range per test name meant only the most recently loaded week's files
+   were reachable, and a clash last observed in an earlier week resolved its
+   (renumbered) filename against the newest week's set — wrong image or
+   placeholder (INV-011 ruling 3). Now every (test, week) load is its own set:
+     _nwImgSets  key test\u241Fweek -> {testName, weekTag, firstIdx, count, filenames, loadedAt, synth?}
+     _nwImgLatest testName -> weekTag of the newest set by week DATE (not load order)
+     _nwImgByTest stays exactly what every existing reader expects: a mirror of
+                 the latest set per test. Derived, never written directly.
+     _nwImages   test::week::file for every set — one entry per image, so its
+                 size is still the image count. The latest-set fallback goes
+                 through the same form using _nwImgLatest[test].
+   Metadata stays shape imgfix-v1 with `sets` and `latest` added, so an older
+   build still reads byTest and behaves as it always did.
+   weekTag is the raw week-YYMMDD wrapper (same helper the parsers stamp the
+   register with) or 'untagged' for loads with no week (the Load NWC Images
+   modal, paste imports). A load with no valid week goes into the test's
+   current latest set, so the modal keeps replacing "the test's images" as
+   before. Lookups use the clash's own week set when one exists — and only
+   that set, so a missing file in the right week is a placeholder, never a
+   neighbour's viewport — and fall back to the latest set only for clashes
+   whose week has no set (legacy / untagged). Same-week re-loads supersede;
+   different weeks accumulate by design. */
+const _IWK_UNTAGGED='untagged';
+const _IWK_SEP='\u241F';
+const _nwImgSets=new Map();
+const _nwImgLatest={};
+function _iwkKey(testName,weekTag){return String(testName)+_IWK_SEP+String(weekTag);}
+function _iwkWeekOrder(tag){
+  if(!tag||tag===_IWK_UNTAGGED)return -1;
+  const d=(typeof _parseWeekDate==='function')?_parseWeekDate(tag):null;
+  return d?parseInt(d.replace(/-/g,''),10):-1;
+}
+function _iwkResolveLoadTag(testName,weekTag){
+  if(typeof _isWeekTag==='function'&&_isWeekTag(weekTag))return weekTag;
+  return _nwImgLatest[testName]||_IWK_UNTAGGED;
+}
+function _iwkReferencedSlots(){
+  const s=new Set();
+  _nwImgSets.forEach(t=>{const f=t.firstIdx|0,n=t.count|0;for(let i=0;i<n;i++)s.add(f+i);});
+  return s;
+}
+function _iwkNextIdx(){
+  let n=1;
+  _nwImgSets.forEach(t=>{n=Math.max(n,(t.firstIdx|0)+(t.count|0));});
+  return n;
+}
+function _iwkRebuildViews(){
+  Object.keys(_nwImgLatest).forEach(k=>delete _nwImgLatest[k]);
+  Object.keys(_nwImgByTest).forEach(k=>delete _nwImgByTest[k]);
+  _nwImages.clear();
+  _nwImgSets.forEach(t=>{
+    const cur=_nwImgLatest[t.testName];
+    if(cur===undefined||_iwkWeekOrder(t.weekTag)>_iwkWeekOrder(cur))_nwImgLatest[t.testName]=t.weekTag;
+  });
+  let total=0;
+  _nwImgSets.forEach(t=>{
+    const fns=t.filenames||[];
+    const isLatest=_nwImgLatest[t.testName]===t.weekTag;
+    fns.forEach((fn,j)=>{
+      if(!fn)return;
+      _nwImages.set(t.testName+'::'+t.weekTag+'::'+fn,(t.firstIdx|0)+j);
+    });
+    if(isLatest)_nwImgByTest[t.testName]={firstIdx:t.firstIdx|0,count:t.count|0,filenames:fns.slice()};
+    total+=t.count|0;
+  });
+  return total;
+}
+function _iwkSerialiseSets(){
+  const o={};
+  _nwImgSets.forEach((t,k)=>{
+    o[k]={testName:t.testName,weekTag:t.weekTag,firstIdx:t.firstIdx|0,count:t.count|0,filenames:(t.filenames||[]).slice(),loadedAt:t.loadedAt||null};
+    if(t.synth)o[k].synth=true;
+  });
+  return o;
+}
+function _iwkSerialiseLatest(){return Object.assign({},_nwImgLatest);}
+/* Populate _nwImgSets from a metadata record. `sets` is the source of truth
+   when present. Without it (a store written before this change) one set per
+   byTest entry is synthesised under the untagged week and flagged synth:true
+   so _imgWeekKeyingMigrate knows which sets to retag from the register.
+   Week-keyed lookups miss synthesised sets and fall through to the latest-set
+   path, which is exactly the pre-change behaviour. Returns the image total. */
+function _iwkRestore(meta){
+  _nwImgSets.clear();
+  const sets=(meta&&meta.sets&&typeof meta.sets==='object')?meta.sets:null;
+  if(sets&&Object.keys(sets).length){
+    Object.keys(sets).forEach(k=>{
+      const t=sets[k];
+      if(!t||typeof t!=='object'||!t.testName)return;
+      const tag=(typeof t.weekTag==='string'&&t.weekTag)||_IWK_UNTAGGED;
+      _nwImgSets.set(_iwkKey(t.testName,tag),{testName:t.testName,weekTag:tag,firstIdx:t.firstIdx|0,count:t.count|0,
+        filenames:(t.filenames||[]).slice(),loadedAt:t.loadedAt||null,synth:!!t.synth});
+    });
+  }else if(meta&&meta.byTest&&typeof meta.byTest==='object'){
+    Object.entries(meta.byTest).forEach(([tn,info])=>{
+      _nwImgSets.set(_iwkKey(tn,_IWK_UNTAGGED),{testName:tn,weekTag:_IWK_UNTAGGED,firstIdx:(info&&info.firstIdx)|0,count:(info&&info.count)|0,
+        filenames:((info&&info.filenames)||[]).slice(),loadedAt:(meta&&meta.loadedAt)||null,synth:true});
+    });
+  }
+  return _iwkRebuildViews();
+}
+/* Composite lookup. The clash's own week set is authoritative when it exists;
+   the latest set is consulted only when the clash's week has no set. */
+function _iwkLookupIdx(c){
+  const ref=(c&&c.nwImageRef)||'';
+  const tn=(c&&(c.rawTestName||c.testName))||'';
+  if(!ref||!tn)return null;
+  const wt=c.weekTag;
+  if(typeof wt==='string'&&wt&&_nwImgSets.has(_iwkKey(tn,wt))){
+    const idx=_nwImages.get(tn+'::'+wt+'::'+ref);
+    return idx===undefined?null:idx;
+  }
+  const lt=_nwImgLatest[tn];
+  if(lt===undefined)return null;
+  const idx=_nwImages.get(tn+'::'+lt+'::'+ref);
+  return idx===undefined?null:idx;
+}
+/* Positional fallback (IMG-POS rule: only when the set's image count equals
+   the test's clash count) scoped to the same set choice. */
+function _iwkPositionalIdx(c){
+  const tn=(c&&(c.rawTestName||c.testName))||'';
+  if(!tn||typeof c.testIdx!=='number')return null;
+  const wt=c.weekTag;
+  let set=null;
+  if(typeof wt==='string'&&wt)set=_nwImgSets.get(_iwkKey(tn,wt))||null;
+  if(!set&&_nwImgLatest[tn]!==undefined)set=_nwImgSets.get(_iwkKey(tn,_nwImgLatest[tn]))||null;
+  if(!set)return null;
+  const cnt=_posClashCount(tn);
+  if(set.count!==cnt||c.testIdx<0||c.testIdx>=set.count)return null;
+  const pf=(set.filenames||[])[c.testIdx];
+  if(!pf)return null;
+  const idx=_nwImages.get(tn+'::'+set.weekTag+'::'+pf);
+  return idx===undefined?null:{idx,filename:pf,set};
+}
+/* IMG-WEEK-KEYING end */
 let _pendingImgTest=null;   // set by the load-images modal before the folder picker fires
 /* IMG-FIX end */
 let _idb=null;
@@ -4625,6 +4762,7 @@ async function initNwImages(){
         }catch(e){done();}
       });
       try{_nwImages.clear();}catch(e){}
+      try{_nwImgSets.clear();Object.keys(_nwImgLatest).forEach(k=>delete _nwImgLatest[k]);}catch(e){} /* IMG-WEEK-KEYING */
       try{_dhashIndex.clear();}catch(e){} /* IMG-DHASH-INDEX */
       _nwImagesByIndex.length=0;
       try{Object.keys(_nwImgByTest).forEach(k=>delete _nwImgByTest[k]);}catch(e){}
@@ -4648,6 +4786,7 @@ async function initNwImages(){
       updateNwImgUI();
       // Populate the per-test stat so the UI shows "legacy — please reload"
       Object.keys(_nwImgByTest).forEach(k=>delete _nwImgByTest[k]);
+      _nwImgSets.clear();Object.keys(_nwImgLatest).forEach(k=>delete _nwImgLatest[k]); /* IMG-WEEK-KEYING */
       _dhashIndex.clear(); /* IMG-DHASH-INDEX: legacy shape has no referenced slots */
       _nwImgByTest['(legacy — please reload per test)']={
         firstIdx:1,count:meta.count||0,filenames:meta.filenames||[]
@@ -4665,6 +4804,7 @@ async function initNwImages(){
     _nwImagesByIndex.length=0;
     _nwImagesByIndex.push(null);
     for(let i=1;i<=meta.count;i++)_nwImagesByIndex.push(undefined); // lazy load
+    _iwkRestore(meta); /* IMG-WEEK-KEYING: sets are the source of truth; byTest/_nwImages rebuilt from them */
     _dhashIndexRestore(meta); /* IMG-DHASH-INDEX: hashes for referenced slots, one read */
     _nwImgCount=meta.count;
     _nwFolderName=meta.folderName||'';
@@ -4688,7 +4828,7 @@ function updateNwImgUI(){
   });
 }
 
-function loadNwImages(files,testName){
+function loadNwImages(files,testName,weekTag){
   /* IMG-FIX start: per-test loading with composite key. testName argument is
      required — set by the load-images modal via _pendingImgTest. If absent we
      bail with a clear error to prevent the old "unassociated" behaviour. */
@@ -4717,24 +4857,21 @@ function loadNwImages(files,testName){
   // Drop existing composite-key map entries that belong to this test, and the per-test
   // tracker entry. The IDB slots themselves stay populated and get overwritten by the
   // new indexes — they aren't reachable any more via the cleared map.
-  /* IMG-ORPHAN-CLEANUP start: remember the range being superseded so its
-     records can be deleted once the new metadata is safely written. Before
-     this, every re-load of a test name left its old slots in IndexedDB with
-     nothing referencing them — the INV-011 orphan mechanism. */
-  const _prevRange=_nwImgByTest[testName]
-    ?{firstIdx:_nwImgByTest[testName].firstIdx|0,count:_nwImgByTest[testName].count|0}:null;
-  /* IMG-ORPHAN-CLEANUP end */
-  if(_nwImgByTest[testName]){
-    const prevFiles=_nwImgByTest[testName].filenames||[];
-    prevFiles.forEach(fn=>_nwImages.delete(testName+'::'+fn));
-    delete _nwImgByTest[testName];
-  }
-
-  // Find the next free 1-based index. The IDB store still uses integer keys so
-  // we can keep the existing idbPut/idbGet helpers unchanged.
-  let nextIdx=1;
-  Object.values(_nwImgByTest).forEach(t=>{nextIdx=Math.max(nextIdx,(t.firstIdx||0)+(t.count||0));});
-  const firstIdx=nextIdx;
+  /* IMG-WEEK-KEYING start: this load goes into the (testName, week) set. A
+     valid week-YYMMDD tag is used as given; anything else means the test's
+     current latest set (the modal loader and paste imports), else 'untagged'.
+     Only the SAME (test, week) set is superseded — other weeks' sets stay. */
+  const _iwkTag=_iwkResolveLoadTag(testName,weekTag);
+  const _iwkSetKey=_iwkKey(testName,_iwkTag);
+  const _iwkPrev=_nwImgSets.get(_iwkSetKey)||null;
+  /* IMG-ORPHAN-CLEANUP: remember the range being superseded so its records
+     can be deleted once the new metadata is safely written (INV-011). */
+  const _prevRange=_iwkPrev?{firstIdx:_iwkPrev.firstIdx|0,count:_iwkPrev.count|0}:null;
+  if(_iwkPrev)_nwImgSets.delete(_iwkSetKey);
+  // Find the next free 1-based index across EVERY set. The IDB store still
+  // uses integer keys so idbPut/idbGet are unchanged.
+  const firstIdx=_iwkNextIdx();
+  /* IMG-WEEK-KEYING end */
   const total=imgFiles.length;
   let loaded=0;
 
@@ -4747,7 +4884,10 @@ function loadNwImages(files,testName){
      The pre-backpressure code got this for free because it pushed inside a
      synchronous forEach; the worker pool below is async, so populate up front. */
   imgFiles.forEach(f=>filenames.push(f.name));
-  _nwImgByTest[testName]={firstIdx,count:total,filenames};
+  /* IMG-WEEK-KEYING: register the set synchronously (the batch loop reads the
+     derived _nwImgByTest for the next test), then rebuild the derived views. */
+  _nwImgSets.set(_iwkSetKey,{testName,weekTag:_iwkTag,firstIdx,count:total,filenames,loadedAt:Date.now()});
+  _iwkRebuildViews();
 
   /* IMG-BATCH-BACKPRESSURE start: this used to open a FileReader for EVERY
      image in the same synchronous tick (`imgFiles.forEach(... new FileReader()
@@ -4804,7 +4944,7 @@ function loadNwImages(files,testName){
         /* IMG-DHASH-INDEX: record the slot's hash only after the write landed,
            so the index never claims a hash the store does not hold. */
         if(_dh)_dhashIndex.set(idx,_dh);else _dhashIndex.delete(idx);
-        _nwImages.set(testName+'::'+f.name,idx);
+        _nwImages.set(testName+'::'+_iwkTag+'::'+f.name,idx); /* IMG-WEEK-KEYING */
         _nwImagesByIndex[idx]=b64;
       }catch(e){
         failed++;
@@ -4818,9 +4958,8 @@ function loadNwImages(files,testName){
     const nextRef={i:0};
     const lanes=Math.min(_IMG_READ_CONCURRENCY,imgFiles.length);
     await Promise.all(Array.from({length:lanes},()=>_imgWorker(nextRef)));
-    // Recompute total count across all tests, save new-shape metadata.
-    let grandTotal=0;
-    Object.values(_nwImgByTest).forEach(t=>{grandTotal+=t.count||0;});
+    // Recompute total count across all sets, save metadata.
+    const grandTotal=_iwkRebuildViews(); /* IMG-WEEK-KEYING: derived views + total from the sets */
     _nwImgCount=grandTotal;
     _nwFolderName=testName; // last-loaded test name shown in UI
     const meta={
@@ -4828,6 +4967,10 @@ function loadNwImages(files,testName){
       count:grandTotal,
       loadedAt:Date.now(),
       byTest:JSON.parse(JSON.stringify(_nwImgByTest)),
+      /* IMG-WEEK-KEYING: per-(test, week) sets and the latest pointer. byTest
+         above is the derived latest view, kept for older builds and readers. */
+      sets:_iwkSerialiseSets(),
+      latest:_iwkSerialiseLatest(),
       /* IMG-DHASH-INDEX: referenced-slot hash index, pruned to live slots */
       dhashByIdx:_dhashIndexSerialise()
     };
@@ -4842,14 +4985,13 @@ function loadNwImages(files,testName){
     let superseded=0;
     if(_metaOk&&_prevRange&&_prevRange.count>0){
       try{
-        const live=new Set();
-        Object.values(_nwImgByTest).forEach(t=>{const f=(t&&t.firstIdx)|0,n=(t&&t.count)|0;for(let i=0;i<n;i++)live.add(f+i);});
+        const live=_iwkReferencedSlots(); /* IMG-WEEK-KEYING: every set, every week */
         const stale=[];
         for(let i=0;i<_prevRange.count;i++){const k=_prevRange.firstIdx+i;if(k>0&&!live.has(k))stale.push(k);}
         if(stale.length){
           superseded=await idbDeleteKeys(stale);
           stale.forEach(k=>{_nwImagesByIndex[k]=undefined;try{_dhashIndex.delete(k);}catch(e){}});
-          try{console.log('[IMG-ORPHAN-CLEANUP] "'+testName+'": '+superseded+' superseded image record(s) deleted');}catch(e){}
+          try{console.log('[IMG-ORPHAN-CLEANUP] "'+testName+'" ('+_iwkTag+'): '+superseded+' superseded image record(s) deleted');}catch(e){}
         }
       }catch(e){
         try{console.warn('[IMG-ORPHAN-CLEANUP] could not delete superseded records for "'+testName+'": '+((e&&e.message)||e));}catch(_){}
@@ -4866,7 +5008,7 @@ function loadNwImages(files,testName){
       const tbr=document.getElementById('tbr');
       if(tbr)tbr.innerHTML=getVA('register')||'';
     }
-    return {testName,total,stored,failed,superseded};
+    return {testName,weekTag:_iwkTag,total,stored,failed,superseded};
   })();
   /* IMG-BATCH-BACKPRESSURE end */
   /* IMG-FIX end */
@@ -5093,12 +5235,7 @@ async function _dhashBackfill(){
 const _dhashIndex=new Map(); // idx -> 16-char hex dhash, referenced slots only
 
 function _dhashIndexReferencedSlots(){
-  const s=new Set();
-  Object.values(_nwImgByTest).forEach(t=>{
-    const f=(t&&t.firstIdx)|0,n=(t&&t.count)|0;
-    for(let i=0;i<n;i++)s.add(f+i);
-  });
-  return s;
+  return _iwkReferencedSlots(); /* IMG-WEEK-KEYING: union of every (test, week) set */
 }
 /* Plain object for the metadata block. Prunes entries whose slot no test
    references any more (a re-loaded test that moved or shrank). */
@@ -5166,9 +5303,9 @@ function _dhashHamming(a,b){
 function findSimilarImages(maxDistance){
   const maxD=Number.isFinite(maxDistance)?Math.max(0,maxDistance|0):0;
   const slotInfo=new Map();
-  Object.entries(_nwImgByTest).forEach(([tn,t])=>{
+  _nwImgSets.forEach(t=>{ /* IMG-WEEK-KEYING: every set, member carries its week */
     const f=(t&&t.firstIdx)|0,n=(t&&t.count)|0,fns=(t&&t.filenames)||[];
-    for(let i=0;i<n;i++)slotInfo.set(f+i,{testName:tn,filename:fns[i]||null});
+    for(let i=0;i<n;i++)slotInfo.set(f+i,{testName:t.testName,weekTag:t.weekTag,filename:fns[i]||null});
   });
   const entries=[];
   _dhashIndex.forEach((h,idx)=>{ if(slotInfo.has(idx))entries.push({idx,hash:h}); });
@@ -5190,7 +5327,7 @@ function findSimilarImages(maxDistance){
     let g=groups.get(r);
     if(!g){g={members:[]};groups.set(r,g);}
     const info=slotInfo.get(e.idx);
-    g.members.push({idx:e.idx,hash:e.hash,testName:info.testName,filename:info.filename});
+    g.members.push({idx:e.idx,hash:e.hash,testName:info.testName,weekTag:info.weekTag,filename:info.filename});
   });
   return [...groups.values()]
     .filter(g=>g.members.length>1)
@@ -5244,11 +5381,21 @@ async function _auditSampleNwImages(keys){
 function _classifyNwImageKeys(keys,meta){
   const numeric=new Set();let nonNumericKeys=0;
   (keys||[]).forEach(k=>{if(typeof k==='number')numeric.add(k);else nonNumericKeys++;});
+  /* IMG-WEEK-KEYING: with per-week sets present, EVERY set's range is
+     referenced — older weeks accumulate by design and must never be treated
+     as orphans. byTest (the latest-per-test view) is the fallback for a
+     store written before sets existed. */
+  const setsObj=(meta&&typeof meta==='object'&&meta.sets&&typeof meta.sets==='object'&&Object.keys(meta.sets).length)?meta.sets:null;
   const byTest=(meta&&typeof meta==='object'&&meta.byTest&&typeof meta.byTest==='object')?meta.byTest:{};
-  const ranges=Object.entries(byTest).map(([tn,info])=>({
-    testName:tn,firstIdx:(info&&info.firstIdx)|0,count:(info&&info.count)|0,
-    filenames:((info&&info.filenames)||[]).length
-  }));
+  const ranges=setsObj
+    ?Object.values(setsObj).filter(t=>t&&typeof t==='object'&&t.testName).map(t=>({
+        testName:t.testName,weekTag:(typeof t.weekTag==='string'&&t.weekTag)||'untagged',
+        firstIdx:t.firstIdx|0,count:t.count|0,filenames:((t.filenames)||[]).length
+      }))
+    :Object.entries(byTest).map(([tn,info])=>({
+        testName:tn,weekTag:null,firstIdx:(info&&info.firstIdx)|0,count:(info&&info.count)|0,
+        filenames:((info&&info.filenames)||[]).length
+      }));
   const owner=new Map();
   ranges.forEach(r=>{
     for(let i=0;i<r.count;i++){
@@ -5267,7 +5414,7 @@ function _classifyNwImageKeys(keys,meta){
     if(last&&k===last.to+1){last.to=k;last.n++;}else runs.push({from:k,to:k,n:1});
   });
   return {numeric,nonNumericKeys,ranges,owner,overlapping,missing,referencedKeys,orphanKeys,runs,
-    hasMeta:!!(meta&&typeof meta==='object'&&meta.byTest)};
+    hasMeta:!!(meta&&typeof meta==='object'&&(meta.byTest||setsObj))};
 }
 async function _auditNwImageStore(opts){
   opts=opts||{};
@@ -5306,7 +5453,7 @@ async function _auditNwImageStore(opts){
   out.byTest=ranges.map(r=>{
     let present=0;
     for(let i=0;i<r.count;i++)if(numeric.has(r.firstIdx+i))present++;
-    return {testName:r.testName,firstIdx:r.firstIdx,count:r.count,filenames:r.filenames,present,missing:r.count-present};
+    return {testName:r.testName,weekTag:r.weekTag,firstIdx:r.firstIdx,count:r.count,filenames:r.filenames,present,missing:r.count-present};
   });
   out.orphanRuns=runs.length;
   out.orphanKeyMin=orphanKeys.length?orphanKeys[0]:null;
@@ -5438,6 +5585,103 @@ async function _cleanupNwImageOrphans(opts){
 }
 /* IMG-ORPHAN-CLEANUP end */
 
+/* IMG-WEEK-KEYING start: one-shot migration of a store written before sets
+   existed. Every set synthesised from byTest (synth:true, week 'untagged') is
+   retagged to the LATEST week-YYMMDD tag found on register clashes with that
+   raw test name — the week the current images actually came from. A test with
+   no tagged clashes stays untagged. Purely additive: no slot moves, no record
+   is deleted, so "no deletion before verification" holds by construction.
+   Dry run by default; apply mode writes `sets` + `latest`, reads the record
+   back, byte-compares those fields, and only then sets the gate
+   nw:imgWeekKeyingMigrated (never on a failed write — INV-003/005/006 rule).
+   Console:  await _imgWeekKeyingMigrate()               // dry run
+             await _imgWeekKeyingMigrate({dryRun:false}) // apply */
+async function _imgWeekKeyingMigrate(opts){
+  opts=opts||{};
+  const dryRun=opts.dryRun!==false;
+  const out={ok:false,dryRun,gate:null,assignments:[],retagged:0,unchanged:0,verified:null,reason:null};
+  const say=m=>{try{console.log('[IMG-WEEK-KEYING] '+m);}catch(e){}};
+  try{out.gate=localStorage.getItem('nw:imgWeekKeyingMigrated');}catch(e){}
+  let meta;
+  try{meta=await idbGet(0);}catch(e){out.reason='could not read metadata: '+((e&&e.message)||e);say(out.reason);return out;}
+  if(!meta||typeof meta!=='object'||(!meta.byTest&&!meta.sets)){out.ok=true;out.reason='no image metadata — nothing to migrate';say(out.reason);return out;}
+  // Work on a scratch copy of the sets, never on the live _nwImgSets until verified.
+  const scratch=new Map();
+  const src=(meta.sets&&typeof meta.sets==='object'&&Object.keys(meta.sets).length)?meta.sets:null;
+  if(src){
+    Object.keys(src).forEach(k=>{const t=src[k];if(t&&typeof t==='object'&&t.testName)scratch.set(k,Object.assign({},t,{filenames:(t.filenames||[]).slice()}));});
+  }else{
+    Object.entries(meta.byTest||{}).forEach(([tn,info])=>{
+      scratch.set(_iwkKey(tn,_IWK_UNTAGGED),{testName:tn,weekTag:_IWK_UNTAGGED,firstIdx:(info&&info.firstIdx)|0,count:(info&&info.count)|0,
+        filenames:((info&&info.filenames)||[]).slice(),loadedAt:meta.loadedAt||null,synth:true});
+    });
+  }
+  const latestTagFor=tn=>{
+    let best=null,bo=-1,seen=0;
+    (S.clashes||[]).forEach(c=>{
+      const t=(c&&(c.rawTestName||c.testName))||'';
+      if(t!==tn)return;
+      seen++;
+      const wt=c.weekTag;
+      if(!_isWeekTag(wt))return;
+      const o=_iwkWeekOrder(wt);
+      if(o>bo){bo=o;best=wt;}
+    });
+    return {tag:best,seen};
+  };
+  const next=new Map();
+  scratch.forEach((t,k)=>{
+    if(!t.synth){next.set(k,t);out.unchanged++;return;}
+    const {tag,seen}=latestTagFor(t.testName);
+    const to=tag||_IWK_UNTAGGED;
+    const row={testName:t.testName,from:t.weekTag,to,clashesSeen:seen,images:t.count|0};
+    out.assignments.push(row);
+    const nk=_iwkKey(t.testName,to);
+    if(nk!==k&&scratch.has(nk)){
+      // A real set for that week already exists (loaded after the store was
+      // written). Keep the synthesised one untagged so nothing is overwritten.
+      row.to=_IWK_UNTAGGED;row.note='week already has a set; kept untagged';
+      const kept=Object.assign({},t);delete kept.synth;
+      next.set(k,kept);
+      return;
+    }
+    const nt=Object.assign({},t,{weekTag:to});
+    delete nt.synth;
+    next.set(nk,nt);
+    if(to!==t.weekTag)out.retagged++;
+  });
+  if(dryRun){
+    out.ok=true;
+    say('dry run: '+out.assignments.length+' synthesised set(s) would be retagged ('+out.retagged+' to a week, '+
+      (out.assignments.length-out.retagged)+' staying untagged), '+out.unchanged+' already week-keyed. Nothing was changed. '+
+      'Run _imgWeekKeyingMigrate({dryRun:false}) to apply.');
+    try{if(out.assignments.length&&console.table)console.table(out.assignments);}catch(e){}
+    return out;
+  }
+  const setsOut={};
+  next.forEach((t,k)=>{setsOut[k]={testName:t.testName,weekTag:t.weekTag,firstIdx:t.firstIdx|0,count:t.count|0,filenames:(t.filenames||[]).slice(),loadedAt:t.loadedAt||null};if(t.synth)setsOut[k].synth=true;});
+  const latestOut={};
+  next.forEach(t=>{const cur=latestOut[t.testName];if(cur===undefined||_iwkWeekOrder(t.weekTag)>_iwkWeekOrder(cur))latestOut[t.testName]=t.weekTag;});
+  const toWrite=Object.assign({},meta,{sets:setsOut,latest:latestOut});
+  try{await idbPut(0,toWrite);}
+  catch(e){out.reason='metadata write failed — gate not set: '+((e&&e.message)||e);say(out.reason);return out;}
+  let back=null;
+  try{back=await idbGet(0);}catch(e){}
+  const same=!!back&&JSON.stringify(back.sets)===JSON.stringify(setsOut)&&JSON.stringify(back.latest)===JSON.stringify(latestOut)&&
+    JSON.stringify(back.byTest)===JSON.stringify(meta.byTest);
+  out.verified=same;
+  if(!same){out.reason='read-back mismatch — gate not set; re-run to retry';say(out.reason);return out;}
+  try{localStorage.setItem('nw:imgWeekKeyingMigrated','1');}
+  catch(e){out.reason='gate write failed: '+((e&&e.message)||e);say(out.reason);return out;}
+  out.gate='1';
+  _iwkRestore(back);
+  out.ok=true;
+  say('applied: '+out.retagged+' set(s) retagged to their week, '+(out.assignments.length-out.retagged)+' left untagged, '+
+    out.unchanged+' already week-keyed; read-back verified; gate set.');
+  return out;
+}
+/* IMG-WEEK-KEYING end */
+
 // Refresh the image panel inside an open modal
 function refreshModalImage(){
   const panel=document.getElementById('cm-nw-img-panel');
@@ -5471,16 +5715,9 @@ function hasNwImage(c){
      getNwImageB64Sync). */
   const tn=c.rawTestName||c.testName||'';
   /* PR-A11-IMAGE-KEY-RAWTESTNAME end */
-  if(ref&&tn&&_nwImages.has(tn+'::'+ref))return true;
-  // Positional fallback (mirrors getNwImageB64Sync)
-  if(tn&&typeof c.testIdx==='number'&&_nwImgByTest[tn]){
-    const ti=_nwImgByTest[tn];
-    const cnt=_posClashCount(tn);
-    if(ti.count===cnt&&c.testIdx>=0&&c.testIdx<ti.count){
-      const pf=(ti.filenames||[])[c.testIdx];
-      if(pf&&_nwImages.has(tn+'::'+pf))return true;
-    }
-  }
+  /* IMG-WEEK-KEYING: same resolution as getNwImageB64, existence only. */
+  if(ref&&tn&&_iwkLookupIdx(c)!==null)return true;
+  if(_iwkPositionalIdx(c))return true;
   return false;
 }
 async function openClashImage(uid){
@@ -5535,32 +5772,19 @@ async function getNwImageB64(c){
      composite key. Fallback preserves pre-A6 lookups. Region 2 of 4. */
   const tn=c.rawTestName||c.testName||'';
   /* PR-A11-IMAGE-KEY-RAWTESTNAME end */
+  /* IMG-WEEK-KEYING: resolve through the clash's own week set first; the
+     latest set only when the clash's week has no set. Same for positional. */
   if(ref&&tn){
-    const key=tn+'::'+ref;
-    if(_nwImages.has(key)){
-      const idx=_nwImages.get(key);
-      return await _idbGetB64(idx);
-    }
+    const idx=_iwkLookupIdx(c);
+    if(idx!==null)return await _idbGetB64(idx);
   }
   /* IMG-FIX end */
   /* IMG-POS start: safe positional fallback when XML has no href attributes.
      Only fires when (a) clash has a testIdx, (b) test has loaded images, and
      (c) loaded image count exactly equals clash count for that test — that
      last condition is what makes this safe vs the old "any image" fallback. */
-  if(tn&&typeof c.testIdx==='number'&&_nwImgByTest[tn]){
-    const testInfo=_nwImgByTest[tn];
-    const clashCountForTest=_posClashCount(tn);
-    if(testInfo.count===clashCountForTest&&c.testIdx>=0&&c.testIdx<testInfo.count){
-      const posFilename=(testInfo.filenames||[])[c.testIdx];
-      if(posFilename){
-        const key=tn+'::'+posFilename;
-        if(_nwImages.has(key)){
-          const idx=_nwImages.get(key);
-          return await _idbGetB64(idx);
-        }
-      }
-    }
-  }
+  const pos=_iwkPositionalIdx(c);
+  if(pos)return await _idbGetB64(pos.idx);
   /* IMG-POS end */
   return null;
 }
@@ -5692,37 +5916,20 @@ function showLoadImagesModal(){
 
 function getNwImageB64Sync(c){
   if(!_nwImgCount)return null;
-  /* IMG-FIX start: same composite-key lookup as the async version, drops the
-     unsafe positional fallback. */
   const ref=c.nwImageRef||'';
   /* PR-A11-IMAGE-KEY-RAWTESTNAME start: raw testName lookup, mirrors
      the async twin above. Region 4 of 4. */
   const tn=c.rawTestName||c.testName||'';
   /* PR-A11-IMAGE-KEY-RAWTESTNAME end */
+  /* IMG-WEEK-KEYING: week-scoped composite lookup (memory cache only). */
   if(ref&&tn){
-    const key=tn+'::'+ref;
-    if(_nwImages.has(key)){
-      const idx=_nwImages.get(key);
-      return _nwImagesByIndex[idx]||null;
-    }
+    const idx=_iwkLookupIdx(c);
+    if(idx!==null)return _nwImagesByIndex[idx]||null;
   }
-  /* IMG-FIX end */
   /* IMG-POS start: positional fallback (sync mirror of getNwImageB64). Same
-     safety condition: per-test image count must equal per-test clash count. */
-  if(tn&&typeof c.testIdx==='number'&&_nwImgByTest[tn]){
-    const testInfo=_nwImgByTest[tn];
-    const clashCountForTest=_posClashCount(tn);
-    if(testInfo.count===clashCountForTest&&c.testIdx>=0&&c.testIdx<testInfo.count){
-      const posFilename=(testInfo.filenames||[])[c.testIdx];
-      if(posFilename){
-        const key=tn+'::'+posFilename;
-        if(_nwImages.has(key)){
-          const idx=_nwImages.get(key);
-          return _nwImagesByIndex[idx]||null;
-        }
-      }
-    }
-  }
+     safety conditions; memory cache only — images loaded this session. */
+  const pos=_iwkPositionalIdx(c);
+  if(pos)return _nwImagesByIndex[pos.idx]||null;
   /* IMG-POS end */
   return null;
 }
@@ -9548,7 +9755,14 @@ function _bifMatchImageJobs(xmlFiles,imagesByFolder){
    week updates that week's mapping in place rather than duplicating it. Other
    tests are untouched. Superseded IDB image records from the previous run are
    deleted by loadNwImages once the new metadata is written (IMG-ORPHAN-CLEANUP,
-   INV-011). */
+   INV-011).
+
+   IMG-WEEK-KEYING: the week is derived from the picked folder with the same
+   helper the importer and both parsers use (first path segment), and each
+   test's images load into the (test, week) set. A pick whose top folder is not
+   a week-YYMMDD wrapper is refused rather than guessed — same parent-folder
+   convention as the importer. Re-running a week supersedes that week's sets;
+   other weeks are untouched. */
 async function reattachImagesFromArchive(inputEl){
   const all=[...inputEl.files];
   if(!all.length)return;
@@ -9573,16 +9787,29 @@ async function reattachImagesFromArchive(inputEl){
     inputEl.value='';
     return;
   }
+  /* IMG-REATTACH-ARCHIVE start: week identity for the (test, week) sets.
+     Derived per report from its path; every report in one pick must resolve
+     to one valid week-YYMMDD tag, otherwise refuse. */
+  const _weekTags=new Set(withImages.map(j=>_extractWeekTag(j.xmlFile.webkitRelativePath||'')||''));
+  const _weekTag=[..._weekTags][0]||'';
+  if(_weekTags.size!==1||!_isWeekTag(_weekTag)){
+    showToast(`Pick the parent folder that contains the week-YYMMDD archive folder (the same way as the weekly import). `+
+      `This pick resolved to ${_weekTags.size===1?`"${_weekTag||'(no folder)'}"`:_weekTags.size+' different top-level folders'}, so no week could be assigned — nothing was changed.`,9000);
+    try{console.warn('[IMG-REATTACH-ARCHIVE] refused: top-level folder(s) '+JSON.stringify([..._weekTags])+' are not a single week-YYMMDD wrapper');}catch(e){}
+    inputEl.value='';
+    return;
+  }
+  /* IMG-REATTACH-ARCHIVE end */
 
   const totalImages=withImages.reduce((n,j)=>n+j.matchedImages.length,0);
   const skipped=jobs.length-withImages.length;
   const ok=confirm(
-    `Re-attach images from this archive folder?\n\n`+
+    `Re-attach images from this archive folder into week ${_weekTag}?\n\n`+
     withImages.map(j=>`  • ${j.baseName} — ${j.matchedImages.length} image${j.matchedImages.length===1?'':'s'}`).join('\n')+
     (skipped?`\n\n${skipped} test${skipped===1?'':'s'} in this folder had no images folder and will be skipped.`:'')+
     `\n\nImages only — no clashes, statuses, weekly snapshots or dedup data are `+
     `read or written. Re-running the same week replaces that week's images `+
-    `rather than duplicating them.\n\nProceed?`
+    `rather than duplicating them; other weeks' images are untouched.\n\nProceed?`
   );
   if(!ok){inputEl.value='';return;}
 
@@ -9591,12 +9818,12 @@ async function reattachImagesFromArchive(inputEl){
     const {baseName,matchedImages}=withImages[i];
     showToast(`[${i+1}/${withImages.length}] Re-attaching "${baseName}" — ${matchedImages.length} image${matchedImages.length===1?'':'s'}…`,3500);
     try{
-      const res=await loadNwImages(matchedImages,baseName);
+      const res=await loadNwImages(matchedImages,baseName,_weekTag); /* IMG-WEEK-KEYING */
       const stored=(res&&res.stored)||0;
       const failed=(res&&res.failed)||0;
       attached+=stored;
       failedImages+=failed;
-      try{console.log('[IMG-REATTACH-ARCHIVE] "'+baseName+'" → '+stored+' of '+
+      try{console.log('[IMG-REATTACH-ARCHIVE] "'+baseName+'" ('+_weekTag+') → '+stored+' of '+
         matchedImages.length+' image(s) attached'+(failed?' ('+failed+' failed)':''));}catch(e){}
     }catch(e){
       failedTests++;
@@ -9608,7 +9835,7 @@ async function reattachImagesFromArchive(inputEl){
   }
 
   const summary=`✓ Re-attached ${attached} of ${totalImages} image${totalImages===1?'':'s'} across `+
-    `${withImages.length - failedTests} of ${withImages.length} test${withImages.length===1?'':'s'}`+
+    `${withImages.length - failedTests} of ${withImages.length} test${withImages.length===1?'':'s'} into ${_weekTag}`+
     (failedImages?` — ${failedImages} image${failedImages===1?'':'s'} failed to store`:'')+
     (failedTests?` — ${failedTests} test${failedTests===1?'':'s'} failed`:'')+
     (skipped?` — ${skipped} skipped (no images folder)`:'');
@@ -9761,7 +9988,7 @@ async function importFolderPick(inputEl){
     window._pendingImgTest=baseName;
     bloadf({files:[xmlFile]});
     if(matchedImages.length){
-      loadNwImages(matchedImages,baseName);
+      loadNwImages(matchedImages,baseName,_extractWeekTag(xmlFile.webkitRelativePath||'')); /* IMG-WEEK-KEYING */
     } else {
       showToast(`Loaded "${baseName}" — no matching images folder found`,5000);
     }
@@ -9821,7 +10048,7 @@ async function importFolderPick(inputEl){
       window._pendingImgTest=baseName;
       if(matchedImages.length){
         try{
-          const _imgRes=await loadNwImages(matchedImages,baseName);
+          const _imgRes=await loadNwImages(matchedImages,baseName,_extractWeekTag(xmlFile.webkitRelativePath||'')); /* IMG-WEEK-KEYING */
           if(_imgRes&&_imgRes.failed){
             try{console.warn('[IMG-BATCH-BACKPRESSURE-AWAIT] "'+baseName+'": '+
               _imgRes.failed+' of '+_imgRes.total+' images failed to store; clash import continues.');}catch(e){}
@@ -19361,20 +19588,20 @@ Penetration: ${xe(c.penetration)} | Detected: ${xe(c.date)}</Description>
           if(!_nwImgCount){
             return `<span style="font-size:9px;font-weight:600;color:#94A3B8" title="No images loaded. Use 'Load NWC Images' to upload a zip.">📐 Schematic · no images loaded</span>`;
           }
-          // Try composite key first
+          // Try composite key first (IMG-WEEK-KEYING: the clash's own week set, then latest)
           if(ref&&tn){
-            const key=tn+'::'+ref;
-            if(_nwImages.has(key)){
-              return `<span style="font-size:9px;font-weight:600;color:#00B050" title="Loaded as ${esc(ref)} under test ${esc(tn)}">📷 NW screenshot</span>`;
+            if(_iwkLookupIdx(c)!==null){
+              return `<span style="font-size:9px;font-weight:600;color:#00B050" title="Loaded as ${esc(ref)} under test ${esc(tn)}${(typeof c.weekTag==='string'&&c.weekTag&&_nwImgSets.has(_iwkKey(tn,c.weekTag)))?(' ('+esc(c.weekTag)+')'):''}">📷 NW screenshot</span>`;
             }
           }
           /* IMG-POS: try positional match before declaring failure */
-          if(tn&&typeof c.testIdx==='number'&&_nwImgByTest[tn]){
-            const ti=_nwImgByTest[tn];
+          {
+            const _pos=_iwkPositionalIdx(c);
+            const ti=_pos?_pos.set:null;
             const cnt=_posClashCount(tn);
-            if(ti.count===cnt&&c.testIdx>=0&&c.testIdx<ti.count){
-              const pf=(ti.filenames||[])[c.testIdx];
-              if(pf&&_nwImages.has(tn+'::'+pf)){
+            if(_pos){
+              const pf=_pos.filename;
+              if(pf){
                 return `<span style="font-size:9px;font-weight:600;color:#00B050" title="Matched positionally as ${esc(pf)} (XML had no href; ${ti.count} images = ${cnt} clashes)">📷 NW screenshot · positional</span>`;
               }
             }
@@ -19386,7 +19613,7 @@ Penetration: ${xe(c.penetration)} | Detected: ${xe(c.date)}</Description>
           // List a couple of sample keys actually present so user can compare.
           const sampleKeys=[];
           for(const k of _nwImages.keys()){
-            if(k.startsWith(tn+'::')){sampleKeys.push(k.slice(tn.length+2));if(sampleKeys.length>=3)break;}
+            if(k.startsWith(tn+'::')){sampleKeys.push(k.slice(tn.length+2));if(sampleKeys.length>=3)break;} /* IMG-WEEK-KEYING: shows week::file */
           }
           const sample=sampleKeys.length
             ? `\nLoaded filenames under this test (sample): ${sampleKeys.join(', ')}`

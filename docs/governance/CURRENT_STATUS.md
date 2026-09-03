@@ -515,6 +515,12 @@ RS-002
 
 ---
 
+### IMG-WEEK-KEYING (DEC-016, enhancement — released on merge)
+
+Image sets keyed by (test, week) so a clash last observed in an earlier week resolves that week's image (INV-011 ruling 3, Option A). Week-scoped lookups with latest-set fallback for legacy/untagged clashes; same-week supersede, cross-week accumulate; archive re-attach loads into the picked week and refuses non-week picks; additive metadata (`sets`, `latest`), `byTest` kept as the derived view. Migration is manual from the console with verify-then-gate. Tests: `img-week-keying.spec.js` (11), `img-reattach-archive.spec.js` (+3).
+
+---
+
 ### INV-011 (Closed - Released on merge)
 
 Title:
@@ -665,7 +671,7 @@ Post-INV-011 (branch, on top of `main` `33e6f20`): 367 total (+9 `img-orphan-cle
 
 ## Next Planned Activity
 
-Work the ranked backlog under "Current Priority" in order. No investigation is open and no monitoring item has a pending action. Next design brief needed: image sets keyed by test **and** week (INV-011, ruling 3), so clashes last observed in an earlier week resolve to that week's images.
+Work the ranked backlog under "Current Priority" in order. No investigation is open and no monitoring item has a pending action. IMG-WEEK-KEYING (DEC-016) shipped 2026-09-03; the live-profile step is the one-shot migration from the console (`await _imgWeekKeyingMigrate()` dry run, then `{dryRun:false}`), recorded in INV-011 when run. Next design item: a "prune image weeks older than N" tool, now that weeks accumulate by design.
 
 Future investigations should originate from:
 
