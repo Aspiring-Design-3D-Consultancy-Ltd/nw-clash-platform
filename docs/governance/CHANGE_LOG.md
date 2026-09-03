@@ -137,3 +137,20 @@ Notes:
 
 Documentation only. No `working.html` changes.
 
+---
+
+### 2026-09-03 (code)
+
+Summary:
+
+Read-only IndexedDB image-store audit for MI-003.
+
+Changes:
+
+- `working.html` — IMG-STORE-AUDIT: `_auditNwImageStore(opts)` and `_auditSampleNwImages(keys)`; console-callable, performs no put/delete/metadata write. Classifies every key against the metadata `byTest` slot ranges and estimates payload size from a bounded sample.
+- `tests/img-store-audit.spec.js` — 8 tests; all fail on the unmodified file (function undefined), all pass with the change; adjacent specs (`img-dhash-phase1`, `img-reattach-archive`, `selective-reset-idb-reliability`) re-run green.
+
+Notes:
+
+No UI change. `DATA_VERSION` untouched. Protected blocks `UNCHANGED`. Marker `IMG-STORE-AUDIT` 1/1.
+

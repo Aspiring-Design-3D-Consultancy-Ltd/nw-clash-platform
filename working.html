@@ -5021,6 +5021,136 @@ async function _dhashBackfill(){
 }
 /* IMG-DHASH-PHASE1 end */
 
+/* IMG-STORE-AUDIT start: read-only audit of the NWClashImages `images` store
+   for MI-003 (Orphaned IndexedDB Image Records). PR #63 reported ~63,178
+   image records on the live profile against ~3,670 the register can restore,
+   and nobody knows how the difference breaks down. A cleanup that guesses at
+   that answer would repeat KI-007, so the audit comes first and it must be
+   incapable of destroying anything: this block performs no put, no delete
+   and no metadata rewrite — getAllKeys, get(0) and a bounded number of
+   get(k) reads only. Safe to run on a live profile from the DevTools
+   console:  await _auditNwImageStore()
+   Classification is against the metadata block's byTest ranges (the same
+   [firstIdx, firstIdx+count) slots initNwImages restores from), so
+   "referenced" means "reachable by the app today" and "orphaned" means
+   "a numeric key no current test range covers" — the residue loadNwImages
+   leaves behind when a test is re-loaded and its new slots do not overlap
+   its old ones. Payload size is estimated from an evenly spaced sample
+   (default 200 per class) rather than by reading every record, because
+   reading 60k+ payloads is exactly the IO cost MI-003 is worried about. */
+async function _auditSampleNwImages(keys){
+  const r={n:0,legacyShape:0,objectShape:0,hashed:0,unhashed:0,unreadable:0,b64Chars:0,avgB64Chars:0,avgDecodedBytes:0};
+  for(const k of keys){
+    let rec;
+    try{rec=await idbGet(k);}catch(e){r.unreadable++;continue;}
+    if(rec==null){r.unreadable++;continue;}
+    if(typeof rec==='string'){r.n++;r.legacyShape++;r.b64Chars+=rec.length;}
+    else if(rec&&typeof rec.b64==='string'){
+      r.n++;r.objectShape++;r.b64Chars+=rec.b64.length;
+      if(rec.dhash)r.hashed++;else r.unhashed++;
+    }
+    else r.unreadable++;
+  }
+  r.avgB64Chars=r.n?Math.round(r.b64Chars/r.n):0;
+  r.avgDecodedBytes=r.n?Math.round(r.b64Chars*0.75/r.n):0;
+  return r;
+}
+async function _auditNwImageStore(opts){
+  opts=opts||{};
+  const sampleSize=Number.isFinite(opts.sample)?Math.max(0,opts.sample|0):200;
+  const out={
+    ok:false,at:new Date().toISOString(),
+    totalKeys:0,nonNumericKeys:0,
+    metaPresent:false,metaShape:null,metaCount:0,tests:0,
+    referencedSlots:0,referenced:0,orphaned:0,missing:0,overlapping:0,
+    orphanRuns:0,orphanKeyMin:null,orphanKeyMax:null,largestOrphanRuns:[],
+    byTest:[],sample:null,estDecodedBytes:null,notes:[]
+  };
+  let keys=[];
+  try{keys=await idbGetAllKeys();}
+  catch(e){out.notes.push('could not read image keys: '+((e&&e.message)||e));return out;}
+  out.totalKeys=(keys||[]).length;
+  const numeric=new Set();
+  (keys||[]).forEach(k=>{if(typeof k==='number')numeric.add(k);else out.nonNumericKeys++;});
+  let meta=null;
+  try{meta=await idbGet(0);}
+  catch(e){out.notes.push('could not read metadata block: '+((e&&e.message)||e));}
+  if(meta&&typeof meta==='object'){
+    out.metaPresent=true;
+    out.metaShape=meta.shape||'(pre-imgfix)';
+    out.metaCount=meta.count|0;
+  }else if(meta!=null){
+    out.notes.push('key 0 holds a non-object value — treated as no metadata');
+  }
+  const byTest=(meta&&meta.byTest&&typeof meta.byTest==='object')?meta.byTest:{};
+  const ranges=Object.entries(byTest).map(([tn,info])=>({
+    testName:tn,firstIdx:(info&&info.firstIdx)|0,count:(info&&info.count)|0,
+    filenames:((info&&info.filenames)||[]).length
+  }));
+  out.tests=ranges.length;
+  // slot -> list of tests that claim it (more than one = overlapping ranges,
+  // which would mean two tests share images — a real defect if it exists)
+  const owner=new Map();
+  ranges.forEach(r=>{
+    for(let i=0;i<r.count;i++){
+      const k=r.firstIdx+i;
+      const o=owner.get(k);
+      if(o)o.push(r.testName);else owner.set(k,[r.testName]);
+    }
+  });
+  out.referencedSlots=owner.size;
+  owner.forEach((owners,k)=>{
+    if(owners.length>1)out.overlapping++;
+    if(!numeric.has(k))out.missing++;
+  });
+  numeric.forEach(k=>{if(k===0)return;if(owner.has(k))out.referenced++;else out.orphaned++;});
+  out.byTest=ranges.map(r=>{
+    let present=0;
+    for(let i=0;i<r.count;i++)if(numeric.has(r.firstIdx+i))present++;
+    return {testName:r.testName,firstIdx:r.firstIdx,count:r.count,filenames:r.filenames,present,missing:r.count-present};
+  });
+  const orphanKeys=[...numeric].filter(k=>k>0&&!owner.has(k)).sort((a,b)=>a-b);
+  const runs=[];
+  orphanKeys.forEach(k=>{
+    const last=runs[runs.length-1];
+    if(last&&k===last.to+1){last.to=k;last.n++;}else runs.push({from:k,to:k,n:1});
+  });
+  out.orphanRuns=runs.length;
+  out.orphanKeyMin=orphanKeys.length?orphanKeys[0]:null;
+  out.orphanKeyMax=orphanKeys.length?orphanKeys[orphanKeys.length-1]:null;
+  out.largestOrphanRuns=runs.slice().sort((a,b)=>b.n-a.n).slice(0,10);
+  if(sampleSize>0){
+    const pick=(arr,n)=>{
+      if(arr.length<=n)return arr.slice();
+      const step=arr.length/n,r=[];
+      for(let i=0;i<n;i++)r.push(arr[Math.floor(i*step)]);
+      return r;
+    };
+    const refKeys=[...numeric].filter(k=>k>0&&owner.has(k)).sort((a,b)=>a-b);
+    const referenced=await _auditSampleNwImages(pick(refKeys,sampleSize));
+    const orphaned=await _auditSampleNwImages(pick(orphanKeys,sampleSize));
+    out.sample={size:sampleSize,referenced,orphaned};
+    out.estDecodedBytes={
+      referenced:referenced.avgDecodedBytes*out.referenced,
+      orphaned:orphaned.avgDecodedBytes*out.orphaned
+    };
+  }
+  out.ok=true;
+  try{
+    const mb=b=>(b/1048576).toFixed(1)+' MB';
+    console.log('[IMG-STORE-AUDIT] '+out.totalKeys+' keys in images store; metadata '+
+      (out.metaPresent?('present ('+out.metaShape+', count '+out.metaCount+', '+out.tests+' tests)'):'ABSENT')+
+      '; referenced '+out.referenced+', orphaned '+out.orphaned+' in '+out.orphanRuns+' runs'+
+      ', missing '+out.missing+', overlapping '+out.overlapping+', non-numeric keys '+out.nonNumericKeys+
+      (out.estDecodedBytes?('; est. decoded payload referenced '+mb(out.estDecodedBytes.referenced)+
+        ' / orphaned '+mb(out.estDecodedBytes.orphaned)):'')+
+      '. Read-only — nothing was changed.');
+    if(out.byTest.length&&console.table)console.table(out.byTest);
+  }catch(e){}
+  return out;
+}
+/* IMG-STORE-AUDIT end */
+
 // Refresh the image panel inside an open modal
 function refreshModalImage(){
   const panel=document.getElementById('cm-nw-img-panel');

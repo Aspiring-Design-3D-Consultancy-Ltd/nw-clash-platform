@@ -370,7 +370,7 @@ Monitoring — read-only audit required before any action
 
 Description:
 
-The live profile's `images` store held approximately 63,178 records against roughly 3,670 restorable at the time of PR #63; re-running the archive re-attach tool (PR #66) leaves superseded records behind. Origin breakdown unknown. Audit first; wipe nothing. See KNOWN_ISSUES.md MI-003.
+The live profile's `images` store held approximately 63,178 records against roughly 3,670 restorable at the time of PR #63; re-running the archive re-attach tool (PR #66) leaves superseded records behind. Origin breakdown unknown. Audit first; wipe nothing. A read-only audit function `_auditNwImageStore()` shipped 2026-09-03 (IMG-STORE-AUDIT); the live-profile run is pending. See KNOWN_ISSUES.md MI-003.
 
 ---
 
@@ -479,7 +479,7 @@ Note: a full repository-wide suite run surfaced 22 pre-existing intermittent fai
 Ranked backlog as of 2026-09-03 (in execution order):
 
 1. **Governance ledger catch-up** — this update (INV-009 retrospective record, INV-010 opened, KI-007, KI-008, MI-003, CHANGE_LOG for #59–#66, RS-002). Complete on commit of this document set.
-2. **MI-003 orphan audit** — read-only count and classification of the `images` store; nothing wiped.
+2. **MI-003 orphan audit** — read-only tool shipped (`_auditNwImageStore()`, IMG-STORE-AUDIT, 2026-09-03). Remaining: run it on the live profile from the DevTools console and record the output in KNOWN_ISSUES.md MI-003. Nothing wiped.
 3. **PIXEL-DEDUP Phase 2** — needs a ruling first: hash-on-record (as shipped) means the bulk-hash read loads every image payload; the sidecar alternative was rejected in #61 because it changes `idbGetAllKeys()` results. Decide before building the consumer.
 4. **INV-010** — root-cause the two `CHART-PERIOD-YEAR-AWARE` failures; classify as harness or application defect; fix.
 5. **KI-008** — frozen-week double-count via `clashStatusAt` projection, starting with a failing Playwright test.

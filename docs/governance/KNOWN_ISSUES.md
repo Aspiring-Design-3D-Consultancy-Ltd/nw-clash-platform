@@ -599,6 +599,17 @@ Recommended Action:
 
 Read-only audit first: count, classify, and report; wipe nothing. Cleanup, if any, is a separate change with its own investigation and tests. Escalate to Under Investigation if the audit shows records the app can still reach through any restore path.
 
+Audit Tool (2026-09-03, `IMG-STORE-AUDIT`):
+
+`_auditNwImageStore()` in `working.html` performs the audit without writing anything (getAllKeys, get(0), and a bounded sample of get(k) reads only). Run on the live profile from the DevTools console:
+
+```js
+await _auditNwImageStore()          // default: 200-record sample per class
+await _auditNwImageStore({sample:0}) // counts only, no payload reads
+```
+
+It reports total keys, metadata shape and count, referenced vs orphaned keys against the `byTest` slot ranges, missing slots (referenced but absent), overlapping ranges, the ten largest contiguous orphan runs (where re-import churn came from), per-test present/missing, record-shape and hash coverage per class, and an estimated decoded payload size per class. Regression protection: `tests/img-store-audit.spec.js` (8 tests, including a byte-identical before/after store comparison). Record the live-profile output here when it has been run.
+
 ---
 
 # Confirmed Issues
