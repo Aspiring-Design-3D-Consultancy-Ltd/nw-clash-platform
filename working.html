@@ -1970,6 +1970,92 @@ function _labelForPlatformWeek(py,pw){
   return 'Wk '+pw+' — '+dmy;
 }
 /* PR-A-PLATFORM-WEEKS end */
+/* HIST-BACKDATE start: session-only review-as-of week control for backdating
+   status decisions. Enables reviewers to record "this was resolved back in
+   week W35" instead of always using the current week. State is session-only
+   (reset on reload). Validation enforces: effective week ≥ first appearance,
+   ≤ current week, no later status event (ruling b: refuse-not-guess).
+   Audit fields reviewedAt/approvedAt stamp the effective week's Monday ISO;
+   recordedAt stamps real wall-clock time. Sorted insert via _insertStatusHistory
+   maintains chronological order in statusHistory array. */
+const _histBackdateState={
+  reviewAsOf: null  // null (Live) or {week, year}
+};
+function _actionWeek(){
+  return _histBackdateState.reviewAsOf||_weekYearNow();
+}
+function _insertStatusHistory(c,entry){
+  // Sorted insert into c.statusHistory by (year,week), replacing same-week entries.
+  if(!c||!entry)return;
+  if(!Array.isArray(c.statusHistory))c.statusHistory=[];
+  const target={week:entry.week,year:entry.year};
+  let inserted=false;
+  for(let i=0;i<c.statusHistory.length;i++){
+    const cmp=_weekYearCmp({week:c.statusHistory[i].week,year:c.statusHistory[i].year},target);
+    if(cmp===0){
+      // Same week: replace
+      c.statusHistory[i]=entry;
+      inserted=true;
+      break;
+    } else if(cmp>0){
+      // Insert before this position
+      c.statusHistory.splice(i,0,entry);
+      inserted=true;
+      break;
+    }
+  }
+  if(!inserted)c.statusHistory.push(entry);
+}
+function _isoWeekMonday(yr,wk){
+  const jan4=new Date(Date.UTC(yr,0,4));
+  const dow=jan4.getUTCDay()||7;
+  const mon=new Date(jan4);
+  mon.setUTCDate(jan4.getUTCDate()-(dow-1)+(wk-1)*7);
+  return mon.toISOString().split('T')[0];
+}
+function _validateBackdatableAction(c,effectiveWy){
+  // Returns null if valid, or error message if invalid (refuse-not-guess).
+  if(!c||!effectiveWy)return 'Invalid clash or week';
+  // Check: effective week ≥ first appearance
+  const hist=c.statusHistory||[];
+  if(hist.length>0){
+    const firstWy={week:hist[0].week,year:hist[0].year};
+    if(_weekYearCmp(effectiveWy,firstWy)<0){
+      return `Cannot backdate before clash first appearance (${_labelForPlatformWeek(firstWy.year,firstWy.week)})`;
+    }
+  }
+  // Check: effective week ≤ current week
+  const nowWy=_weekYearNow();
+  if(_weekYearCmp(effectiveWy,nowWy)>0){
+    return 'Cannot date into the future';
+  }
+  // Check: no later status event (ruling b)
+  for(const h of hist){
+    if(_weekYearCmp({week:h.week,year:h.year},effectiveWy)>0){
+      return `Later ${h.status||'status'} event exists in ${_labelForPlatformWeek(h.year,h.week)}. Refuse-not-guess rule.`;
+    }
+  }
+  return null;
+}
+function _reviewAsOfOptionsHtml(){
+  // Dropdown options: Live + sorted platform weeks
+  const pw=_platformWeeks();
+  const nowWy=_weekYearNow();
+  let html=`<option value="">Live (W${nowWy.week} ${nowWy.year})</option>`;
+  pw.forEach(w=>{
+    const val=w.year+'-'+w.week;
+    const lbl=_labelForPlatformWeek(w.year,w.week);
+    html+=`<option value="${val}">${lbl}</option>`;
+  });
+  return html;
+}
+function _reviewAsOfBannerHtml(){
+  const rw=_histBackdateState.reviewAsOf;
+  if(!rw)return '';
+  const label=_labelForPlatformWeek(rw.year,rw.week);
+  return `<div style="background:#FEF3C7;border-left:4px solid #F59E0B;padding:12px 16px;margin-bottom:16px;border-radius:4px;display:flex;align-items:center;gap:10px;font-size:13px;color:#92400E"><span style="font-size:16px">⚠️</span><span><strong>Reviewing decisions as of ${label}</strong>. Status changes will be backdated. Reload page to reset.</span></div>`;
+}
+/* HIST-BACKDATE end */
 /* PR-A3-EXPORT-PLATFORM-WEEKS start: shared data-source helpers for
    Weekly Report (exportReport) and PowerPoint (exportPPTX). Both
    exports previously read S.weekly (includes phantom pre-platform
@@ -12647,6 +12733,17 @@ function rReview(){
          the top of the queue. All / B1 / B2 / B3 with per-bucket
          counts, tint-underlined when active. Default 'all' per Q4. -->
     ${(typeof _rqdaFilterTabs==='function')?_rqdaFilterTabs():''}
+    <!-- HIST-BACKDATE: week selector control in header -->
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;padding:8px 0;border-bottom:1px solid #e5e7eb">
+      <div style="font-size:12px;font-weight:600;color:#1f2937">Review Queue</div>
+      <div style="flex:1"></div>
+      <label style="font-size:12px;color:#666;font-weight:500">Review as of:</label>
+      <select id="hist-backdate-selector" onchange="histBackdateChangeWeek(this.value)" style="padding:6px 10px;border:1px solid #d1d5db;border-radius:4px;font-size:12px;background:white;cursor:pointer;min-width:140px">
+        ${_reviewAsOfOptionsHtml()}
+      </select>
+    </div>
+    <!-- HIST-BACKDATE: amber banner -->
+    ${_reviewAsOfBannerHtml()}
     <div class="card" style="border-top:3px solid #EA7600;margin-bottom:9px"><div class="cb" style="padding:10px 14px">
       <div style="font-size:12px;font-weight:700;color:#0F1824;margin-bottom:3px">${(typeof _rqdaHeaderCountLine==='function')?_rqdaHeaderCountLine(pending.length):(pending.length+' clash'+(pending.length===1?'':'es')+' awaiting review')}</div>
       <div style="font-size:10.5px;color:#64748B;line-height:1.5">These clashes were in the register but did not appear in the latest import for the same test. They may have been fixed in the model — or the XML may be a partial export. Confirm each: <strong>Resolved</strong> closes the clash and records a status-history entry. <strong>Still Open</strong> keeps the current status and prevents it from being re-flagged on future imports.</div>
@@ -12678,6 +12775,22 @@ function reviewQueueGetSelectedUids(){
 function reviewQueueUpdateSelCount(){
   const el=document.getElementById('rq-sel-count');
   if(el)el.textContent=reviewQueueGetSelectedUids().length+' selected';
+}
+/* HIST-BACKDATE: dropdown change handler */
+function histBackdateChangeWeek(val){
+  if(!val){
+    _histBackdateState.reviewAsOf=null;
+  } else {
+    const p=val.split('-');
+    const yr=parseInt(p[0],10);
+    const wk=parseInt(p[1],10);
+    if(!isFinite(yr)||!isFinite(wk)){
+      showToast('Invalid week selection');
+      return;
+    }
+    _histBackdateState.reviewAsOf={week:wk,year:yr};
+  }
+  nav('review');
 }
 /* REVIEW-QUEUE-VIEW end */
 /* REVIEW-QUEUE-DELTA-ANALYSIS-VIEW start: bucket-aware Review Queue
@@ -12880,16 +12993,21 @@ function _rqActionOnUids(uids,action,source){
        _appendStatusHistory (PR-0-SCHEMA-GUARD) with the canonical
        {status, week, year} triple. wy is hoisted above the if/else so
        both branches see the same stamp — no per-branch declaration. */
-    const wy=_weekYearNow();
+    /* HIST-BACKDATE: use _actionWeek() for effective week; validate before write */
+    const wy=_actionWeek();
+    const valErr=_validateBackdatableAction(c,wy);
+    if(valErr){showToast('❌ '+valErr);return;}
     if(action==='resolved'){
       if(c.status!=='Resolved'){
         pushStatusHistory(c,'Resolved',wy);
         c.status='Resolved';
       }
-      _appendStatusHistory(c,{reviewedAt:now,reviewedInBatch:c.disappearedInBatch||'',source:_src,status:'Resolved',matchedPattern:_mp,week:wy.week,year:wy.year});
+      const effMonday=_isoWeekMonday(wy.year,wy.week);
+      _appendStatusHistory(c,{reviewedAt:effMonday,reviewedInBatch:c.disappearedInBatch||'',source:_src,status:'Resolved',matchedPattern:_mp,week:wy.week,year:wy.year,recordedAt:now});
     } else {
       c.reviewedStillOpen=true;
-      _appendStatusHistory(c,{reviewedAt:now,reviewedStillOpen:true,source:_src,matchedPattern:_mp,status:c.status||'Active',week:wy.week,year:wy.year});
+      const effMonday=_isoWeekMonday(wy.year,wy.week);
+      _appendStatusHistory(c,{reviewedAt:effMonday,reviewedStillOpen:true,source:_src,matchedPattern:_mp,status:c.status||'Active',week:wy.week,year:wy.year,recordedAt:now});
     }
     /* PR-0-RESOLVE-STAMP end */
     delete c.pendingReview;
@@ -12967,7 +13085,8 @@ function reviewQueueApproveGroup(tn){
 function _markClashesAsApproved(clashIds,source='ReviewQueue'){
   if(!Array.isArray(clashIds)||clashIds.length===0)return 0;
   const now=new Date().toISOString();
-  const wy=_weekYearNow();
+  /* HIST-BACKDATE: use _actionWeek() for effective week */
+  const wy=_actionWeek();
   const actor=(S.session&&S.session.actor)||S.actor||'Administrator';
   const cs=S.clashes||[];
   const idx=new Map();
@@ -12977,6 +13096,9 @@ function _markClashesAsApproved(clashIds,source='ReviewQueue'){
     const i=idx.get(uid);if(i==null)return;
     const c=cs[i];
     if(!Array.isArray(c.statusHistory))c.statusHistory=[];
+    /* HIST-BACKDATE: validate before write */
+    const valErr=_validateBackdatableAction(c,wy);
+    if(valErr){showToast('❌ '+valErr);return;}
     if(c.status!=='Approved'){
       pushStatusHistory(c,'Approved',wy);
       c.status='Approved';
@@ -13003,7 +13125,9 @@ function _markClashesAsApproved(clashIds,source='ReviewQueue'){
        schema guard. Entry already carries week/year (see PR #17 fix);
        the refactor is a no-op behaviour-wise, but centralises the
        write so every future audit-line writer inherits the guard. */
-    _appendStatusHistory(c,{reviewedAt:now,approvedAt:now,actor:actor,source:source,status:'Approved',week:wy.week,year:wy.year,reviewedInBatch:_preDisBatch,reviewedAtBatchDate:_preDisAt,matchedPattern:_mp});
+    /* HIST-BACKDATE: stamp approvedAt and recordedAt separately */
+    const effMonday=_isoWeekMonday(wy.year,wy.week);
+    _appendStatusHistory(c,{reviewedAt:effMonday,approvedAt:effMonday,actor:actor,source:source,status:'Approved',week:wy.week,year:wy.year,reviewedInBatch:_preDisBatch,reviewedAtBatchDate:_preDisAt,matchedPattern:_mp,recordedAt:now});
     delete c.pendingReview;
     delete c.disappearedAt;
     delete c.disappearedInBatch;
