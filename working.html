@@ -12637,10 +12637,22 @@ function rReview(){
     const emptyBanner=_rqBannerTests.length
       ? _rqBannerAmber(`Last import pre-dates the register for ${_rqBannerTests.length} test${_rqBannerTests.length===1?'':'s'} (${_rqBannerTests.map(esc).join(', ')}) — no disappeared-clash detection ran for those. Import a newer XML to trigger review.`)
       : '';
-    return `${_rqNoDateBanner}${emptyBanner}<div class="card" style="border-top:3px solid #00B050"><div class="cb" style="padding:24px;text-align:center">
-      <div style="font-size:14px;font-weight:700;color:#00B050;margin-bottom:6px">✓ Review Queue is empty</div>
-      <div style="font-size:11px;color:#64748B;line-height:1.6">Clashes that disappear from a future import will show up here for confirmation.<br>Nothing to review right now.</div>
-    </div></div>`;
+    /* HIST-BACKDATE: show week selector in empty state too */
+    return `
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;padding:8px 0;border-bottom:1px solid #e5e7eb">
+        <div style="font-size:12px;font-weight:600;color:#1f2937">Review Queue</div>
+        <div style="flex:1"></div>
+        <label style="font-size:12px;color:#666;font-weight:500">Review as of:</label>
+        <select id="hist-backdate-selector" onchange="histBackdateChangeWeek(this.value)" style="padding:6px 10px;border:1px solid #d1d5db;border-radius:4px;font-size:12px;background:white;cursor:pointer;min-width:140px">
+          ${_reviewAsOfOptionsHtml()}
+        </select>
+      </div>
+      ${_reviewAsOfBannerHtml()}
+      ${_rqNoDateBanner}${emptyBanner}<div class="card" style="border-top:3px solid #00B050"><div class="cb" style="padding:24px;text-align:center">
+        <div style="font-size:14px;font-weight:700;color:#00B050;margin-bottom:6px">✓ Review Queue is empty</div>
+        <div style="font-size:11px;color:#64748B;line-height:1.6">Clashes that disappear from a future import will show up here for confirmation.<br>Nothing to review right now.</div>
+      </div></div>
+    `;
   }
   const byTest={};
   pending.forEach(c=>{const t=c.testName||'(unknown test)';(byTest[t]=byTest[t]||[]).push(c);});
