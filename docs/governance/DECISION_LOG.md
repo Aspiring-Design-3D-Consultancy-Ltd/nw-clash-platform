@@ -570,6 +570,53 @@ None.
 
 ---
 
+# DEC-017
+
+Title:
+
+Client Deployment Path (Option A sidecar package now; Option C Supabase as target)
+
+Status:
+
+Approved as design direction (Shane, 2026-09-04). **Build not authorised** — Option A implementation waits on Shane's answer on the client's shape (how many users, view-only or edit).
+
+Date:
+
+2026-09-04
+
+Decision:
+
+External client users get the app via a sidecar package (`working.html` + `ClashPlatform_Package_<week>.zip`) loaded from the auth screen, per `docs/design/CLIENT_DEPLOYMENT_DESIGN.md` Section 2. A hosted multi-user build, if ever needed, is Supabase-backed with Autodesk Platform Services as a later viewer add-on only (Section 4).
+
+Sub-decisions:
+
+1. Sidecar zip, not embedded HTML (paper 2.1).
+2. Client role defaults to Viewer; Project Manager on request; Manager only behind a prominent, blocking "edits are local and will be overwritten" acknowledgement at sign-in (`CLIENT-PACKAGE-MANAGER-WARN`, paper 2.6).
+3. Weekly package carries the full register and the latest week's images only; a full onboarding package is used for first delivery (paper 2.3).
+4. The importer accumulates image sets per week (DEC-016 semantics) and offers an explicit replace-all mode (paper 2.7).
+5. Supabase over APS for the hosted option; APS as a viewer add-on only (paper 4.1).
+6. No merge of client edits back into the master register in the first ship (A2 deferred), subject to sub-decision 2's warning (paper 2.6).
+7. Help-text corrections at lines 15777 and 15891–15895 are punch-list items for the session that owns `working.html` (paper 7a), not part of any feature PR.
+
+Reasoning:
+
+Every option was measured against the source at `1510f82`: the only state export is Backup JSON (register only), a second user is seeded with the demo as Administrator, and SharePoint is a file transport with per-profile browser storage. The sidecar package reuses the shipped JSON restore and archive re-attach paths, ships in days, and its format becomes the hosted option's seed importer, so it is not throwaway.
+
+Impact:
+
+- No code change from this decision. When a build is authorised, the paper's Section 2.8 is the implementation brief (markers `CLIENT-PACKAGE-EXPORT`, `-IMPORT`, `-AUTH`, `-MANAGER-WARN`, `-STAMP`).
+- KI-011 raised from the same paper (plaintext `nw:apikey`); its fix is queued separately as KI-011-FIX.
+
+Related Investigations:
+
+None.
+
+Related Issues:
+
+KI-011.
+
+---
+
 # Future Decisions
 
 Record future decisions using the following structure:

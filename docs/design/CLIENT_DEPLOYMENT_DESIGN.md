@@ -1,6 +1,6 @@
 # Client Deployment Design Paper
 
-**Status:** Accepted as analysis (Shane, 2026-09-04). No build authorised. No change to `working.html`. Punch list in Section 7a.
+**Status:** Accepted as analysis (Shane, 2026-09-04); design decisions 1–6 ruled, see Section 6 and DEC-017. **No build authorised** — Option A waits on Shane's client-shape answer. No change to `working.html`. Punch list in Section 7a.
 **Base:** `main` at `1510f82` (2026-09-04), `working.html` 20,060 lines. Every line reference below is against that commit; re-grep before trusting a number after the next merge.
 **Question answered:** how do external client users *use* the app (register, images, charts, exports) rather than receive PDF/PPTX reports from it, and what does each route cost in days and money.
 
@@ -181,6 +181,7 @@ Three ways to hand the client a PIN. Recommend (ii).
 
 - **Read-only (Viewer PIN):** the client sees register, images, dashboard, charts, plan view, BCF viewpoint panel, and can export nothing except what `PERMS` allows rank 1 (nothing). Give them Project Manager (rank 2) if they need Weekly Report / PPTX.
 - **Read-write-local (Manager PIN):** the client can change statuses, notes, board columns; `STATUS-HIST` appends history with their member name. `[Certain]` Those edits live only on their machine and the next package load **replaces** them (`_executeJsonRestore` is a full replacement, not a merge). There is no merge function in the codebase.
+- **Manager sign-in warning (ruling condition, 2026-09-04):** when a Manager-rank PIN opens a copy that carries `nw:packageMeta`, the app must show a blocking notice at sign-in, before the dashboard renders, stating that edits are local to this machine and will be replaced by the next package load. Modal with an explicit acknowledge button, shown every sign-in, not a toast and not a help-panel sentence. Marker `CLIENT-PACKAGE-MANAGER-WARN`. Playwright: Manager PIN on a packaged profile sees the modal; Viewer and PM do not; Shane's admin PIN on his own (non-packaged) profile does not.
 - **Round-trip of client edits (Phase A2, not in the first ship):** client exports Backup JSON, sends it back, Shane runs **Merge client edits**: match on `uid`, take status/notes/assignee where the client's `statusHistory` has an entry newer than Shane's, append rather than overwrite history. About 2–3 days extra including tests. Until A2 exists, tell a Manager-PIN client plainly that their edits are advisory and will be overwritten.
 
 ### 2.7 Weekly refresh workflow
@@ -200,11 +201,12 @@ Importer modes: **add** (default: register replaced, image sets accumulate, matc
 | `CLIENT-PACKAGE-EXPORT` | `dlPackage(opts)`: build manifest, `register.json` (reuse `dlJSON` object), settings/roster/plans, iterate `_nwImgSets` and read slots via `idbGet` into zip entries with the archive folder layout; JSZip `generateAsync({type:'blob', streamFiles:true})` | 1 day |
 | `CLIENT-PACKAGE-IMPORT` | `importPackage(file)`: unzip, validate manifest and `register.json` with `_validateRestoreJson`, write roster/settings/`dataVersion`, `_executeJsonRestore`, then feed each `week-YYMMDD/<report>_files` folder to the existing `_bifMatchImageJobs` → `loadNwImages` path with the week tag; `await _flushPendingWrites()` before `launch()` | 1.5 days |
 | `CLIENT-PACKAGE-AUTH` | Auth-screen **Load client package** entry; skip first-run PIN setup when the package supplies `nw:pin` | 0.5 day |
+| `CLIENT-PACKAGE-MANAGER-WARN` | Blocking acknowledge modal at Manager sign-in on a packaged profile (2.6) | 0.25 day |
 | `CLIENT-PACKAGE-STAMP` | Package manifest persisted to `nw:packageMeta`, rendered next to BUILD-STAMP | 0.25 day |
 | Tests | `tests/client-package.spec.js`: export shape, import into a clean profile (wait for `nw:dedupInitialScan`, reset `S.clashes`), Viewer gating after import, `apikey` never present in the zip, `dataVersion` written, second import accumulates a week set | 1 day |
 | Docs | Help text at line 15777 corrected; a client one-pager (open, load, refresh, PPTX needs internet) | 0.5 day |
 
-Total ≈ 4–5 working days plus Shane's Playwright run against a real Muratec package. Dual-parser discipline is untouched (no XML parsing changes). Protected regions untouched.
+Total ≈ 4–5.5 working days plus Shane's Playwright run against a real Muratec package. Dual-parser discipline is untouched (no XML parsing changes). Protected regions untouched.
 
 ---
 
@@ -337,17 +339,19 @@ Real access control (RLS, not a 4-digit hash) · concurrent editing with visibil
 
 ## 6. Decisions surfaced for spot-check
 
-Made in this paper without asking; overturn any of them and the estimates shift as noted.
+Made in this paper without asking. **Ruled by Shane on 2026-09-04** (recorded as DEC-017 in `DECISION_LOG.md`); the ruling follows each item.
 
-1. **Sidecar zip, not embedded HTML** (2.1). Overturn if images are cut to < 30 MB; then A-embed is 1 day less.
-2. **Client role = Viewer by default, PM on request, Manager only with the "edits are local" warning** (2.5, 2.6).
-3. **Register always full, images latest-week-only by default** (2.3).
-4. **Importer accumulates image sets (DEC-016 semantics) with an explicit "replace all" mode**, rather than replacing silently (2.7).
-5. **Supabase over APS for C**, APS as a later viewer add-on (4.1).
-6. **No merge of client edits in the first ship** (A2 deferred) (2.6).
-7. **Correct the help text at line 15777 in the same PR as the feature**, not separately (2.8).
+1. **Sidecar zip, not embedded HTML** (2.1). Overturn if images are cut to < 30 MB; then A-embed is 1 day less. **Ruling: APPROVED.**
+2. **Client role = Viewer by default, PM on request, Manager only with the "edits are local" warning** (2.5, 2.6). **Ruling: APPROVED.**
+3. **Register always full, images latest-week-only by default** (2.3). **Ruling: APPROVED**, with a full onboarding package for first delivery.
+4. **Importer accumulates image sets (DEC-016 semantics) with an explicit "replace all" mode**, rather than replacing silently (2.7). **Ruling: APPROVED.**
+5. **Supabase over APS for C**, APS as a later viewer add-on (4.1). **Ruling: APPROVED.**
+6. **No merge of client edits in the first ship** (A2 deferred) (2.6). **Ruling: APPROVED with condition** — the "edits overwritten by next package" warning must be prominent in the client UI at Manager sign-in, not documentation only. Captured as `CLIENT-PACKAGE-MANAGER-WARN` in 2.6 and 2.8.
+7. **Correct the help text at line 15777 in the same PR as the feature**, not separately (2.8). **Ruling: SUPERSEDED** — stays on the punch list (7a) for the session that owns `working.html`.
 
 ## 7. Discrepancies found while reading (no action taken)
+
+Ruled 2026-09-04: items 8 and 9 below RECORDED (punch list stands); item 10 key rotation ACCEPTED, Shane actions it himself; remediation is KI-011-FIX (option 3, session-only key), queued for the `working.html`-owning session.
 
 - `[Certain]` Help text line 15777: Backup JSON does not include roster or settings; no drag-and-drop restore exists.
 - `[Certain]` CLAUDE.md "Deployment" says `deploy.bat` in the repo root automates the SharePoint copy; there is no `deploy.bat` in the repository at `1510f82`.
@@ -362,7 +366,7 @@ Ruling 2026-09-04: paper accepted as analysis, no build authorised. These are th
 | --- | --- | --- | --- | --- |
 | P1 | 15777 | `↓ Backup JSON — full project state backup: clashes, weekly snapshots, role roster, settings. Use this for SharePoint/OneDrive distribution or audit archival. Drag-and-drop a previous backup JSON onto the app window to restore it.` | `↓ Backup JSON — exports the clash register, weekly snapshots, project name and project week only. It does not include screenshot images, floor plans, the role roster, PINs, levels/grids or settings. Use it for audit archival or to move the register to another machine. Restore it with ↻ Restore from JSON on this row; there is no drag-and-drop restore.` | `HELP-BACKUP-JSON-SCOPE` |
 | P2 | 15891–15895 | "Sharing data with your team": team members "import the latest JSON via Data Manager → Restore Backup" and "their role-based permissions apply automatically" | Restore lives in Settings → Data Management, not Data Manager. Roles do not travel in the JSON: a team member on another machine goes through first-run PIN setup as Administrator. Say so, and point to this paper's Option A for the intended route. | `HELP-SHARING-SCOPE` |
-| P3 | 16819 / 16858 | Anthropic key stored in plaintext in `nw:apikey` | See KI-011. Minimum: exclude from any export; recommended: rotate the key now and decide whether the app should persist it at all (session-only entry is the safer default). | per KI-011 remediation |
+| P3 | 1423 / 16819 / 16858 / 17755 / 18305 / 18442 | Anthropic key stored in plaintext in `nw:apikey` | KI-011-FIX (ruled: option 3, session-only key). Change sketch in `KNOWN_ISSUES.md` KI-011. | `KI-011-SESSION-KEY` |
 | P4 | CLAUDE.md "Deployment" | "A `deploy.bat` in repo root automates this." | Remove the sentence or add the script. No such file at `1510f82`. | docs only |
 
 P1 and P2 are documentation strings inside `working.html`; they need no test beyond the existing help-panel render check. P3 is tracked as KI-011 in `KNOWN_ISSUES.md`.
