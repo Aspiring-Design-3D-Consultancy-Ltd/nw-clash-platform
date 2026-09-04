@@ -114,6 +114,7 @@ Listed for context — when working near these areas, read the comment headers b
 - `IMG-WEEK-KEYING` — image sets keyed by (test, week); `_nwImgSets` is the source of truth and `_nwImgByTest` is a derived latest-per-test view — never write `_nwImgByTest` directly (DEC-016). `IMG-STORE-AUDIT`, `IMG-ORPHAN-CLEANUP`, `IMG-DHASH-INDEX` all define "referenced" as the union of every set.
 - `OWNER-MAP-FIX` — sourceA/sourceB persistence
 - `XTEST-DUP-IMPORT`, `WEEKLY-SNAP-CONDITIONAL-*` — cross-test dedup + historical-anchor snapshots
+- `DEDUP-SAME-EXPORT-FILTER` — the dedup scan never surfaces a pair proved to come from one export (same logged first-import week, or both created by the current batch); unjudgeable pairs surface as before (DEC-018). `_dedupSameExportReplay()` replays the rule over the decided history, read-only.
 
 ---
 

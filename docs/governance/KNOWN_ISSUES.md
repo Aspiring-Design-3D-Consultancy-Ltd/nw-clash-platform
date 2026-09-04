@@ -823,15 +823,7 @@ None currently recorded.
 
 # Under Investigation
 
-## INV-012
-
-Title:
-
-DEDUP-SCAN-YIELD — Why the Dedup Queue Surfaces 19 Rejections per Merge
-
-Status:
-
-Under Investigation (opened 2026-09-04, Workflow D). Read-only probe `_dedupScanYieldProbe()` shipped; live-profile run pending. See INVESTIGATION_LOG.md INV-012.
+None currently recorded. INV-012 (DEDUP-SCAN-YIELD) closed 2026-09-04 with DEC-018; see INVESTIGATION_LOG.md.
 
 ---
 
@@ -863,4 +855,4 @@ None outstanding.
 
 Active Investigations:
 
-- INV-012 — DEDUP-SCAN-YIELD (Under Investigation, evidence-first)
+None currently recorded (INV-012 closed 2026-09-04, DEC-018).

@@ -313,3 +313,21 @@ Notes:
 
 `DATA_VERSION` untouched. Protected blocks `UNCHANGED`. Zero parser lines. No change to `scanForDedupCandidates`.
 
+---
+
+### 2026-09-04 (code, DEC-018 / INV-012)
+
+Summary:
+
+Dedup scan excludes pairs proven to come from one export. INV-012 closed.
+
+Changes:
+
+- `working.html` — `DEDUP-SAME-EXPORT-FILTER` (2 regions): `_dedupFirstImportWeekMap`, `_dedupSameExport`, read-only `_dedupSameExportReplay`; per-scan map and pair filter in `scanForDedupCandidates` (optional third argument `newUids`); `importToRegister` tracks `_batchNewUids`; INV-012 probe reuses the shared map. Band unchanged at 500 mm. Pairs already queued are untouched.
+- `tests/dedup-same-export-filter.spec.js` (6).
+- DECISION_LOG.md DEC-018; INVESTIGATION_LOG.md INV-012 findings and closure; KNOWN_ISSUES.md, CURRENT_STATUS.md, CLAUDE.md.
+
+Notes:
+
+`DATA_VERSION` untouched. Protected blocks `UNCHANGED`. Zero parser lines.
+

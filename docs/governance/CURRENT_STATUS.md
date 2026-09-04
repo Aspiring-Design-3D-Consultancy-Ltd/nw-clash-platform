@@ -332,7 +332,7 @@ None. KI-008 resolved 2026-09-03 under DEC-015 (projection everywhere).
 
 ### Under Investigation
 
-- INV-012 — DEDUP-SCAN-YIELD (opened 2026-09-04, Workflow D, evidence-first). Read-only probe shipped; live run pending.
+None. INV-012 (DEDUP-SCAN-YIELD) opened and closed 2026-09-04: same-export pairs excluded from the scan (DEC-018), 23% fewer candidates on the live history with every cross-export merge still surfaced.
 
 INV-010 and INV-011 both opened, closed and released 2026-09-03.
 
@@ -671,11 +671,13 @@ Post-INV-011 (branch, on top of `main` `33e6f20`): 367 total (+9 `img-orphan-cle
 
 Post-IMG-WEEK-KEYING (branch, on top of `main` `0089c71`): 381 total (+11 `img-week-keying`, +3 `img-reattach-archive`). Full run 379 passed, 2 failed — both in `dedup-queue.spec.js`, which seeded the derived `_nwImgByTest` view directly; seeding moved to `_nwImgSets`, spec re-run 13/13. Effective 381 / 381. No `working.html` change between the two runs.
 
+Post-DEC-018 (branch, on top of `main` `c7f7a57`): 398 total (+5 `pixel-dedup-probe`, +5 `dedup-scan-yield`, +6 `dedup-same-export-filter` since the previous baseline, plus +1 probe segment test), 398 passed, 0 failed.
+
 ---
 
 ## Next Planned Activity
 
-INV-012: Shane runs `await _dedupScanYieldProbe()` on the live profile; report which scan-criteria change suppresses the most rejections while keeping all 100 merges. No scan code change until then. Design brief still needed for the weekly-image-set prune tool. MI-004 (dedup decision data integrity) is monitoring.
+DEC-018 release: Shane runs `await _dedupSameExportReplay()` on the deployed build and records the result in INV-012 (expected 49 merges surfaced / 1 suppressed, 385 keep-separates suppressed). Design brief still needed for the weekly-image-set prune tool. MI-004 (dedup decision data integrity) is monitoring.
 
 Future investigations should originate from:
 
