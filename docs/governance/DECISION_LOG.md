@@ -622,6 +622,53 @@ MI-004.
 
 ---
 
+# DEC-018
+
+Title:
+
+Dedup Scan Excludes Pairs Proven to Come from One Export (DEDUP-SAME-EXPORT-FILTER)
+
+Status:
+
+Approved (Shane, 2026-09-04: INV-012 proposal 1 adopted with the stated fallback)
+
+Date:
+
+2026-09-04
+
+Decision:
+
+`scanForDedupCandidates` no longer surfaces a candidate pair when both clashes can be proved to have first appeared in the same Navisworks export: both uids first listed under the same week in the import log (`S.weekly[].imports[].clashUidsPresent`), or both newly created by the batch being imported. A pair with any unjudgeable side — a uid the import log never saw and the current batch did not create — surfaces exactly as before. The scan band stays 1 mm < distance ≤ 500 mm. Pairs already in the queue are not removed; the filter applies to new candidates only.
+
+Evidence (INV-012, live profile 2026-09-04):
+
+- 50 distinct human merges, 1,652 human keep-separates (100 merge events are duplicated ids — MI-004).
+- First-import weeks differ for 49 merges and 1,267 keep-separates; equal for 1 merge and 385 keep-separates (23%).
+- No distance cut keeps the merges: 12 of 50 are beyond 100 mm, 7 beyond 250 mm. Element and source equality are already enforced (1,435 of 1,436 measurable rejections identical). Vertical offset and status are not scan-time signals.
+- The one same-export merge, `dq-CLX-7310-CLX-7312` (both first imported `week-260713`, uid gap 2, 265 mm apart), is two consecutive results from one export; Navisworks does not report one intersection twice in a run, so that merge's own basis is weak.
+
+Reasoning:
+
+Two clashes reported in the same export are two distinct results by construction. Removing them from the queue costs nothing that a human would later merge on this history and removes about a quarter of the candidates. The proof standard (same logged week, or both created by this batch) is what keeps the rule from ever suppressing a pair on inference; legacy and paste-imported clashes without log entries are unaffected.
+
+[Likely] Residual mechanism: long linear elements (a duct along a beam) produce several Navisworks results with identical element names spaced along the run on one level. 946 of the 1,652 rejections sit at 100 to 500 mm with vertical offset under 10 mm. A point-distance scan cannot see element extent, so a yield near 1 merge per 26 rejections is close to its floor.
+
+Impact:
+
+- `working.html`: `DEDUP-SAME-EXPORT-FILTER` (2 regions: shared helpers `_dedupFirstImportWeekMap`, `_dedupSameExport`, read-only replay `_dedupSameExportReplay`; the per-scan map and the pair filter inside `scanForDedupCandidates`), plus one-line insertions: `scanForDedupCandidates(batchUids, baselineTestNames, newUids)` gains an optional third argument; `importToRegister` tracks `_batchNewUids` and passes it; the INV-012 probe reuses the shared map.
+- Tests: `tests/dedup-same-export-filter.spec.js` (6). Existing dedup, import and scan specs unchanged and green (105 across 11 files).
+- Live verification before merge: `await _dedupSameExportReplay()` must report merges 49 surfaced / 1 suppressed (`dq-CLX-7310-CLX-7312`) and keep-separate 385 suppressed.
+
+Related Investigations:
+
+INV-012.
+
+Related Issues:
+
+MI-004 (duplicate merge events noted; audit log untouched).
+
+---
+
 # Future Decisions
 
 Record future decisions using the following structure:

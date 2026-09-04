@@ -1901,7 +1901,7 @@ Opened 2026-09-04.
 
 Status:
 
-Under Investigation (DEC-010 State 2). Evidence-first, read-only. No change to the scan is proposed until the live-profile probe output is in.
+Closed - Released on merge of the DEC-018 PR (2026-09-04). Live-profile probe run, findings recorded, proposal 1 adopted with the stated fallback.
 
 Workflow:
 
@@ -1920,9 +1920,36 @@ Evidence tool:
 
 `_dedupScanYieldProbe()` (marker `DEDUP-SCAN-YIELD`, read-only; `tests/dedup-scan-yield.spec.js`, 5). Console output: coverage line, per-signal distribution table, rule table sorted by merges-suppressed then rejections-suppressed, top keep-separate status pairs.
 
-Next Action:
+---
+## Findings (live profile, 2026-09-04, `_dedupScanYieldProbe()` on `main` `c7f7a57`)
 
-Shane runs `await _dedupScanYieldProbe()` on the live profile and pastes the tables. Report to follow: which criteria change would have suppressed the most rejections while keeping all 100 merges surfaced, with counts. No scan code change in this investigation.
+Coverage: 1,702 decided pairs — 50 merged (100 merge events, duplicated ids), 1,652 keep-separate; 226 import events mapping 15,584 uids; week of first import known for all 50 merges and all 1,652 keep-separates; both clashes still exist for 0 merges and 1,436 keep-separates.
+
+| Signal | Merged | Keep-separate |
+| --- | --- | --- |
+| Distance 1-5 / 5-25 / 25-100 / 100-250 / 250-500 mm | 3 / 26 / 9 / 5 / 7 | 153 / 246 / 307 / 439 / 507 |
+| First-import week: cross / same | 49 / 1 | 1,267 / 385 |
+| Week gap: same / 1 wk / 2-4 wk / >4 wk | 1 / 22 / 25 / 2 | 385 / 524 / 643 / 100 |
+| uid gap: <10 / 10-99 / 100-999 / ≥1000 | 1 / 0 / 22 / 27 | 174 / 176 / 366 / 936 |
+| elementA = elementB equal (both exist) | unknown | 1,435 true / 1 false |
+| Source pair equal (both exist) | unknown | 1,434 true / 2 false |
+| dz ≤10 / 10-100 / 100-500 / >500 mm (both exist) | unknown | 884 / 402 / 148 / 2 |
+| Status pair now (keep-separate) | — | Resolved/Resolved 940, Resolved/Active 263, Active/Resolved 207 |
+
+Rule simulation (merges kept / lost / rejections suppressed): first-import weeks differ 49 / 1 / 385 (23%); uid gap ≥ 100 49 / 1 / 350; cross-week AND ≤ 250 mm 43 / 7 / 745; ≤ 250 mm 43 / 7 / 507; ≤ 100 mm 38 / 12 / 946; ≤ 25 mm 29 / 21 / 1,253.
+
+**Answer to the question asked.** No simulated rule keeps all 50 merges. "First-import weeks differ" keeps 49 and suppresses 385 rejections; yield moves from 1:33 to 1:26. Distance cannot be cut (12 merges beyond 100 mm). Element and source equality are already enforced. Vertical offset and status are not scan-time signals.
+
+**The one lost merge.** `dq-CLX-7310-CLX-7312`: both first imported `week-260713`, uid gap 2, 265.04 mm apart, newer clash deleted. Two consecutive results from one export. [Likely] Navisworks does not report one intersection twice in a run, so this merge's own basis is weak; the rule losing it is defensible.
+
+**[Likely] Linear-run mechanism.** 1,267 cross-week rejections match every stored duplicate signal (same test, same source pair, identical element strings, within 500 mm, different weeks) and humans rejected all of them. Long linear elements — a duct along a beam — produce several Navisworks results with identical element names spaced along the run on one level: 946 of the rejections are at 100 to 500 mm and 884 of 1,436 measurable have dz ≤ 10 mm. A point-distance scan cannot see element extent; ~1:26 is close to its floor.
+
+---
+## Ruling and Remediation (DEC-018)
+
+Shane adopted proposal 1 with the fallback: suppress only pairs proved to come from one export (same logged first-import week, or both created by the current batch); any unjudgeable side surfaces as today. Band stays 500 mm. Implementation `DEDUP-SAME-EXPORT-FILTER`; regression `tests/dedup-same-export-filter.spec.js` (6, all failing on the unmodified file). Existing dedup, import and scan specs green (105 across 11 files).
+
+Live verification before merge (Shane): `await _dedupSameExportReplay()` — expected merges 49 surfaced / 1 suppressed (`dq-CLX-7310-CLX-7312`), keep-separate 385 suppressed. Result recorded below when run.
 
 ---
 

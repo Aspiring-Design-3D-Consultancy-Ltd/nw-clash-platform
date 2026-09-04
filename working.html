@@ -5821,12 +5821,10 @@ async function _dedupScanYieldProbe(opts){
   opts=opts||{};
   const byUid=new Map((S.clashes||[]).map(c=>[c.uid,c]));
   const uidNum=u=>{const m=/(\d+)/.exec(String(u||''));return m?parseInt(m[1],10):null;};
-  // uid -> first import event that listed it
-  const firstImport=new Map();
+  // uid -> first import event that listed it (shared with the scan filter, DEC-018)
+  const firstImport=_dedupFirstImportWeekMap();
   const events=[];
   (S.weekly||[]).forEach(w=>{(Array.isArray(w.imports)?w.imports:[]).forEach(imp=>{if(imp&&Array.isArray(imp.clashUidsPresent))events.push(imp);});});
-  events.sort((a,b)=>String(a.at||'').localeCompare(String(b.at||'')));
-  events.forEach(imp=>{imp.clashUidsPresent.forEach(u=>{if(!firstImport.has(u))firstImport.set(u,{weekTag:imp.weekTag||null,weekDate:imp.weekDate||null,at:imp.at||null});});});
   const weekOf=(uid,histTag)=>{
     const fi=firstImport.get(uid);
     if(fi&&(fi.weekTag||fi.weekDate))return {tag:fi.weekTag||null,date:fi.weekDate||(fi.weekTag?_parseWeekDate(fi.weekTag):null),src:'imports'};
@@ -9006,9 +9004,66 @@ function pairKey(c){
    import rule). Post-import invocations pass both. The initial-scan
    and hydrate paths call with no arguments, preserving the whole-
    register scan for one-shot migrations. */
+/* DEDUP-SAME-EXPORT-FILTER start: INV-012 / DEC-018 helpers. Two clashes that
+   first appeared in the same Navisworks export are two distinct results by
+   construction — Navisworks does not report one intersection twice in one
+   run. On the live history such pairs were 385 human keep-separates against
+   one merge (dq-CLX-7310-CLX-7312, itself a same-export pair; see INV-012).
+   A pair is suppressed only when it can be PROVED to come from one export:
+   both uids first listed under the same week in the import log
+   (S.weekly[].imports[].clashUidsPresent, written by WEEKLY-SNAPSHOT-RECORD
+   and surviving Merge), or both newly created by the batch being imported.
+   Any pair with an unjudgeable side — a uid the log never saw and this batch
+   did not create — surfaces exactly as before. */
+function _dedupFirstImportWeekMap(){
+  const events=[];
+  (S.weekly||[]).forEach(w=>{(Array.isArray(w&&w.imports)?w.imports:[]).forEach(imp=>{if(imp&&Array.isArray(imp.clashUidsPresent))events.push(imp);});});
+  events.sort((a,b)=>String(a.at||'').localeCompare(String(b.at||'')));
+  const m=new Map();
+  events.forEach((imp,i)=>{
+    const key=String(imp.weekTag||imp.weekDate||imp.at||('event-'+i));
+    imp.clashUidsPresent.forEach(u=>{if(!m.has(u))m.set(u,{weekTag:imp.weekTag||null,weekDate:imp.weekDate||null,at:imp.at||null,key});});
+  });
+  return m;
+}
+function _dedupSameExport(uidA,uidB,newUids,fiw){
+  const a=fiw?fiw.get(uidA):null,b=fiw?fiw.get(uidB):null;
+  if(a&&b)return a.key===b.key;
+  if(!a&&!b&&newUids instanceof Set&&newUids.has(uidA)&&newUids.has(uidB))return true;
+  return false;
+}
+/* Read-only replay of the rule over every decided pair (queue + action
+   history), so a criteria change can be checked against human history
+   before it ships:  await _dedupSameExportReplay() */
+async function _dedupSameExportReplay(){
+  const fiw=_dedupFirstImportWeekMap();
+  let hist=[];
+  try{hist=JSON.parse(localStorage.getItem('nw:dedupActionHistory')||'[]');}catch(e){hist=[];}
+  if(!Array.isArray(hist))hist=[];
+  const pairs=new Map();
+  (Array.isArray(S.dedupQueue)?S.dedupQueue:[]).filter(p=>p&&p.resolved&&(p.resolvedAction==='merge'||p.resolvedAction==='keep-separate'))
+    .forEach(p=>pairs.set(p.dedupPairId,{pairId:p.dedupPairId,a:p.a,b:p.b,outcome:p.resolvedAction}));
+  hist.filter(e=>e&&e.type==='action'&&(e.action==='merge'||e.action==='keep-separate')&&e.pairId&&!pairs.has(e.pairId))
+    .forEach(e=>pairs.set(e.pairId,{pairId:e.pairId,a:e.aClashId,b:e.bClashId,outcome:e.action}));
+  const g=()=>({total:0,surfaced:0,suppressed:0,unjudgeable:0,suppressedIds:[]});
+  const out={merges:g(),keepSeparate:g(),uidsWithImportWeek:fiw.size};
+  pairs.forEach(p=>{
+    const o=p.outcome==='merge'?out.merges:out.keepSeparate;
+    o.total++;
+    const judgeable=fiw.has(p.a)&&fiw.has(p.b);
+    if(!judgeable){o.unjudgeable++;o.surfaced++;return;}
+    if(_dedupSameExport(p.a,p.b,null,fiw)){o.suppressed++;if(o.suppressedIds.length<20)o.suppressedIds.push(p.pairId);}
+    else o.surfaced++;
+  });
+  try{console.log('[DEDUP-SAME-EXPORT-FILTER] replay over '+pairs.size+' decided pairs: merges '+out.merges.surfaced+' surfaced / '+out.merges.suppressed+
+    ' suppressed ('+out.merges.unjudgeable+' unjudgeable, surfaced)'+(out.merges.suppressedIds.length?(' ['+out.merges.suppressedIds.join(', ')+']'):'')+
+    '; keep-separate '+out.keepSeparate.suppressed+' suppressed / '+out.keepSeparate.surfaced+' surfaced ('+out.keepSeparate.unjudgeable+' unjudgeable, surfaced). Read-only — nothing was changed.');}catch(e){}
+  return out;
+}
+/* DEDUP-SAME-EXPORT-FILTER end */
 function _dedupCoordNorm(s){return String(s||'').toLowerCase().replace(/\\/g,'/').replace(/^.*\//,'').trim();}
 function _dedupCellKey(x){return (x.testName||'')+'::'+_dedupCoordNorm(x.sourceA)+'::'+_dedupCoordNorm(x.sourceB);}
-function scanForDedupCandidates(batchUids,baselineTestNames){
+function scanForDedupCandidates(batchUids,baselineTestNames,newUids){
   if(!Array.isArray(S.clashes))return 0;
   if(!Array.isArray(S.dedupQueue))S.dedupQueue=[];
   /* DEDUP-GRADUATION-DETECT-PRE start: snapshot actioned pair IDs
@@ -9035,6 +9090,13 @@ function scanForDedupCandidates(batchUids,baselineTestNames){
   const _dqBatchFilter=(batchUids instanceof Set)?batchUids:null;
   const _dqBaselineTests=(baselineTestNames instanceof Set)?baselineTestNames:null;
   /* WEEKLY-DEDUP-SCOPE end */
+  /* DEDUP-SAME-EXPORT-FILTER start: first-import week per uid, built once per
+     scan, plus the uids this batch created (the import-log entry for the
+     current batch is written after this scan runs, so newly created uids
+     have no log entry yet). */
+  const _fiwMap=_dedupFirstImportWeekMap();
+  const _dqNewUids=(newUids instanceof Set)?newUids:null;
+  /* DEDUP-SAME-EXPORT-FILTER end */
   /* DEDUP-QUEUE-DETECT-IDEMPOTENT start: preserve resolution state
      (skipped / resolved / resolvedAction / resolvedAt) on any pair
      already in the store. Orphan cleanup on load handles register-side
@@ -9106,6 +9168,12 @@ function scanForDedupCandidates(batchUids,baselineTestNames){
         if(a.ref.elementA !== b.ref.elementA) continue;
         if(a.ref.elementB !== b.ref.elementB) continue;
         /* DEDUP-SIGNATURE-FILTER end */
+        /* DEDUP-SAME-EXPORT-FILTER: a pair proven to come from one export is
+           two distinct Navisworks results, never a duplicate (DEC-018). Pairs
+           with an unjudgeable side fall through and surface as before. Pairs
+           already in the queue are untouched — this filters new candidates
+           only. */
+        if(_dedupSameExport(uidA,uidB,_dqNewUids,_fiwMap))continue;
         const [older,newer]=uidNum(uidA)<=uidNum(uidB)?[uidA,uidB]:[uidB,uidA];
         const pairKey2=older+'::'+newer;
         if(_existing.has(pairKey2))continue;
@@ -11523,6 +11591,7 @@ function importToRegister(mode){
      the PAIR-ID-RESOLVED-COUNT semantic (pre-existing minus matched)
      stays intact. */
   const _batchUids=new Set();
+  const _batchNewUids=new Set(); /* DEDUP-SAME-EXPORT-FILTER: uids created by this batch */
   /* WEEKLY-SNAPSHOT-RECORD end */
   // Snapshot UIDs of pre-existing clashes for tests in this batch, excluding
   // already-Resolved (don't re-count fixes from previous imports) AND
@@ -11903,6 +11972,7 @@ function importToRegister(mode){
     /* DUP-FILES-FIX */ _bumpPF(c,'added');
     /* WEEKLY-SNAPSHOT-RECORD: newly-created UID goes into batchUids. */
     _batchUids.add(uid);
+    _batchNewUids.add(uid); /* DEDUP-SAME-EXPORT-FILTER */
   });
 
   /* PR-A5-IMPORT-SUMMARY start: emit per-file summary line so the
@@ -12015,7 +12085,7 @@ function importToRegister(mode){
        per the baseline rule). Full-register scans still exist on load
        (DEDUP-QUEUE-DETECT hydrate + one-shot migration) — those call
        with no arguments. */
-    try{_dqCandidatesAdded=scanForDedupCandidates(_batchUids,_baselineTestNames);}
+    try{_dqCandidatesAdded=scanForDedupCandidates(_batchUids,_baselineTestNames,_batchNewUids);} /* DEDUP-SAME-EXPORT-FILTER: third arg */
     catch(e){console.warn('DEDUP-QUEUE-DETECT scan error:',e);}
   }
   window._dqBatchMeta={autoMerged:(typeof _coordAutoMergedCount==='number'?_coordAutoMergedCount:0),candidatesAdded:_dqCandidatesAdded};
