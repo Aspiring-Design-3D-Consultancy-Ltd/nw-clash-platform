@@ -5727,13 +5727,18 @@ async function _dedupSimilarityProbe(opts){
   hist.filter(e=>e&&e.type==='action'&&e.action==='merge'&&e.pairId).forEach(e=>{if(!mergeMap.has(e.pairId))mergeMap.set(e.pairId,{pairId:e.pairId,a:e.aClashId,b:e.bClashId,distMm:e.distMm});});
   const rows=[];
   const summarise=async(list,group)=>{
-    const out={group,pairs:list.length,computable:0,missingClash:0,noImage:0,noHash:0,hamming:{},distMm:{},cross:{}};
-    HAM.forEach(b=>{out.hamming[b.label]={count:0,examples:[]};});
+    const out={group,pairs:list.length,computable:0,missingClash:0,noImage:0,noHash:0,hamming:{},distMm:{},cross:{},
+      // Shane's proposed band change (500mm -> 100mm): everything in the
+      // 100-500mm segment reported on its own so the ruling is made on data.
+      band100to500:{count:0,computable:0,hamming:{},examples:[]}};
+    HAM.forEach(b=>{out.hamming[b.label]={count:0,examples:[]};out.band100to500.hamming[b.label]=0;});
     DIST.forEach(b=>{out.distMm[b.label]=0;});
     for(const p of list){
       const a=byUid.get(p.a),b=byUid.get(p.b);
       const dm=(typeof p.distMm==='number')?p.distMm:null;
       if(dm!==null)out.distMm[distBucket(dm).label]++;
+      const inBand=dm!==null&&dm>100&&dm<=500;
+      if(inBand){out.band100to500.count++;if(out.band100to500.examples.length<10)out.band100to500.examples.push(p.pairId);}
       if(!a||!b){out.missingClash++;continue;}
       const ia=_iwkLookupIdx(a),ib=_iwkLookupIdx(b);
       if(ia===null||ib===null){out.noImage++;continue;}
@@ -5742,6 +5747,7 @@ async function _dedupSimilarityProbe(opts){
       const d=_dhashHamming(ha,hb);
       out.computable++;
       const hb2=hamBucket(d);
+      if(inBand){out.band100to500.computable++;if(hb2)out.band100to500.hamming[hb2.label]++;}
       if(hb2){
         out.hamming[hb2.label].count++;
         if(out.hamming[hb2.label].examples.length<maxExamples)out.hamming[hb2.label].examples.push(p.pairId);
@@ -5781,8 +5787,15 @@ async function _dedupSimilarityProbe(opts){
     Object.keys(result.live.cross).sort().forEach(k=>cross.push({live_pairs:k,count:result.live.cross[k]}));
     if(cross.length&&console.table)console.table(cross);
     const dtab=[];
-    DIST.forEach(b=>dtab.push({distMm:b.label,live:result.live.distMm[b.label],keepSeparate:result.keepSeparate.distMm[b.label],merged:result.merged.distMm[b.label]}));
+    DIST.forEach(b=>dtab.push({distMm:b.label,live:result.live.distMm[b.label],skipped:result.skipped.distMm[b.label],keepSeparate:result.keepSeparate.distMm[b.label],merged:result.merged.distMm[b.label]}));
     if(console.table)console.table(dtab);
+    const bd=g=>g.group+' '+g.band100to500.count+(g.band100to500.count?(' ['+g.band100to500.examples.join(', ')+']'):'');
+    console.log('[PIXEL-DEDUP-PROBE] 100-500mm segment (candidates a 100mm band would no longer surface): '+
+      [result.live,result.skipped,result.keepSeparate,result.merged].map(bd).join('; ')+
+      '. Human merges in this segment are the cost of shrinking the band; keep-separates are its benefit.');
+    const btab=[];
+    [result.live,result.keepSeparate,result.merged].forEach(g=>HAM.forEach(b=>{if(g.band100to500.hamming[b.label])btab.push({group:g.group,segment:'100-500mm',bits:b.label,pairs:g.band100to500.hamming[b.label]});}));
+    if(btab.length&&console.table)console.table(btab);
   }catch(e){}
   return result;
 }

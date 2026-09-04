@@ -46,6 +46,7 @@ S.dedupQueue = [
 ];
 localStorage.setItem('nw:dedupActionHistory', JSON.stringify([
   { type: 'action', action: 'merge', pairId: 'dq-CLX-002-CLX-099', aClashId: 'CLX-002', bClashId: 'CLX-099', distMm: 2 },
+  { type: 'action', action: 'merge', pairId: 'dq-CLX-003-CLX-098', aClashId: 'CLX-003', bClashId: 'CLX-098', distMm: 250 },
   { type: 'action', action: 'keep-separate', pairId: 'dq-CLX-001-CLX-004', aClashId: 'CLX-001', bClashId: 'CLX-004', distMm: 300 },
 ]));
 `;
@@ -87,10 +88,22 @@ test.describe('PIXEL-DEDUP-AUTOMERGE — Stage 1 similarity probe (read-only)', 
   test('merged pairs whose newer clash is gone are counted but not computed', async ({ page }) => {
     await bootstrap(page);
     const r = await page.evaluate(`(async () => { ${SEED} return await _dedupSimilarityProbe(); })()`);
-    expect(r.history.merges).toBe(1);
-    expect(r.merged.pairs).toBe(1);
+    expect(r.history.merges).toBe(2);
+    expect(r.merged.pairs).toBe(2);          // one from the queue (also in history), one history-only
     expect(r.merged.computable).toBe(0);
-    expect(r.merged.missingClash).toBe(1);
+    expect(r.merged.missingClash).toBe(2);
+  });
+
+  test('reports the 100-500mm segment separately per group, with the human merges it contains', async ({ page }) => {
+    await bootstrap(page);
+    const r = await page.evaluate(`(async () => { ${SEED} return await _dedupSimilarityProbe(); })()`);
+    expect(r.live.band100to500.count).toBe(0);            // live pairs are 3.2 / 40 / 12 mm
+    expect(r.skipped.band100to500).toMatchObject({ count: 1, computable: 1, examples: ['dq-CLX-001-CLX-004'] });
+    expect(r.keepSeparate.band100to500).toMatchObject({ count: 1, examples: ['dq-CLX-001-CLX-004'] });
+    expect(r.merged.band100to500).toMatchObject({ count: 1, computable: 0, examples: ['dq-CLX-003-CLX-098'] });
+    // Distance distribution agrees with the segment count.
+    expect(r.merged.distMm['100-500mm']).toBe(1);
+    expect(r.keepSeparate.distMm['100-500mm']).toBe(1);
   });
 
   test('writes nothing — queue, register, history, nw:* keys and the image store are byte-identical afterwards', async ({ page }) => {
