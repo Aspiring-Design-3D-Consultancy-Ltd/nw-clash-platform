@@ -5694,8 +5694,11 @@ async function _imgWeekKeyingMigrate(opts){
    nw:dedupActionHistory and image hashes via the DEC-014 index (record
    fallback); writes nothing anywhere.
    Console:  await _dedupSimilarityProbe()
-   The auto-merge itself is NOT in this block yet — Stage 2 waits on the
-   distribution this prints from the live profile. */
+   DEC-017 (2026-09-04): the live distribution closed the auto-merge design —
+   125 human keep-separates at 0-4 bits (11% of computable), 3 even at
+   1-5mm x 0-2 bits, no computable positives. No Tier 1, no Tier 2. This
+   probe stays as the standing evidence tool; the only recorded reopener is
+   image capture that isolates the clashing elements. */
 async function _dedupSimilarityProbe(opts){
   opts=opts||{};
   const maxExamples=Number.isFinite(opts.examples)?Math.max(0,opts.examples|0):3;
@@ -5800,6 +5803,141 @@ async function _dedupSimilarityProbe(opts){
   return result;
 }
 /* PIXEL-DEDUP-AUTOMERGE end */
+
+/* DEDUP-SCAN-YIELD start: INV-012 evidence probe — READ-ONLY. The Dedup Queue
+   surfaces about 19 human rejections per merge (history: 100 merges, 1,865
+   keep-separates). This compares the two outcomes across the signals already
+   stored — distance band, week relation and gap, uid gap, element/source/test
+   equality, vertical offset, statuses — and simulates candidate scan rules,
+   reporting for each how many merges it would still have surfaced and how
+   many rejections it would have suppressed. Week of first appearance comes
+   from S.weekly[].imports[].clashUidsPresent (WEEKLY-SNAPSHOT-RECORD), which
+   still knows a uid after Merge has deleted its clash; register fields are
+   the fallback. Signals that need both clash records (element strings, dz,
+   status) are only measurable on pairs whose clashes both survive, so the
+   rule table marks a merge "unknown" rather than "kept" when it cannot tell.
+   Writes nothing. Console:  await _dedupScanYieldProbe() */
+async function _dedupScanYieldProbe(opts){
+  opts=opts||{};
+  const byUid=new Map((S.clashes||[]).map(c=>[c.uid,c]));
+  const uidNum=u=>{const m=/(\d+)/.exec(String(u||''));return m?parseInt(m[1],10):null;};
+  // uid -> first import event that listed it
+  const firstImport=new Map();
+  const events=[];
+  (S.weekly||[]).forEach(w=>{(Array.isArray(w.imports)?w.imports:[]).forEach(imp=>{if(imp&&Array.isArray(imp.clashUidsPresent))events.push(imp);});});
+  events.sort((a,b)=>String(a.at||'').localeCompare(String(b.at||'')));
+  events.forEach(imp=>{imp.clashUidsPresent.forEach(u=>{if(!firstImport.has(u))firstImport.set(u,{weekTag:imp.weekTag||null,weekDate:imp.weekDate||null,at:imp.at||null});});});
+  const weekOf=(uid,histTag)=>{
+    const fi=firstImport.get(uid);
+    if(fi&&(fi.weekTag||fi.weekDate))return {tag:fi.weekTag||null,date:fi.weekDate||(fi.weekTag?_parseWeekDate(fi.weekTag):null),src:'imports'};
+    const c=byUid.get(uid);
+    if(c&&(c.firstSeenWeekTag||c.weekTag)){const t=c.firstSeenWeekTag||c.weekTag;return {tag:t,date:c.firstSeenWeekDate||c.weekDate||_parseWeekDate(t),src:'register'};}
+    if(histTag)return {tag:histTag,date:_parseWeekDate(histTag),src:'history'};
+    return {tag:null,date:null,src:'none'};
+  };
+  let hist=[];
+  try{hist=JSON.parse(localStorage.getItem('nw:dedupActionHistory')||'[]');}catch(e){hist=[];}
+  if(!Array.isArray(hist))hist=[];
+  const q=Array.isArray(S.dedupQueue)?S.dedupQueue:[];
+  const pairs=new Map(); // pairId -> {pairId,a,b,distMm,outcome,aWeekTagH,bWeekTagH,aElementA,aElementB,resolvedAt}
+  q.filter(p=>p&&p.resolved&&(p.resolvedAction==='merge'||p.resolvedAction==='keep-separate')).forEach(p=>{
+    pairs.set(p.dedupPairId,{pairId:p.dedupPairId,a:p.a,b:p.b,distMm:p.distMm,outcome:p.resolvedAction,resolvedAt:p.resolvedAt||null,detectedAt:p.detectedAt||null});
+  });
+  hist.filter(e=>e&&e.type==='action'&&(e.action==='merge'||e.action==='keep-separate')&&e.pairId).forEach(e=>{
+    const cur=pairs.get(e.pairId);
+    if(!cur)pairs.set(e.pairId,{pairId:e.pairId,a:e.aClashId,b:e.bClashId,distMm:e.distMm,outcome:e.action,resolvedAt:e.resolvedAt||null,aWeekTagH:e.aWeekTag,bWeekTagH:e.bWeekTag,aElementA:e.aElementA,aElementB:e.aElementB});
+    else{if(cur.aWeekTagH===undefined)cur.aWeekTagH=e.aWeekTag;if(cur.bWeekTagH===undefined)cur.bWeekTagH=e.bWeekTag;if(!cur.aElementA)cur.aElementA=e.aElementA;if(!cur.aElementB)cur.aElementB=e.aElementB;}
+  });
+  const DISTB=[['1-5mm',1,5],['5-25mm',5,25],['25-100mm',25,100],['100-250mm',100,250],['250-500mm',250,500],['>500mm',500,Infinity]];
+  const distBand=d=>{if(typeof d!=='number')return 'unknown';if(d<=1)return '<=1mm';const b=DISTB.find(x=>d>x[1]&&d<=x[2]);return b?b[0]:'unknown';};
+  const gapBand=g=>g===null?'unknown':g<10?'<10':g<100?'10-99':g<1000?'100-999':'>=1000';
+  const weekGapBand=days=>days===null?'unknown':days===0?'same week':days<=7?'1 week':days<=28?'2-4 weeks':'>4 weeks';
+  const dzBand=dz=>dz===null?'unknown':dz<=10?'<=10mm':dz<=100?'10-100mm':dz<=500?'100-500mm':'>500mm';
+  const rows=[];
+  pairs.forEach(p=>{
+    const a=byUid.get(p.a),b=byUid.get(p.b);
+    const wa=weekOf(p.a,p.aWeekTagH),wb=weekOf(p.b,p.bWeekTagH);
+    let weekRel='unknown',weekGapDays=null;
+    if(wa.tag&&wb.tag){weekRel=wa.tag===wb.tag?'same':'cross';
+      if(wa.date&&wb.date){const da=Date.parse(wa.date),db=Date.parse(wb.date);if(isFinite(da)&&isFinite(db))weekGapDays=Math.round(Math.abs(db-da)/86400000);}
+      else if(weekRel==='same')weekGapDays=0;}
+    const na=uidNum(p.a),nb=uidNum(p.b);
+    const uidGap=(na!==null&&nb!==null)?Math.abs(nb-na):null;
+    const both=!!(a&&b);
+    const num=v=>(typeof v==='number'&&isFinite(v))?v:parseFloat(v);
+    const dz=both&&isFinite(num(a.z))&&isFinite(num(b.z))?Math.abs(num(a.z)-num(b.z)):null;
+    const dxy=both&&isFinite(num(a.x))&&isFinite(num(b.x))&&isFinite(num(a.y))&&isFinite(num(b.y))?Math.hypot(num(a.x)-num(b.x),num(a.y)-num(b.y)):null;
+    const norm=v=>String(v||'').toLowerCase().replace(/\\/g,'/').replace(/^.*\//,'').trim();
+    rows.push({
+      pairId:p.pairId,outcome:p.outcome,a:p.a,b:p.b,
+      distMm:(typeof p.distMm==='number')?p.distMm:null,distBand:distBand(p.distMm),
+      weekA:wa.tag,weekB:wb.tag,weekSrc:wa.src+'/'+wb.src,weekRel,weekGapDays,weekGapBand:weekGapBand(weekGapDays),
+      uidGap,uidGapBand:gapBand(uidGap),
+      bothExist:both,
+      elemAEqual:both?(a.elementA===b.elementA):null,elemBEqual:both?(a.elementB===b.elementB):null,
+      sourcePairEqual:both?(norm(a.sourceA)===norm(b.sourceA)&&norm(a.sourceB)===norm(b.sourceB)):null,
+      testEqual:both?((a.rawTestName||a.testName)===(b.rawTestName||b.testName)):null,
+      dz,dzBand:dzBand(dz),dxy,
+      statusA:a?a.status:null,statusB:b?b.status:null,
+      priorityEqual:both?(a.priority===b.priority):null,
+      sameDate:both?(a.date===b.date):null
+    });
+  });
+  const merged=rows.filter(r=>r.outcome==='merge'),kept=rows.filter(r=>r.outcome==='keep-separate');
+  const tally=(list,key)=>{const t={};list.forEach(r=>{const k=String(r[key]);t[k]=(t[k]||0)+1;});return t;};
+  const dist=key=>({merged:tally(merged,key),keepSeparate:tally(kept,key)});
+  const distributions={distBand:dist('distBand'),weekRel:dist('weekRel'),weekGapBand:dist('weekGapBand'),uidGapBand:dist('uidGapBand'),
+    elemAEqual:dist('elemAEqual'),elemBEqual:dist('elemBEqual'),sourcePairEqual:dist('sourcePairEqual'),testEqual:dist('testEqual'),dzBand:dist('dzBand'),
+    statusPair:{keepSeparate:tally(kept.map(r=>({sp:(r.statusA||'?')+'/'+(r.statusB||'?')})),'sp')},sameDate:dist('sameDate')};
+  // Rule simulations. A rule "surfaces" a pair when its predicate is true;
+  // null means the signal is unknown for that pair (never counted as suppressed).
+  const rules=[
+    {name:'distance <= 250mm',test:r=>r.distMm===null?null:r.distMm<=250},
+    {name:'distance <= 100mm',test:r=>r.distMm===null?null:r.distMm<=100},
+    {name:'distance <= 25mm',test:r=>r.distMm===null?null:r.distMm<=25},
+    {name:'cross-week only (first import weeks differ)',test:r=>r.weekRel==='unknown'?null:r.weekRel==='cross'},
+    {name:'week gap >= 1 week',test:r=>r.weekGapDays===null?null:r.weekGapDays>=7},
+    {name:'uid gap >= 100 (different import batch proxy)',test:r=>r.uidGap===null?null:r.uidGap>=100},
+    {name:'uid gap >= 1000',test:r=>r.uidGap===null?null:r.uidGap>=1000},
+    {name:'cross-week AND distance <= 250mm',test:r=>(r.weekRel==='unknown'||r.distMm===null)?null:(r.weekRel==='cross'&&r.distMm<=250)},
+    {name:'cross-week AND distance <= 100mm',test:r=>(r.weekRel==='unknown'||r.distMm===null)?null:(r.weekRel==='cross'&&r.distMm<=100)},
+    {name:'dz <= 100mm (needs both clashes)',test:r=>r.dz===null?null:r.dz<=100},
+    {name:'dz <= 10mm (needs both clashes)',test:r=>r.dz===null?null:r.dz<=10},
+    {name:'elementA AND elementB equal (needs both clashes)',test:r=>(r.elemAEqual===null||r.elemBEqual===null)?null:(r.elemAEqual&&r.elemBEqual)},
+    {name:'same date (needs both clashes)',test:r=>r.sameDate===null?null:r.sameDate},
+  ];
+  const ruleTable=rules.map(rule=>{
+    let mk=0,ms=0,mu=0,kk=0,ks=0,ku=0;
+    merged.forEach(r=>{const v=rule.test(r);if(v===null)mu++;else if(v)mk++;else ms++;});
+    kept.forEach(r=>{const v=rule.test(r);if(v===null)ku++;else if(v)kk++;else ks++;});
+    return {rule:rule.name,mergesKept:mk,mergesSuppressed:ms,mergesUnknown:mu,rejectionsSuppressed:ks,rejectionsKept:kk,rejectionsUnknown:ku,
+      rejectionsSuppressedPct:kept.length?Math.round(ks/kept.length*100):0};
+  }).sort((x,y)=>(x.mergesSuppressed-y.mergesSuppressed)||(y.rejectionsSuppressed-x.rejectionsSuppressed));
+  const coverage={
+    pairs:rows.length,merged:merged.length,keepSeparate:kept.length,
+    importEvents:events.length,uidsWithImportWeek:firstImport.size,
+    mergedWeekKnown:merged.filter(r=>r.weekRel!=='unknown').length,keepWeekKnown:kept.filter(r=>r.weekRel!=='unknown').length,
+    mergedBothExist:merged.filter(r=>r.bothExist).length,keepBothExist:kept.filter(r=>r.bothExist).length,
+    historyEvents:hist.length,historyMergeEvents:hist.filter(e=>e&&e.action==='merge').length,distinctMergePairIds:new Set(hist.filter(e=>e&&e.action==='merge'&&e.pairId).map(e=>e.pairId)).size
+  };
+  const result={at:new Date().toISOString(),coverage,distributions,rules:ruleTable,rows};
+  try{
+    console.log('[DEDUP-SCAN-YIELD] '+coverage.pairs+' decided pairs: '+coverage.merged+' merged, '+coverage.keepSeparate+' keep-separate ('+
+      (coverage.merged?Math.round(coverage.keepSeparate/coverage.merged*10)/10:'n/a')+' rejections per merge). Week of first import known for '+
+      coverage.mergedWeekKnown+'/'+coverage.merged+' merges and '+coverage.keepWeekKnown+'/'+coverage.keepSeparate+' keep-separates ('+coverage.importEvents+' import events, '+
+      coverage.uidsWithImportWeek+' uids). Both clashes still exist for '+coverage.mergedBothExist+' merges and '+coverage.keepBothExist+' keep-separates. Read-only — nothing was changed.');
+    const flat=(name,d)=>{const keys=new Set([...Object.keys(d.merged),...Object.keys(d.keepSeparate)]);return [...keys].map(k=>({signal:name,value:k,merged:d.merged[k]||0,keepSeparate:d.keepSeparate[k]||0}));};
+    const t=[].concat(flat('distance',distributions.distBand),flat('week relation',distributions.weekRel),flat('week gap',distributions.weekGapBand),
+      flat('uid gap',distributions.uidGapBand),flat('elementA equal',distributions.elemAEqual),flat('elementB equal',distributions.elemBEqual),
+      flat('source pair equal',distributions.sourcePairEqual),flat('dz',distributions.dzBand),flat('same date',distributions.sameDate));
+    if(console.table)console.table(t);
+    if(console.table)console.table(ruleTable);
+    const sp=Object.entries(distributions.statusPair.keepSeparate).sort((a,b)=>b[1]-a[1]).slice(0,12).map(([k,v])=>({keepSeparate_statusA_statusB:k,pairs:v}));
+    if(sp.length&&console.table)console.table(sp);
+  }catch(e){}
+  return result;
+}
+/* DEDUP-SCAN-YIELD end */
 
 // Refresh the image panel inside an open modal
 function refreshModalImage(){

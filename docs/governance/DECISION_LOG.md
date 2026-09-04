@@ -570,6 +570,58 @@ None.
 
 ---
 
+# DEC-017
+
+Title:
+
+PIXEL-DEDUP Auto-Merge Closed on Evidence — No Tier 1, No Tier 2; Similarity Probe Retained
+
+Status:
+
+Approved (Shane, 2026-09-04: "close it entirely")
+
+Date:
+
+2026-09-04
+
+Decision:
+
+The tiered PIXEL-DEDUP AUTO-MERGE design (Tier 1 import-time auto-merge on coordinate match plus dHash similarity; Tier 2 similarity-sorted queue with badges) is not built. `_dedupSimilarityProbe()` (marker `PIXEL-DEDUP-AUTOMERGE`) stays in the app as the standing evidence tool. The Dedup Queue scan band stays at 500 mm. The ≤1 mm import-time cross-test path is unchanged. The DEC-014 read side (`_dhashIndex`, `_dhashIndexGet`, `_dhashHamming`, `findSimilarImages`) stays as a read-only query layer with no consumer.
+
+Evidence (live profile, 2026-09-04, `_dedupSimilarityProbe()` on `main` `1510f82`):
+
+- Register 13,027 clashes; queue 1,431 pairs, all resolved keep-separate, 0 live; history 1,965 events (100 merges, 1,865 keep-separates).
+- Keep-separate pairs computable: 1,118 of 1,652 (216 reference a deleted clash, 313 lack an image on one side). Hamming distribution: 0-4 bits 125 (11%), 5-8 138 (12%), 9-12 225 (20%), 13-16 197 (18%), >16 433 (39%).
+- Tightest cell, 1-5 mm × 0-2 bits: 3 human keep-separates against 3 human merges at 1-5 mm in the whole history. Best-case precision 50%.
+- Merged pairs: 50 distinct pair ids, 0 computable — Merge deletes the newer clash and its image reference, so no positive can be measured.
+- 100-500 mm segment: 946 keep-separates (57%), 12 of 50 merges (24%); its keep-separates are 0-4 bits apart at the same rate as the rest.
+
+Reasoning:
+
+Human merges are about 5% of coordinate-surfaced pairs (100 against 1,865). A ≤4-bit threshold fires on 11% of known non-duplicates, so even with perfect recall its precision is roughly 30%; the tightest defensible cell reaches 50%. Merge is irreversible. [Likely] Navisworks frames every clash in a cluster from the same camera, so different clashes on one wall hash near-identically; the highlighted elements are too small to move a 64-bit dHash. Tier 2 was closed with Tier 1 because with 75 near-identical rejections the sort would be a mild aid at best, and a badge that reads "likely duplicate" on pairs humans reject 11% of the time invites the error the ruling exists to prevent.
+
+Reopener (the only one recorded): image capture that isolates the clashing elements, so that similarity measures the clash rather than the camera.
+
+Backlog carried from the probe (KNOWN_ISSUES.md MI-004):
+
+- 216 decided pairs reference a clash no longer in the register.
+- 313 decided pairs lack an image on one side.
+- 100 merge events in `nw:dedupActionHistory` against 50 distinct pair ids — duplicated events or events without a pair id; the audit log cannot currently be relied on for counts.
+
+Impact:
+
+No `working.html` behaviour change. Comment on the probe updated to point at this decision. Follow-on investigation INV-012 (DEDUP-SCAN-YIELD) opened on the 19-rejections-per-merge finding.
+
+Related Investigations:
+
+INV-012.
+
+Related Issues:
+
+MI-004.
+
+---
+
 # Future Decisions
 
 Record future decisions using the following structure:

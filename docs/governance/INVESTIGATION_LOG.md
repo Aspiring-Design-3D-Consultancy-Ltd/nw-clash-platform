@@ -1893,3 +1893,36 @@ Observations, not acted on:
 
 ---
 
+# INV-012: DEDUP-SCAN-YIELD — Why the Dedup Queue Surfaces 19 Rejections per Merge
+
+Date:
+
+Opened 2026-09-04.
+
+Status:
+
+Under Investigation (DEC-010 State 2). Evidence-first, read-only. No change to the scan is proposed until the live-profile probe output is in.
+
+Workflow:
+
+Workflow D (Architecture Review) — the scan is behaving as designed; the question is whether the design's criteria are the right ones.
+
+Trigger:
+
+DEC-017 evidence: 100 human merges against 1,865 human keep-separates in `nw:dedupActionHistory`. At 1-5 mm the ratio is 3 merges to 153 rejections. The coordinate scan (`scanForDedupCandidates`: same test, same normalised source pair, equal elementA/elementB strings, 1 mm < distance ≤ 500 mm, at least one side in the current batch) is the lever; image similarity is not (DEC-017).
+
+Scope:
+
+- The decided pairs (queue resolved + history events, de-duplicated by pair id) across the signals already stored: distance band, week of first import (from `S.weekly[].imports[].clashUidsPresent`, which still knows a uid after Merge deleted its clash), week gap, uid gap, element/source/test equality, vertical offset, statuses, dates.
+- Candidate scan rules simulated against those pairs: for each, merges kept / suppressed / unknown and rejections suppressed / kept / unknown. A signal that needs both clash records marks a merge "unknown", never "kept".
+
+Evidence tool:
+
+`_dedupScanYieldProbe()` (marker `DEDUP-SCAN-YIELD`, read-only; `tests/dedup-scan-yield.spec.js`, 5). Console output: coverage line, per-signal distribution table, rule table sorted by merges-suppressed then rejections-suppressed, top keep-separate status pairs.
+
+Next Action:
+
+Shane runs `await _dedupScanYieldProbe()` on the live profile and pastes the tables. Report to follow: which criteria change would have suppressed the most rejections while keeping all 100 merges surfaced, with counts. No scan code change in this investigation.
+
+---
+
