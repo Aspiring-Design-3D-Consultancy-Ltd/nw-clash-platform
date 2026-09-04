@@ -1949,7 +1949,13 @@ Rule simulation (merges kept / lost / rejections suppressed): first-import weeks
 
 Shane adopted proposal 1 with the fallback: suppress only pairs proved to come from one export (same logged first-import week, or both created by the current batch); any unjudgeable side surfaces as today. Band stays 500 mm. Implementation `DEDUP-SAME-EXPORT-FILTER`; regression `tests/dedup-same-export-filter.spec.js` (6, all failing on the unmodified file). Existing dedup, import and scan specs green (105 across 11 files).
 
-Live verification before merge (Shane): `await _dedupSameExportReplay()` — expected merges 49 surfaced / 1 suppressed (`dq-CLX-7310-CLX-7312`), keep-separate 385 suppressed. Result recorded below when run.
+Live verification before merge (Shane, 2026-09-04, branch build `fce54a4`, sha256 prefix `b67bf3c565ec7527`):
+
+```
+[DEDUP-SAME-EXPORT-FILTER] replay over 1702 decided pairs: merges 49 surfaced / 1 suppressed (0 unjudgeable, surfaced) [dq-CLX-7310-CLX-7312]; keep-separate 385 suppressed / 1267 surfaced (0 unjudgeable, surfaced). Read-only — nothing was changed.
+```
+
+Matches the INV-012 prediction exactly: every cross-export merge still surfaces, the one same-export merge is the pair already judged weak, 385 same-export rejections (23%) are suppressed, and no decided pair was unjudgeable (15,584 uids carry an import week).
 
 ---
 
