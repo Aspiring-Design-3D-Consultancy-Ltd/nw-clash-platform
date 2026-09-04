@@ -786,6 +786,35 @@ Shane's ruling: not moot — the orphans regenerate on every weekly import. See 
 
 ---
 
+## MI-004
+
+Title:
+
+Dedup Decision Data Integrity (dangling pairs, one-sided images, audit-log duplicate events)
+
+Status:
+
+Monitoring (opened 2026-09-04 from the DEC-017 probe run)
+
+Description:
+
+Observed on the live profile by `_dedupSimilarityProbe()`:
+
+- 216 decided keep-separate pairs reference a clash that is no longer in the register (per-week reset, merge, or deletion after the decision).
+- 313 decided pairs lack an image on one side under the current week-keyed sets.
+- `nw:dedupActionHistory` holds 100 `merge` events but only 50 distinct pair ids: duplicated events, or events written without a pair id. The log is append-only by contract and must not be edited; the discrepancy is recorded, not corrected.
+
+Potential Risks:
+
+- Counts derived from the audit log (Data Manager viewer, any future yield analysis) over-state merges by up to 2×.
+- Dangling pairs are excluded by DEDUP-QUEUE-DETECT-IDEMPOTENT's register filter on the next scan, so they carry no functional risk, but they distort any history-based analysis unless filtered (INV-012's probe filters them).
+
+Recommended Action:
+
+Read-only investigation of the duplicate-event mechanism before any change to `_appendDedupAuditEvent`. Filter dangling pairs in analyses. No cleanup of the audit log under any circumstances.
+
+---
+
 # Confirmed Issues
 
 None currently recorded.
@@ -794,7 +823,15 @@ None currently recorded.
 
 # Under Investigation
 
-None currently recorded.
+## INV-012
+
+Title:
+
+DEDUP-SCAN-YIELD — Why the Dedup Queue Surfaces 19 Rejections per Merge
+
+Status:
+
+Under Investigation (opened 2026-09-04, Workflow D). Read-only probe `_dedupScanYieldProbe()` shipped; live-profile run pending. See INVESTIGATION_LOG.md INV-012.
 
 ---
 
@@ -818,6 +855,7 @@ Monitoring Items:
 - MI-001 — Migration Complexity (updated 2026-09-03: `idbRecordsMigrated` gate and the routed write path added)
 - MI-002 — Test Timing Sensitivity (root cause remediated under INV-007 / KI-005)
 - MI-003 — Orphaned IndexedDB Image Records — Closed (INV-011 / KI-010, live cleanup verified 2026-09-03)
+- MI-004 — Dedup decision data integrity (dangling pairs, one-sided images, audit-log duplicate events) — Monitoring
 
 Confirmed Issues:
 
@@ -825,4 +863,4 @@ None outstanding.
 
 Active Investigations:
 
-None currently recorded.
+- INV-012 — DEDUP-SCAN-YIELD (Under Investigation, evidence-first)

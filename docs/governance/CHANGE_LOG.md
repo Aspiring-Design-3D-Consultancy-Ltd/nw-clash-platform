@@ -295,3 +295,21 @@ Notes:
 
 Documentation only.
 
+---
+
+### 2026-09-04 (DEC-017 + INV-012 probe)
+
+Summary:
+
+PIXEL-DEDUP auto-merge closed on live evidence (DEC-017). Read-only DEDUP-SCAN-YIELD probe shipped for INV-012.
+
+Changes:
+
+- `working.html` — `DEDUP-SCAN-YIELD`: `_dedupScanYieldProbe()`, read-only; comment on `PIXEL-DEDUP-AUTOMERGE` updated to reference DEC-017. No behaviour change.
+- `tests/dedup-scan-yield.spec.js` (5).
+- DECISION_LOG.md DEC-017; INVESTIGATION_LOG.md INV-012 opened; KNOWN_ISSUES.md MI-004; CURRENT_STATUS.md; CLAUDE.md.
+
+Notes:
+
+`DATA_VERSION` untouched. Protected blocks `UNCHANGED`. Zero parser lines. No change to `scanForDedupCandidates`.
+

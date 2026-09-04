@@ -332,7 +332,9 @@ None. KI-008 resolved 2026-09-03 under DEC-015 (projection everywhere).
 
 ### Under Investigation
 
-None. INV-010 (test-harness isolation gap, KI-009) and INV-011 (orphan image records, KI-010) both opened, closed and released 2026-09-03.
+- INV-012 — DEDUP-SCAN-YIELD (opened 2026-09-04, Workflow D, evidence-first). Read-only probe shipped; live run pending.
+
+INV-010 and INV-011 both opened, closed and released 2026-09-03.
 
 ### Monitoring
 
@@ -480,7 +482,7 @@ Ranked backlog as of 2026-09-03 (in execution order):
 
 1. **Governance ledger catch-up** — this update (INV-009 retrospective record, INV-010 opened, KI-007, KI-008, MI-003, CHANGE_LOG for #59–#66, RS-002). Complete on commit of this document set.
 2. **MI-003 / INV-011 orphan records** — done. Audit, cleanup tool, root-cause fix (PR #68, `main` `92246f5`), and the live-profile cleanup: 76,682 deleted, 4,768 kept, verification passed, store now 4,769 keys. MI-003 closed.
-3. **PIXEL-DEDUP Phase 2** — ruling made and read side shipped 2026-09-03 (DEC-014, IMG-DHASH-INDEX): record stays authoritative, referenced-slot index rides on the metadata record, `findSimilarImages(maxDistance)` is the query API. Remaining: the consumer half (what a near-duplicate image means for two clashes, threshold, where it surfaces) needs a brief from Shane before it is built.
+3. **PIXEL-DEDUP** — closed 2026-09-04 (DEC-017). The live similarity distribution ruled out auto-merge at any threshold and the badge/sort tier with it; `_dedupSimilarityProbe()` stays as the standing evidence tool. Only recorded reopener: element-isolated image capture. Follow-on: INV-012 DEDUP-SCAN-YIELD on the scan criteria themselves.
 4. **INV-010** — done 2026-09-03. Test-harness isolation gap (the demo register stayed in memory and `rDash()` regenerated weekly buckets from it); test-only fix, KI-009. Application logic verified correct. The suite has no known failures left.
 5. **KI-008** — resolved 2026-09-03. Shane ruled option 1 (DEC-015): every weekly snapshot counts each clash once at its end-of-week status; `FROZEN-WEEK-TERMINAL-REFRESH` retired; four new tests replace the two old ones.
 6. **Delta Analysis Settings UI (Step 3)** — already shipped. The Settings tab renders "Designed condition patterns & republish tolerance" (tolerance input, per-pattern enable/edit/remove, add pattern; `SETTINGS-DESIGNED-CONDITION-PATTERNS` region 2, ~line 15867). The "deferred to Step 3" comments in the storage region were stale and have been corrected. No test covers the section directly; noted as a coverage gap, not a defect.
@@ -673,7 +675,7 @@ Post-IMG-WEEK-KEYING (branch, on top of `main` `0089c71`): 381 total (+11 `img-w
 
 ## Next Planned Activity
 
-Work the ranked backlog under "Current Priority" in order. No investigation is open and no monitoring item has a pending action. IMG-WEEK-KEYING (DEC-016) is released on `main` `b77f66b`; its one-shot live migration ran 2026-09-03 (13 sets retagged to their week, read-back verified, gate set — see the INV-011 follow-up). Next design item: a "prune image weeks older than N" tool, now that weeks accumulate by design (~171 MB per weekly import on the live profile).
+INV-012: Shane runs `await _dedupScanYieldProbe()` on the live profile; report which scan-criteria change suppresses the most rejections while keeping all 100 merges. No scan code change until then. Design brief still needed for the weekly-image-set prune tool. MI-004 (dedup decision data integrity) is monitoring.
 
 Future investigations should originate from:
 

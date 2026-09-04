@@ -122,7 +122,7 @@ Listed for context — when working near these areas, read the comment headers b
 Ranked order lives in `docs/governance/CURRENT_STATUS.md` → "Current Priority". Summary:
 
 - **Prune tool for weekly image sets (design brief needed):** since DEC-016 image sets accumulate per (test, week), ~171 MB per weekly import on the live profile. The IMG-WEEK-KEYING live migration ran 2026-09-03 (13 sets retagged, verified, gate `nw:imgWeekKeyingMigrated` set); `_imgWeekKeyingMigrate()` is now a no-op on that profile. `_cleanupNwImageOrphans()` treats every week as referenced and will not prune.
-- **PIXEL-DEDUP Phase 2 consumer:** the read side shipped (DEC-014, `IMG-DHASH-INDEX`): hashes indexed per referenced slot on the metadata record, `findSimilarImages(maxDistance)` returns cross-test groups. What a near-duplicate image means for two clashes, the threshold, and where it surfaces need a brief before building. Do not touch the Dedup Queue for this without one.
+- **PIXEL-DEDUP is closed (DEC-017):** no auto-merge, no similarity badge. Live evidence: 11% of human keep-separates are 0-4 bits apart, no computable positives. `_dedupSimilarityProbe()` and `_dedupScanYieldProbe()` are standing read-only evidence tools. Do not build a dHash consumer without new evidence (element-isolated capture is the only recorded reopener). INV-012 (scan criteria yield) is open.
 - **Phase 2 of PAIR-ID-RESOLVED-COUNT:** auto-flip status to Resolved with confirmation toast + undo. Detection logic is shipped; the status-mutation part is deferred pending Playwright validation against real Muratec XMLs.
 - Building filter additions to Lifecycle and Severity charts
 - Layer A `eA`/`eB` flattening fix (storage flattens parsed nested objects, dropping `baseLevel`/`gridHead`)
