@@ -1,6 +1,6 @@
 # Client Deployment Design Paper
 
-**Status:** Draft for Shane's review. No implementation. No change to `working.html`.
+**Status:** Accepted as analysis (Shane, 2026-09-04). No build authorised. No change to `working.html`. Punch list in Section 7a.
 **Base:** `main` at `1510f82` (2026-09-04), `working.html` 20,060 lines. Every line reference below is against that commit; re-grep before trusting a number after the next merge.
 **Question answered:** how do external client users *use* the app (register, images, charts, exports) rather than receive PDF/PPTX reports from it, and what does each route cost in days and money.
 
@@ -354,9 +354,23 @@ Made in this paper without asking; overturn any of them and the estimates shift 
 - `[Certain]` `nw:apikey` is stored in plaintext (line 16858). Not a client-deployment defect on its own, but any "copy the profile" or "export all keys" shortcut would ship it.
 - `[Certain]` `_selectiveResetCategories()` settings list (line 17753) excludes `week`, `levels`/`grid` live in their own category; the package settings list in 2.2 was derived from `sv()` call sites, not from that list, and should be checked against it at implementation time.
 
+## 7a. Punch list for `working.html` (not edited here; the file is owned by another session)
+
+Ruling 2026-09-04: paper accepted as analysis, no build authorised. These are the small, non-feature corrections that fall out of it. Each is a one-line edit to be made by whichever session next holds `working.html`, wrapped in its own marker per the edit discipline.
+
+| # | Line at `1510f82` | Current text (abridged) | Replace with | Marker |
+| --- | --- | --- | --- | --- |
+| P1 | 15777 | `↓ Backup JSON — full project state backup: clashes, weekly snapshots, role roster, settings. Use this for SharePoint/OneDrive distribution or audit archival. Drag-and-drop a previous backup JSON onto the app window to restore it.` | `↓ Backup JSON — exports the clash register, weekly snapshots, project name and project week only. It does not include screenshot images, floor plans, the role roster, PINs, levels/grids or settings. Use it for audit archival or to move the register to another machine. Restore it with ↻ Restore from JSON on this row; there is no drag-and-drop restore.` | `HELP-BACKUP-JSON-SCOPE` |
+| P2 | 15891–15895 | "Sharing data with your team": team members "import the latest JSON via Data Manager → Restore Backup" and "their role-based permissions apply automatically" | Restore lives in Settings → Data Management, not Data Manager. Roles do not travel in the JSON: a team member on another machine goes through first-run PIN setup as Administrator. Say so, and point to this paper's Option A for the intended route. | `HELP-SHARING-SCOPE` |
+| P3 | 16819 / 16858 | Anthropic key stored in plaintext in `nw:apikey` | See KI-011. Minimum: exclude from any export; recommended: rotate the key now and decide whether the app should persist it at all (session-only entry is the safer default). | per KI-011 remediation |
+| P4 | CLAUDE.md "Deployment" | "A `deploy.bat` in repo root automates this." | Remove the sentence or add the script. No such file at `1510f82`. | docs only |
+
+P1 and P2 are documentation strings inside `working.html`; they need no test beyond the existing help-panel render check. P3 is tracked as KI-011 in `KNOWN_ISSUES.md`.
+
 ## 8. Related records
 
 - DEC-016 (image sets keyed by test and week): the package's `images/` layout is that model's on-disk form.
 - INV-008 / INV-009: single-tab rule and `openIDB()` reuse apply to the importer.
 - KI-010 / INV-011: orphan cleanup; the importer's *replace all* mode is the client-side answer to the same growth.
+- KI-011 (Anthropic API key persisted in plaintext): raised from this paper's Section 1.2.
 - Proposed decision record on approval: **DEC-017 Client deployment path (Option A-sidecar; Option C as target)**, using the `Future Decisions` template in `DECISION_LOG.md`.
