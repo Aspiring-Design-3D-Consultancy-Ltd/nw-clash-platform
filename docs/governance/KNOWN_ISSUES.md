@@ -817,7 +817,64 @@ Read-only investigation of the duplicate-event mechanism before any change to `_
 
 # Confirmed Issues
 
-None currently recorded.
+## KI-011
+
+Title:
+
+Anthropic API Key Persisted in Plaintext in Browser Storage (`nw:apikey`)
+
+Status:
+
+Confirmed — raised 2026-09-04 from the client deployment design paper (`docs/design/CLIENT_DEPLOYMENT_DESIGN.md`, Section 1.2). No remediation authorised yet.
+
+Severity:
+
+Medium (security). Not a data-loss defect. The key is a paid credential that grants API spend on Shane's Anthropic account; exposure is bounded to whoever can read the browser profile or any export that copies `nw:*` keys wholesale.
+
+Related Investigation:
+
+None. Source-read finding, no runtime reproduction required.
+
+Summary:
+
+`saveAK()` (line 16858 at `1510f82`) stores the key with `sv('apikey', …)`, i.e. `localStorage['nw:apikey']` as a JSON string, unencrypted. `initAuth()` reads it back at line 1423 and `baianalyse()` sends it in the `x-api-key` header from the browser at line 13756 with `anthropic-dangerous-direct-browser-access: true`. The Settings field at line 16819 is `type="password"`, which hides it on screen only.
+
+Evidence:
+
+- `[Certain]` `nw:apikey` appears in the `sv()` key inventory (paper Section 1.2) and in the `settings` category of `_selectiveResetCategories()` (line 17753), so it is treated as an ordinary setting.
+- `[Certain]` `dlJSON()` (line 18970) does not export it today. The exposure is therefore: DevTools → Application → Local Storage on the live machine; any screenshot or console dump taken during investigations that listed `nw:*` values; any future "package", "copy profile" or "export all keys" feature that does not explicitly exclude it.
+- `[Certain]` The client deployment paper's Option A package would copy settings keys; without an explicit exclusion the key would ship to the client.
+
+Root Cause:
+
+Convenience persistence chosen when the AI-analysis feature was added. There is no secret-handling path in the app; everything persisted is treated alike.
+
+Approved Remediation:
+
+Not yet approved. Options, in increasing scope:
+
+1. **Rotate the key now** (no code change): revoke the current key in the Anthropic console and issue a new one. Recommended regardless of which option below is chosen, because the current key has lived in a browser profile on the live machine since the feature shipped.
+2. **Exclusion rule** (docs + any future export code): `nw:apikey` is never written to any export, package, backup or diagnostic dump. Record as an anti-regression invariant in CLAUDE.md alongside `DATA_VERSION`.
+3. **Session-only key** (`working.html` change, small): keep the key in `S.apiKey` for the tab's lifetime and stop calling `sv('apikey')`; the Settings field becomes "enter key for this session". One-time cleanup deletes any existing `nw:apikey`. Removes the exposure entirely at the cost of re-entering the key per session.
+4. **Encrypt at rest with the PIN** (`working.html` change, medium): derive an AES-GCM key from the admin PIN via PBKDF2 and store the ciphertext. Weak in practice: a 4-digit PIN is a 10,000-guess keyspace, so this is obfuscation, not protection. Not recommended over option 3.
+
+Implementation Status:
+
+⏳ Not started
+
+QA Retest Status:
+
+n/a
+
+Regression Protection:
+
+Proposed with option 2 or 3: a spec asserting that no export path (`dlJSON`, any future package export) emits a string matching `sk-ant-`, and that `localStorage['nw:apikey']` is absent after option 3's cleanup.
+
+Outcome:
+
+Open. Awaiting Shane's ruling on options 1–3 (option 1 is safe to do immediately and independently).
+
+---
 
 ---
 
@@ -859,7 +916,7 @@ Monitoring Items:
 
 Confirmed Issues:
 
-None outstanding.
+- KI-011 — Anthropic API key persisted in plaintext in `nw:apikey` (security; raised 2026-09-04, rotation recommended, remediation option pending)
 
 Active Investigations:
 
