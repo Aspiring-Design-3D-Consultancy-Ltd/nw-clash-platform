@@ -1862,4 +1862,34 @@ Closed 2026-09-03 on Shane's confirmation: dry run 76,682 / 4,768 as predicted; 
 Investigation closed.
 
 ---
+## Follow-up: IMG-WEEK-KEYING live migration (ruling 3 remediation, DEC-016, PR #70, `main` `b77f66b`)
+
+Run by Shane on the live profile, 2026-09-03:
+
+```
+[IMG-WEEK-KEYING] dry run: 13 synthesised set(s) would be retagged (13 to a week, 0 staying untagged), 0 already week-keyed. Nothing was changed.
+[IMG-WEEK-KEYING] applied: 13 set(s) retagged to their week, 0 left untagged, 0 already week-keyed; read-back verified; gate set.
+```
+
+Assignments (test → week, clashes seen / images in set):
+
+| Test | Week | Clashes | Images |
+| --- | --- | --- | --- |
+| Exyte CM / CSA / MEP / SPM `_v_08_AMHS`, 02_CR, 03_GAS, 04_CHEM, 05_WWT, 06_UPW, 12_GMS `_v_08` | `week-260831` | 1,167 / 1,334 / 932 / 898 / 2,256 / 571 / 1,412 / 902 / 152 / 206 | 369 / 475 / 140 / 569 / 697 / 109 / 263 / 288 / 40 / 47 |
+| Exyte AAS_v_08_AMHS | `week-260831` | 37 | 2 |
+| 99_ESMC_v_08_AMHS | `week-260824` | 3,157 | 1,766 |
+| 12_GMS_v_14_CCD | `week-260804` | 3 | 3 |
+
+Result: `{ok: true, retagged: 13, unchanged: 0, verified: true, gate: '1'}`. Additive write, read back byte-compared, gate `nw:imgWeekKeyingMigrated` set.
+
+Observations, not acted on:
+
+- [Likely] The eleven weekly tests' sets are the `week-260831` export, which is also the latest week their clashes carry, so the retag is exact. `99_ESMC` retagged to `week-260824` and `12_GMS_v_14_CCD` to `week-260804`, consistent with those tests last appearing in earlier weekly folders.
+- [Guessing] `Exyte AAS_v_08_AMHS` holds 2 images against 37 clashes. The set was loaded at some earlier point (it survived every weekly import because the name never recurred), so its images may predate `week-260831`; the migration cannot know a set's true week, only the latest week its clashes were seen. If those two images look wrong, the archive re-attach tool can load the correct week's set for that test.
+- From `week-260831` onward, weekly imports accumulate one set per (test, week). Store growth is about 171 MB per weekly cycle on this profile. A "prune image sets older than N weeks" tool is the next design item; `_cleanupNwImageOrphans()` treats every week as referenced and will not remove them.
+- The console line `Unsafe attempt to load URL file:///…/working.html from frame with URL file:///…` that preceded the migration output is Chrome's file-origin notice, not app output; the app has no iframes. [Guessing] It comes from the browser handling the local `file://` open itself. Harmless; noted in case it recurs.
+
+---
+
+---
 
