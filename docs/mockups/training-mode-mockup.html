@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Training Mode — PR-3 mockup (Clash Intelligence)</title>
+<!--
+  TRAINING MODE MOCKUP — docs/mockups/training-mode-mockup.html
+  ────────────────────────────────────────────────────────────────
+  Standalone, self-contained illustration of the approved PR-3 scope.
+  • No build step, no external dependencies, no network.
+  • All data is fake and inline. No XML parser. No localStorage / IndexedDB
+    access — nothing here reads or writes nw:* keys. State lives in memory
+    only and resets on reload.
+  • Styling copies the working.html token set (UI-BRAND-COLOR) so the
+    screens read as the real app, but this file shares no code with it.
+  Open it directly in Chrome/Edge. Use the grey MOCKUP GUIDE strip at the
+  top to step through the flow, or drive it via the sidebar like the app.
+-->
+<style>
+:root{--sb:#0F1824;--sbh:#1A2A3F;--sbt:rgba(255,255,255,.4);--acc:#006BA6;--acc2:#00AEEF;--bg:#F0F2F7;--card:#fff;--bd:#E2E8F0;--t1:#0F172A;--t2:#475569;--tm:#94A3B8;--trn:#B45309;--trnbg:#FEF3C7;--trnbd:#F59E0B;}
+*{box-sizing:border-box;}
+html,body{margin:0;height:100%;font-family:Arial,Helvetica,sans-serif;font-size:12px;color:var(--t1);background:var(--bg);}
+button{font-family:inherit;}
+
+/* ── MOCKUP GUIDE (not part of the product UI) ── */
+#guide{background:#E5E7EB;border-bottom:2px dashed #9CA3AF;padding:6px 12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:11px;color:#374151;}
+#guide .gl{font-weight:800;letter-spacing:.1em;font-size:9px;color:#6B7280;text-transform:uppercase;}
+#guide .step{border:1px solid #9CA3AF;background:#fff;border-radius:14px;padding:3px 10px;cursor:pointer;font-size:10.5px;color:#374151;display:flex;gap:5px;align-items:center;}
+#guide .step b{background:#374151;color:#fff;border-radius:50%;width:15px;height:15px;display:inline-flex;align-items:center;justify-content:center;font-size:9px;}
+#guide .step.on{background:#374151;color:#fff;border-color:#374151;}
+#guide .step.on b{background:#fff;color:#374151;}
+#guide .step.done{border-color:#16A34A;color:#166534;}
+#guide .step.done b{background:#16A34A;}
+#guide .step.on.done{background:#16A34A;border-color:#16A34A;color:#fff;}
+#guide .step.on.done b{background:#fff;color:#16A34A;}
+#guide .gn{margin-left:auto;color:#6B7280;font-style:italic;}
+#guide .gbtn{border:1px solid #6B7280;background:#F9FAFB;border-radius:4px;padding:3px 9px;cursor:pointer;font-size:10.5px;}
+
+/* ── APP SHELL (mirrors working.html) ── */
+#app{display:flex;flex-direction:row;height:calc(100vh - 34px);}
+#sb{width:216px;min-width:216px;background:var(--sb);display:flex;flex-direction:column;}
+.sb-brand{padding:.95rem .9rem .75rem;border-bottom:1px solid rgba(255,255,255,.06);}
+.sb-logo{display:flex;align-items:center;gap:9px;}
+.sb-ico{width:31px;height:31px;border-radius:7px;background:linear-gradient(135deg,var(--acc),var(--acc2));display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0;}
+.sb-nm{font-size:13px;color:#fff;font-weight:700;line-height:1.2;}
+.sb-sm{font-size:8px;color:var(--sbt);letter-spacing:.05em;text-transform:uppercase;}
+.sb-proj{padding:.58rem .9rem .52rem;border-bottom:1px solid rgba(255,255,255,.05);}
+.sb-pl{font-size:8px;color:var(--sbt);text-transform:uppercase;letter-spacing:.08em;margin-bottom:2px;}
+.sb-pn{font-size:12px;color:rgba(255,255,255,.8);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.sb-pw{font-size:10px;color:var(--acc2);}
+.sb-proj.trn{background:rgba(245,158,11,.14);border-left:3px solid var(--trnbd);}
+.sb-proj.trn .sb-pn{color:#FDE68A;}
+.sb-proj.trn .sb-pw{color:#FCD34D;}
+.sb-nav{flex:1;overflow-y:auto;padding:.4rem 0;}
+.nav-sec{padding:.32rem .9rem .08rem;font-size:8px;color:var(--sbt);text-transform:uppercase;letter-spacing:.1em;font-weight:600;}
+.nav-sec.trn{color:#FCD34D;}
+.na{display:flex;align-items:center;gap:9px;padding:.5rem .9rem;cursor:pointer;color:var(--sbt);font-size:12px;font-weight:500;transition:all .14s;border-left:3px solid transparent;}
+.na:hover{background:var(--sbh);color:rgba(255,255,255,.85);}
+.na.on{background:rgba(0,107,166,.17);color:#fff;border-left-color:var(--acc);}
+.na.trn.on{background:rgba(245,158,11,.18);border-left-color:var(--trnbd);}
+.na.dis{opacity:.35;cursor:not-allowed;}
+.ni{font-size:13px;width:17px;text-align:center;}
+.na-badge{margin-left:auto;background:#EA7600;color:#fff;font-size:9px;font-weight:700;padding:1px 6px;border-radius:8px;line-height:1.4;min-width:14px;text-align:center;}
+.na-badge[hidden]{display:none;}
+.sb-cts{padding:.52rem .9rem;border-top:1px solid rgba(255,255,255,.05);}
+.ct-r{display:flex;justify-content:space-between;margin-bottom:2px;}
+.ct-i{font-size:9px;color:var(--sbt);display:flex;align-items:center;gap:3px;}
+.ct-d{width:6px;height:6px;border-radius:50%;}
+.sb-lk{display:flex;align-items:center;gap:7px;padding:.5rem .9rem;color:rgba(255,255,255,.28);font-size:11px;border-top:1px solid rgba(255,255,255,.05);}
+#main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;}
+.topbar{background:#fff;border-bottom:1px solid var(--bd);padding:.52rem 1.1rem;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}
+.tb-t{font-size:18px;font-weight:700;color:var(--t1);display:flex;align-items:center;gap:10px;}
+.tb-r{display:flex;gap:6px;align-items:center;}
+.build-stamp{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:var(--tm);padding:2px 6px;border-radius:3px;border:.5px solid var(--bd);background:rgba(0,0,0,.02);white-space:nowrap;}
+.tbtn{padding:5px 12px;border-radius:4px;font-size:11px;cursor:pointer;border:.5px solid var(--bd);background:#fff;color:var(--t2);font-weight:500;white-space:nowrap;}
+.tbtn:hover{background:var(--bg);}
+.tbtn.ac{background:var(--acc);color:#fff;border-color:var(--acc);}
+.va{flex:1;overflow-y:auto;padding:.82rem;}
+
+/* ── TRAINING BANNER (persistent while training is on) ── */
+#trnbar{display:none;background:repeating-linear-gradient(135deg,#FDE68A 0 14px,#FCD34D 14px 28px);border-bottom:2px solid var(--trnbd);padding:6px 1.1rem;align-items:center;gap:12px;flex-shrink:0;}
+#trnbar.show{display:flex;}
+#trnbar .tl{font-weight:800;letter-spacing:.06em;color:#78350F;font-size:12px;display:flex;align-items:center;gap:7px;}
+#trnbar .ts{font-size:10.5px;color:#78350F;opacity:.85;}
+#trnbar .tx{margin-left:auto;display:flex;gap:6px;}
+#trnbar .tbtn{border-color:#92400E;color:#78350F;background:rgba(255,255,255,.75);}
+#trnbar .tbtn.x{background:#92400E;color:#fff;border-color:#92400E;}
+
+/* ── CARDS / TABLES / FORMS ── */
+.card{background:var(--card);border:.5px solid #CBD5E1;border-radius:7px;margin-bottom:9px;overflow:hidden;}
+.ch{padding:.5rem .9rem;border-bottom:2px solid #006BA6;display:flex;align-items:center;justify-content:space-between;background:#0F1824;color:#fff;gap:8px;}
+.ct{font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#fff;}
+.ch .btn{background:rgba(255,255,255,.12);color:#fff;border:.5px solid rgba(255,255,255,.28);}
+.ch .btn:hover{background:rgba(255,255,255,.22);}
+.cb{padding:.68rem .82rem;}
+.card.trn .ch{background:#78350F;border-bottom-color:var(--trnbd);}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+.g5{display:grid;grid-template-columns:repeat(5,1fr);gap:7px;margin-bottom:8px;}
+.kpi{background:var(--card);border:.5px solid var(--bd);border-radius:7px;padding:.68rem .82rem;border-top:3px solid var(--kc);}
+.kl{font-size:8.5px;color:var(--t2);font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:2px;}
+.kv{font-size:30px;font-weight:800;color:var(--kc);line-height:1.1;}
+.ks{font-size:9px;color:var(--tm);margin-top:2px;}
+.twrap{overflow-x:auto;}
+table{width:100%;border-collapse:collapse;font-size:11px;}
+thead tr{background:#1A2332;}
+thead th{padding:6px 7px;color:rgba(255,255,255,.7);font-weight:600;text-align:left;border-right:1px solid rgba(255,255,255,.07);font-size:11.5px;letter-spacing:.04em;white-space:nowrap;}
+thead th:last-child{border-right:none;}
+tbody tr{border-bottom:.5px solid var(--bd);}
+tbody tr:hover{background:#F8FAFC;}
+tbody tr.dup{background:#FFFBEB;}
+tbody tr.gone td{color:var(--tm);}
+tbody td{padding:5px 7px;vertical-align:middle;border-right:.5px solid #F4F4F4;}
+tbody td:last-child{border-right:none;}
+.cid{font-family:monospace;font-size:9px;color:var(--tm);}
+.cnm{font-weight:600;color:var(--t1);max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.pb{display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:700;border:.5px solid transparent;white-space:nowrap;}
+.pb.tiny{font-size:8.5px;padding:0 5px;}
+.btn{padding:5px 12px;border-radius:4px;font-size:11px;cursor:pointer;border:.5px solid var(--bd);background:#fff;color:var(--t2);font-weight:500;}
+.btn:hover{background:var(--bg);}
+.btn.p{background:var(--acc);color:#fff;border-color:var(--acc);}
+.btn.p:hover{background:#005A9E;}
+.btn.d{border-color:#FECACA;color:#DC2626;}
+.btn.w{background:#B45309;color:#fff;border-color:#B45309;}
+.btn.sm{padding:3px 9px;font-size:10px;}
+.btn:disabled{opacity:.45;cursor:not-allowed;}
+.fg{display:flex;flex-direction:column;gap:3px;}
+.fg label{font-size:9px;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.06em;}
+.note{font-size:10.5px;color:var(--t2);line-height:1.55;}
+.hint{background:#EFF6FF;border-left:3px solid #2563EB;padding:7px 10px;font-size:10.5px;color:#1E3A8A;border-radius:0 4px 4px 0;margin:8px 0;line-height:1.5;}
+.hint.ok{background:#F0FDF4;border-color:#16A34A;color:#14532D;}
+.hint.warn{background:var(--trnbg);border-color:var(--trnbd);color:#78350F;}
+.hint.err{background:#FEF2F2;border-color:#DC2626;color:#7F1D1D;}
+.empty{padding:24px;text-align:center;}
+.empty .et{font-size:14px;font-weight:700;color:#00B050;margin-bottom:6px;}
+.empty .es{font-size:11px;color:#64748B;line-height:1.6;}
+
+/* toggle switch */
+.sw{position:relative;width:40px;height:22px;background:#CBD5E1;border-radius:11px;cursor:pointer;transition:background .15s;flex-shrink:0;border:0;padding:0;}
+.sw::after{content:'';position:absolute;top:2px;left:2px;width:18px;height:18px;background:#fff;border-radius:50%;transition:left .15s;box-shadow:0 1px 2px rgba(0,0,0,.3);}
+.sw.on{background:var(--trnbd);}
+.sw.on::after{left:20px;}
+.sw:disabled{opacity:.5;cursor:not-allowed;}
+.srow{display:flex;align-items:flex-start;gap:14px;padding:10px 0;border-bottom:.5px dashed var(--bd);}
+.srow:last-child{border-bottom:0;}
+.srow .sl{font-size:12px;font-weight:700;color:var(--t1);}
+.srow .sd{font-size:10.5px;color:var(--t2);margin-top:2px;line-height:1.5;}
+
+/* file list (import step) */
+.fl{border:.5px solid var(--bd);border-radius:6px;overflow:hidden;}
+.fr{display:flex;align-items:center;gap:10px;padding:7px 10px;border-bottom:.5px solid var(--bd);font-size:11px;}
+.fr:last-child{border-bottom:0;}
+.fr .fn{font-family:monospace;font-size:10.5px;color:var(--t1);flex:1;}
+.fr .fm{font-size:10px;color:var(--tm);}
+.prog{height:7px;background:#E2E8F0;border-radius:999px;overflow:hidden;margin:8px 0;}
+.prog>div{height:100%;background:var(--acc);width:0;transition:width .5s;}
+.drop{border:2px dashed #CBD5E1;border-radius:7px;padding:22px;text-align:center;color:var(--tm);font-size:11px;background:#F8FAFC;}
+.drop b{color:var(--t2);}
+
+/* dedup */
+.dcell{padding:10px;border:.5px solid var(--bd);border-radius:6px;background:#fff;}
+.dimg{width:100%;max-width:220px;aspect-ratio:4/3;background:#F1F5F9;border:.5px dashed #CBD5E1;border-radius:4px;margin:2px 0 8px;display:flex;align-items:center;justify-content:center;color:#94A3B8;font-size:10px;text-align:center;padding:6px;}
+.dmeta{font-size:10.5px;color:#475569;line-height:1.55;}
+.dact{padding:10px 14px;border-top:.5px solid var(--bd);background:#F8FAFC;display:flex;justify-content:flex-end;gap:8px;align-items:center;}
+
+/* modal + toast */
+#modal{position:fixed;inset:0;background:rgba(15,24,36,.55);display:none;align-items:center;justify-content:center;z-index:500;}
+#modal.show{display:flex;}
+.mbox{background:#fff;border-radius:8px;width:440px;max-width:92vw;box-shadow:0 20px 60px rgba(0,0,0,.4);overflow:hidden;}
+.mbox .mh{padding:10px 14px;background:#0F1824;color:#fff;font-weight:700;font-size:12px;border-bottom:2px solid var(--trnbd);}
+.mbox .mb{padding:14px;font-size:11.5px;line-height:1.6;color:var(--t2);}
+.mbox .mf{padding:10px 14px;background:#F8FAFC;border-top:.5px solid var(--bd);display:flex;justify-content:flex-end;gap:8px;}
+#toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#0F1824;color:#fff;padding:8px 18px;border-radius:6px;font-size:12px;z-index:9999;pointer-events:none;opacity:0;transition:opacity .4s;white-space:nowrap;}
+#toast.show{opacity:1;}
+.mono{font-family:monospace;font-size:10px;}
+.muted{color:var(--tm);}
+.rw{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+</style>
+</head>
+<body>
+
+<!-- ───────────── MOCKUP GUIDE (grey strip, not product UI) ───────────── -->
+<div id="guide">
+  <span class="gl">Mockup guide · PR-3 Training Mode</span>
+  <span class="step" id="gs1" onclick="goStep(1)"><b>1</b>Settings → toggle</span>
+  <span class="step" id="gs2" onclick="goStep(2)"><b>2</b>Practice import</span>
+  <span class="step" id="gs3" onclick="goStep(3)"><b>3</b>Register</span>
+  <span class="step" id="gs4" onclick="goStep(4)"><b>4</b>Dedup decision</span>
+  <span class="step" id="gs5" onclick="goStep(5)"><b>5</b>Review Queue</span>
+  <span class="step" id="gs6" onclick="goStep(6)"><b>6</b>Exit → restore</span>
+  <button class="gbtn" onclick="nav('notes')">Scope notes</button>
+  <span class="gn">Fake data · no parser · no nw:* access · state resets on reload</span>
+</div>
+
+<div id="app">
+  <nav id="sb">
+    <div class="sb-brand"><div class="sb-logo"><div class="sb-ico">🏗</div><div><div class="sb-nm">Clash Intelligence</div><div class="sb-sm">Navisworks · Clash Detective</div></div></div></div>
+    <div class="sb-proj" id="sbproj">
+      <div class="sb-pl" id="sbpl">Project</div>
+      <div class="sb-pn" id="sbpn">ESMC — Muratec AMHS</div>
+      <div class="sb-pw" id="sbpw">Week 36 · 2026</div>
+    </div>
+    <div class="sb-nav" id="sbnav"></div>
+    <div class="sb-cts" id="sbcts"></div>
+    <div class="sb-lk">⎋ Sign out</div>
+  </nav>
+  <div id="main">
+    <div id="trnbar">
+      <span class="tl">🎓 TRAINING MODE — no production data</span>
+      <span class="ts">Sandbox register loaded. Nothing you do here is saved. Your live register is untouched.</span>
+      <span class="tx"><button class="tbtn" onclick="nav('settings')">⚙ Training settings</button><button class="tbtn x" onclick="askExit()">⏏ Exit training</button></span>
+    </div>
+    <div class="topbar"><div class="tb-t" id="tbt">Dashboard</div><div class="tb-r"><span id="tbr"></span><span class="build-stamp">mockup · pr-3</span></div></div>
+    <div class="va" id="va"></div>
+  </div>
+</div>
+
+<div id="modal"><div class="mbox"><div class="mh" id="mh"></div><div class="mb" id="mb"></div><div class="mf" id="mf"></div></div></div>
+<div id="toast"></div>
+
+<script>
+'use strict';
+/* ═══════════ FAKE DATA — inline, deterministic, no parser ═══════════ */
+const ST=['New','Active','Reviewed','Approved','Resolved'];
+const NW={New:{bg:'#FFF0F0',bd:'#FFBBBB',tx:'#CC0000'},Active:{bg:'#FFF5E6',bd:'#FFCC88',tx:'#CC5500'},Reviewed:{bg:'#E6F6FF',bd:'#80D4F7',tx:'#006FA6'},Approved:{bg:'#E6FAF0',bd:'#66CC99',tx:'#007A38'},Resolved:{bg:'#FFFBE6',bd:'#FFE066',tx:'#8C6A00'}};
+const PR={Critical:{c:'#DC2626',bg:'#FEF2F2',bd:'#FECACA'},High:{c:'#EA580C',bg:'#FFF7ED',bd:'#FED7AA'},Medium:{c:'#2563EB',bg:'#EFF6FF',bd:'#BFDBFE'},Low:{c:'#16A34A',bg:'#F0FDF4',bd:'#BBF7D0'}};
+
+/* Three practice tests. Names carry a TRN_ prefix so a trainee can never
+   confuse them with a live Muratec test. Sample element names are
+   plausible but invented. */
+const TESTS=[
+  {name:'TRN_AMHS_v_HVAC',    bld:'FAB', lvl:'FAB_L2',  srcA:'TRN_AMHS_OHT_L2.nwc',    srcB:'TRN_HVAC_L2.nwc',      n:14},
+  {name:'TRN_AMHS_v_STRUCT',  bld:'CUP', lvl:'CUP_L30', srcA:'TRN_AMHS_STOCKER_L30.nwc',srcB:'TRN_STR_FRAME_L30.nwc',n:12},
+  {name:'TRN_AMHS_v_PIPING',  bld:'BSGS',lvl:'BSGS_L1', srcA:'TRN_AMHS_CONV_L1.nwc',   srcB:'TRN_PIPE_PROC_L1.nwc', n:10},
+];
+const ELA=['OHT Rail Segment','OHT Support Hanger','Stocker Frame Column','Stocker Shelf Rail','Conveyor Leg','Conveyor Drive Unit','OHT Vehicle Envelope','Lifter Guide Beam'];
+const ELB=['Supply Duct 600x400','Return Duct 800x500','Cable Tray 300','Steel Beam UB 457x191','Bracing HSS 150','Process Pipe DN80','Chilled Water DN150','Sprinkler Main DN100','Diffuser Drop'];
+let _seed=7;const rnd=()=>{_seed=(_seed*9301+49297)%233280;return _seed/233280;};
+const pick=a=>a[Math.floor(rnd()*a.length)];
+
+function buildSandbox(){
+  _seed=7;
+  const cs=[];let id=1;
+  TESTS.forEach((t,ti)=>{
+    for(let i=0;i<t.n;i++){
+      const uid='TRN-'+String(id++).padStart(4,'0');
+      const st=pick(['New','Active','Active','Reviewed','Approved','Resolved']);
+      cs.push({uid,name:t.name+' · Clash'+(i+1),testName:t.name,bld:t.bld,lvl:t.lvl,
+        elementA:pick(ELA)+' '+(100+Math.floor(rnd()*900)),elementB:pick(ELB)+' '+(100+Math.floor(rnd()*900)),
+        sourceA:t.srcA,sourceB:t.srcB,
+        x:(20+rnd()*60).toFixed(2),y:(10+rnd()*40).toFixed(2),z:(3+ti*4+rnd()*3).toFixed(2),
+        pri:pick(['Critical','High','High','Medium','Medium','Low']),status:st,date:'2026-08-28',week:'W35',
+        notes:''});
+    }
+  });
+  /* Deliberate near-duplicate pair: TRN-0007 / TRN-0008 — same test, same
+     source files, same element pair, 12 mm apart. This is what the Dedup
+     Queue is meant to catch after the practice import. */
+  const a=cs[6],b=cs[7];
+  b.elementA=a.elementA;b.elementB=a.elementB;
+  b.x=(Number(a.x)+0.012).toFixed(3);b.y=a.y;b.z=a.z;
+  a.status='Active';b.status='New';a.pri=b.pri='High';
+  a.notes='Reviewed W35 — HVAC to raise duct 50mm. Awaiting model update.';
+  /* Four clashes that will disappear in the W36 import → Review Queue */
+  ['TRN-0003','TRN-0011','TRN-0019','TRN-0030'].forEach(u=>{const c=cs.find(x=>x.uid===u);c.status='Active';c.willVanish=true;});
+  return cs;
+}
+const PRACTICE_FILES=[
+  {fn:'TRN_AMHS_v_HVAC_W36.xml',   size:'184 KB',mtime:'2026-09-04 07:12',test:'TRN_AMHS_v_HVAC',   found:14,newN:2,matched:11,missing:1},
+  {fn:'TRN_AMHS_v_STRUCT_W36.xml', size:'151 KB',mtime:'2026-09-04 07:12',test:'TRN_AMHS_v_STRUCT', found:11,newN:1,matched:9, missing:2},
+  {fn:'TRN_AMHS_v_PIPING_W36.xml', size:'122 KB',mtime:'2026-09-04 07:13',test:'TRN_AMHS_v_PIPING', found:9, newN:0,matched:9, missing:1},
+];
+
+/* ═══════════ STATE — memory only ═══════════ */
+const S={view:'dashboard',training:false,imported:false,importing:false,clashes:[],dedup:[],review:[],log:[]};
+const PROD={name:'ESMC — Muratec AMHS',week:'Week 36 · 2026',total:1284,n:{New:112,Active:341,Reviewed:208,Approved:396,Resolved:227}};
+
+/* ═══════════ NAV / SHELL ═══════════ */
+const VT={dashboard:'Dashboard',register:'Clash Register',review:'Review Queue',dedup:'Dedup Queue',data:'Data Manager',settings:'Settings',timport:'Practice import',notes:'Mockup scope notes'};
+const NAV=[
+  {sec:'Overview'},{v:'dashboard',i:'📊',l:'Dashboard'},{v:'heatmap',i:'🗺️',l:'Spatial Heatmap',dis:1},
+  {sec:'Clashes'},{v:'register',i:'📋',l:'Clash Register'},{v:'board',i:'⬛',l:'Board View',dis:1},
+  {sec:'Workflow'},{v:'review',i:'🔍',l:'Review Queue',badge:'review'},{v:'dedup',i:'🧬',l:'Dedup Queue',badge:'dedup'},
+  {sec:'Tools'},{v:'bcf',i:'⚡',l:'BCF Generator',dis:1},{v:'priority',i:'⚖',l:'Priority Guide',dis:1},{v:'help',i:'❓',l:'User Guide',dis:1},
+  {sec:'Admin'},{v:'data',i:'✏️',l:'Data Manager'},{v:'settings',i:'⚙️',l:'Settings'},
+];
+function counts(){const n={New:0,Active:0,Reviewed:0,Approved:0,Resolved:0};S.clashes.forEach(c=>{if(!c.gone)n[c.status]++;});return n;}
+function updSB(){
+  const nav=document.getElementById('sbnav');let h='';
+  if(S.training){h+='<div class="nav-sec trn">🎓 Training</div>';
+    h+=`<div class="na trn ${S.view==='timport'?'on':''}" onclick="nav('timport')"><span class="ni">📥</span>Practice import${S.imported?'':'<span class="na-badge">!</span>'}</div>`;}
+  NAV.forEach(n=>{
+    if(n.sec){h+=`<div class="nav-sec">${n.sec}</div>`;return;}
+    const on=S.view===n.v?'on':'',dis=n.dis?'dis':'';
+    let badge='';
+    if(n.badge==='review'){const k=S.review.filter(r=>!r.done).length;badge=k?`<span class="na-badge">${k}</span>`:'';}
+    if(n.badge==='dedup'){const k=S.dedup.filter(r=>!r.done).length;badge=k?`<span class="na-badge">${k}</span>`:'';}
+    h+=`<div class="na ${on} ${dis}" onclick="${dis?'toast(\'Not in this mockup\')':`nav('${n.v}')`}"><span class="ni">${n.i}</span>${n.l}${badge}</div>`;
+  });
+  nav.innerHTML=h;
+  const pj=document.getElementById('sbproj');
+  if(S.training){pj.classList.add('trn');document.getElementById('sbpl').textContent='🎓 Training sandbox';document.getElementById('sbpn').textContent='TRN — Practice project';document.getElementById('sbpw').textContent=S.imported?'Week 36 · practice':'Week 35 · practice baseline';}
+  else{pj.classList.remove('trn');document.getElementById('sbpl').textContent='Project';document.getElementById('sbpn').textContent=PROD.name;document.getElementById('sbpw').textContent=PROD.week;}
+  const n=S.training?counts():PROD.n;const col={New:'#FF0000',Active:'#FF8000',Reviewed:'#00AEEF',Approved:'#00B050',Resolved:'#FFC000'};
+  document.getElementById('sbcts').innerHTML=ST.map(s=>`<div class="ct-r"><span class="ct-i"><span class="ct-d" style="background:${col[s]}"></span>${s}</span><span class="ct-i">${n[s]}</span></div>`).join('');
+  document.getElementById('trnbar').classList.toggle('show',S.training);
+  updGuide();
+}
+function nav(v){
+  if(v==='timport'&&!S.training)return toast('Enable Training mode in Settings first');
+  S.view=v;
+  document.getElementById('tbt').innerHTML=(VT[v]||v)+(S.training&&v!=='notes'?' <span class="pb" style="background:var(--trnbg);color:#78350F;border-color:var(--trnbd);font-size:9px">TRAINING</span>':'');
+  document.getElementById('tbr').innerHTML=(v==='register')?'<button class="tbtn" onclick="toast(\'Disabled in mockup\')">+ Add clash</button><button class="tbtn" onclick="toast(\'Disabled in mockup\')">↓ CSV</button>':'';
+  document.getElementById('va').innerHTML=rv(v);
+  document.getElementById('va').scrollTop=0;
+  updSB();
+}
+function rv(v){switch(v){
+  case 'dashboard':return rDash();case 'register':return rReg();case 'review':return rReview();case 'dedup':return rDedup();
+  case 'data':return rData();case 'settings':return rSet();case 'timport':return rImport();case 'notes':return rNotes();
+  default:return '<div class="card"><div class="cb note">Not part of this mockup.</div></div>';}}
+function toast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove('show'),2200);}
+function modal(h,b,f){document.getElementById('mh').innerHTML=h;document.getElementById('mb').innerHTML=b;document.getElementById('mf').innerHTML=f;document.getElementById('modal').classList.add('show');}
+function closeModal(){document.getElementById('modal').classList.remove('show');}
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const stPill=s=>`<span class="pb" style="background:${NW[s].bg};color:${NW[s].tx};border-color:${NW[s].bd}">${s}</span>`;
+const prPill=p=>`<span class="pb" style="background:${PR[p].bg};color:${PR[p].c};border-color:${PR[p].bd}">${p}</span>`;
+
+/* ═══════════ TRAINING LIFECYCLE ═══════════ */
+function enterTraining(){
+  S.training=true;S.imported=false;S.importing=false;
+  S.clashes=buildSandbox();S.dedup=[];S.review=[];S.log=[];
+  toast('Training mode ON — sandbox register loaded (36 practice clashes)');
+  nav('timport');
+}
+function askExit(){
+  modal('⏏ Exit training mode?',
+    `<p style="margin:0 0 8px">The training sandbox will be discarded:</p>
+     <ul style="margin:0 0 10px 18px;padding:0"><li>${S.clashes.length} practice clashes</li><li>${S.dedup.length} dedup decision${S.dedup.length===1?'':'s'}</li><li>${S.review.filter(r=>r.done).length} review decision${S.review.filter(r=>r.done).length===1?'':'s'}</li></ul>
+     <div class="hint ok" style="margin:0">Your production register (<b>${PROD.total.toLocaleString()} clashes, ${PROD.week}</b>) was never touched. It is restored exactly as you left it.</div>`,
+    `<button class="btn" onclick="closeModal()">Cancel — keep practising</button><button class="btn w" onclick="exitTraining()">Exit training</button>`);
+}
+function exitTraining(){
+  closeModal();
+  S.training=false;S.imported=false;S.clashes=[];S.dedup=[];S.review=[];S.log=[];
+  toast('Training mode OFF — production register restored');
+  nav('dashboard');
+}
+
+/* ═══════════ VIEWS ═══════════ */
+function rDash(){
+  const n=S.training?counts():PROD.n;const tot=S.training?S.clashes.filter(c=>!c.gone).length:PROD.total;
+  const col={New:'#FF0000',Active:'#FF8000',Reviewed:'#00AEEF',Approved:'#00B050',Resolved:'#FFC000'};
+  return `${S.training?'<div class="hint warn">🎓 You are looking at the <b>practice project</b>. These counts come from the sandbox register, not ESMC.</div>':''}
+  <div class="g5">${ST.map(s=>`<div class="kpi" style="--kc:${col[s]}"><div class="kl">${s}</div><div class="kv">${n[s]}</div><div class="ks">of ${tot} clashes</div></div>`).join('')}</div>
+  <div class="card"><div class="ch"><span class="ct">${S.training?'Practice project':'ESMC — Muratec AMHS'} · weekly trend</span></div>
+  <div class="cb"><div class="drop">Chart placeholder — ${S.training?'sandbox weekly buckets (W33–W36)':'production weekly buckets (W14–W36)'}<br><span class="muted">Not drawn in this mockup.</span></div></div></div>
+  ${S.training?'':'<div class="card"><div class="ch"><span class="ct">Normal state</span></div><div class="cb note">This is the ordinary production view. Training mode is off. Go to <b>Settings → Training mode</b> to begin — or use the mockup guide strip above.</div></div>'}`;
+}
+function rReg(){
+  if(!S.training)return `<div class="card"><div class="ch"><span class="ct">Weekly clash register · ESMC</span></div><div class="cb note">Production register (${PROD.total.toLocaleString()} rows) — not rendered in this mockup. Enable Training mode to see the sandbox register.</div></div>`;
+  const rows=S.clashes.filter(c=>!c.gone);
+  const dupIds=new Set(S.dedup.filter(d=>!d.done).flatMap(d=>[d.a,d.b]));
+  const pend=new Set(S.review.filter(r=>!r.done).map(r=>r.uid));
+  return `${S.imported?'':'<div class="hint warn">Baseline register (W35). Run the <b>Practice import</b> to bring in W36 and see what changes.</div>'}
+  ${S.imported?`<div class="hint">W36 imported. <b>${S.clashes.filter(c=>c.isNew).length} new</b> rows are tagged, <b>${pend.size}</b> await a Review Queue decision, and <b>${dupIds.size/2||0}</b> candidate pair is in the Dedup Queue.</div>`:''}
+  <div class="card"><div class="ch"><span class="ct">Weekly clash register · practice</span><span style="font-size:10px;opacity:.75">${rows.length} rows · 3 tests</span></div>
+  <div class="twrap"><table><thead><tr><th>ID</th><th>Clash</th><th>Test</th><th>Bldg / Level</th><th>Element A</th><th>Element B</th><th>XYZ (m)</th><th>Priority</th><th>Status</th><th>Week</th><th>Flags</th></tr></thead><tbody>
+  ${rows.map(c=>`<tr class="${dupIds.has(c.uid)?'dup':''} ${pend.has(c.uid)?'gone':''}">
+    <td class="cid">${c.uid}</td><td class="cnm" title="${esc(c.name)}">${esc(c.name)}</td><td class="mono">${esc(c.testName)}</td><td>${c.bld} · ${c.lvl}</td>
+    <td>${esc(c.elementA)}</td><td>${esc(c.elementB)}</td><td class="mono">${c.x}, ${c.y}, ${c.z}</td><td>${prPill(c.pri)}</td><td>${stPill(c.status)}</td><td class="mono">${c.week}</td>
+    <td>${c.isNew?'<span class="pb tiny" style="background:#E6F6FF;color:#006FA6;border-color:#80D4F7">NEW W36</span> ':''}${dupIds.has(c.uid)?'<span class="pb tiny" style="background:#FFF7ED;color:#EA580C;border-color:#FED7AA">🧬 DEDUP</span> ':''}${pend.has(c.uid)?'<span class="pb tiny" style="background:#F1F5F9;color:#475569;border-color:#CBD5E1">🔍 NOT IN W36</span>':''}</td>
+  </tr>`).join('')}</tbody></table></div></div>`;
+}
+function rImport(){
+  const done=S.imported;
+  const files=PRACTICE_FILES.map((f,i)=>`<div class="fr"><span>📄</span><span class="fn">${f.fn}</span><span class="fm">${f.size}</span><span class="fm">mtime ${f.mtime}</span><span class="pb tiny" id="fst${i}" style="background:${done?'#E6FAF0':'#F1F5F9'};color:${done?'#007A38':'#475569'};border-color:${done?'#66CC99':'#CBD5E1'}">${done?'✓ parsed':'queued'}</span></div>`).join('');
+  return `<div class="hint warn"><b>Step 2 of the practice flow.</b> In production this is the Data Manager's <i>Weekly clash register → Import folder</i> step. Here the folder picker is replaced with a fixed practice batch, and the "parse" is a canned result — no real XML is read.</div>
+  <div class="card trn"><div class="ch"><span class="ct">🎓 Practice import · Week 36 batch</span><span style="font-size:10px;opacity:.8">3 files · 3 practice tests</span></div>
+  <div class="cb">
+    <div class="drop" style="margin-bottom:10px">${done?'<b>Batch imported.</b> The picker is closed for this practice week.':'<b>Practice folder pre-selected:</b> TRN_W36_exports/<br><span class="muted">The real folder picker is bypassed in training so a trainee cannot import live Muratec XML into the sandbox.</span>'}</div>
+    <div class="fl">${files}</div>
+    <div class="prog" id="prog"><div style="width:${done?100:0}%"></div></div>
+    <div class="rw" style="justify-content:space-between">
+      <span class="note" id="imsg">${done?'Import complete — see summary below.':'File mtime will be used as the clash date (FILE-MTIME-AS-DATE), the same as production.'}</span>
+      <button class="btn p" id="imbtn" onclick="runImport()" ${done||S.importing?'disabled':''}>${done?'✓ Imported':'▶ Import practice batch'}</button>
+    </div>
+  </div></div>
+  ${done?rImportSummary():''}`;
+}
+function rImportSummary(){
+  const tot=f=>PRACTICE_FILES.reduce((a,x)=>a+x[f],0);
+  return `<div class="card"><div class="ch"><span class="ct">Import summary · W36</span></div>
+  <div class="cb">
+   <div class="twrap"><table><thead><tr><th>Test</th><th>File</th><th>Found in XML</th><th>Matched (pair ID)</th><th>New</th><th>Not in this export</th></tr></thead><tbody>
+   ${PRACTICE_FILES.map(f=>`<tr><td class="mono">${f.test}</td><td class="mono">${f.fn}</td><td>${f.found}</td><td>${f.matched}</td><td><b style="color:#006FA6">${f.newN}</b></td><td><b style="color:#B45309">${f.missing}</b></td></tr>`).join('')}
+   <tr style="background:#F8FAFC;font-weight:700"><td>Total</td><td></td><td>${tot('found')}</td><td>${tot('matched')}</td><td style="color:#006FA6">${tot('newN')}</td><td style="color:#B45309">${tot('missing')}</td></tr>
+   </tbody></table></div>
+   <div class="hint" style="margin-top:10px">What happened, in the same order as production:</div>
+   <ol class="note" style="margin:4px 0 10px 18px;padding:0">
+     <li><b>PAIR-ID-MERGE</b> matched ${tot('matched')} clashes to existing rows by element-pair ID.</li>
+     <li><b>${tot('newN')} new clashes</b> were appended with status <i>New</i>, week W36.</li>
+     <li><b>PAIR-ID-RESOLVED-COUNT</b> found ${tot('missing')} rows that were in W35 but not in W36. Nothing auto-flipped — they went to the <b>Review Queue</b>.</li>
+     <li><b>Dedup scan</b> found 1 pair in the same test and source files sitting 12 mm apart — it went to the <b>Dedup Queue</b>.</li>
+   </ol>
+   <div class="rw"><button class="btn p" onclick="nav('register')">Open register →</button><button class="btn" onclick="nav('dedup')">🧬 Dedup Queue (${S.dedup.filter(d=>!d.done).length})</button><button class="btn" onclick="nav('review')">🔍 Review Queue (${S.review.filter(r=>!r.done).length})</button></div>
+  </div></div>`;
+}
+function runImport(){
+  if(S.imported||S.importing)return;
+  S.importing=true;document.getElementById('imbtn').disabled=true;
+  const bar=document.querySelector('#prog>div');let i=0;
+  const tick=()=>{
+    if(i<PRACTICE_FILES.length){
+      const p=document.getElementById('fst'+i);if(p){p.textContent='parsing…';p.style.background='#FFF5E6';p.style.color='#CC5500';p.style.borderColor='#FFCC88';}
+      document.getElementById('imsg').textContent='Parsing '+PRACTICE_FILES[i].fn+' …';
+      bar.style.width=((i+1)/PRACTICE_FILES.length*90)+'%';
+      setTimeout(()=>{const p=document.getElementById('fst'+i);if(p){p.textContent='✓ parsed';p.style.background='#E6FAF0';p.style.color='#007A38';p.style.borderColor='#66CC99';}i++;tick();},450);
+    }else{applyImport();bar.style.width='100%';setTimeout(()=>nav('timport'),300);}
+  };
+  tick();
+}
+function applyImport(){
+  S.importing=false;S.imported=true;
+  /* matched rows move to W36 */
+  S.clashes.forEach(c=>{if(!c.willVanish){c.week='W36';c.date='2026-09-04';}});
+  /* new rows */
+  const add=(uid,t,ea,eb,pri)=>{const T=TESTS.find(x=>x.name===t);S.clashes.push({uid,name:t+' · Clash'+(T.n+1),testName:t,bld:T.bld,lvl:T.lvl,elementA:ea,elementB:eb,sourceA:T.srcA,sourceB:T.srcB,x:'41.20',y:'18.75',z:'6.10',pri,status:'New',date:'2026-09-04',week:'W36',notes:'',isNew:true});};
+  add('TRN-0037','TRN_AMHS_v_HVAC','OHT Rail Segment 410','Supply Duct 600x400 221','High');
+  add('TRN-0038','TRN_AMHS_v_HVAC','OHT Support Hanger 512','Cable Tray 300 118','Medium');
+  add('TRN-0039','TRN_AMHS_v_STRUCT','Stocker Frame Column 207','Steel Beam UB 457x191 330','Critical');
+  /* review queue = rows that vanished */
+  S.review=S.clashes.filter(c=>c.willVanish).map(c=>({uid:c.uid,done:false,decision:null}));
+  /* dedup queue = the deliberate pair */
+  S.dedup=[{id:'TRN_AMHS_v_HVAC::TRN-0007::TRN-0008',a:'TRN-0007',b:'TRN-0008',distMm:12.00,detectedAt:'2026-09-04',done:false,decision:null}];
+  S.log.push('W36 practice batch imported');
+}
+function rDedup(){
+  if(!S.training)return `<div class="card" style="border-top:3px solid #00B050"><div class="empty"><div class="et">✓ Dedup Queue is empty</div><div class="es">Production queue — nothing to review right now.</div></div></div>`;
+  if(!S.imported)return `<div class="card" style="border-top:3px solid #00B050"><div class="empty"><div class="et">✓ Dedup Queue is empty</div><div class="es">Candidate pairs surface after an import. Run the <b>Practice import</b> first.</div><div style="margin-top:10px"><button class="btn p" onclick="nav('timport')">Go to practice import →</button></div></div></div>`;
+  const byUid=new Map(S.clashes.map(c=>[c.uid,c]));
+  const cell=c=>`<div class="dcell"><div class="rw" style="justify-content:space-between;margin-bottom:6px"><span class="mono muted">${c.uid}</span>${stPill(c.status)}</div>
+    <div style="font-size:11px;font-weight:600;margin-bottom:4px">${esc(c.name)}</div>
+    <div class="dimg">viewport image<br>(sandbox placeholder)</div>
+    <div class="dmeta"><div><b>Test:</b> ${c.testName}</div><div><b>A:</b> ${esc(c.elementA)} <span class="muted">(${c.sourceA})</span></div><div><b>B:</b> ${esc(c.elementB)} <span class="muted">(${c.sourceB})</span></div><div><b>XYZ:</b> ${c.x}, ${c.y}, ${c.z}</div><div><b>Date:</b> ${c.date}</div>
+    ${c.notes?`<div style="margin-top:4px;padding:4px 6px;background:#F8FAFC;border-left:2px solid #94A3B8;font-size:10px;color:#334155">${esc(c.notes)}</div>`:''}</div></div>`;
+  return `<div class="hint warn"><b>Step 4.</b> Same card, same three buttons as the production Dedup Queue. The only training addition is the coaching panel that appears <i>after</i> you decide.</div>
+  ${S.dedup.map(p=>{const a=byUid.get(p.a),b=byUid.get(p.b);
+    const feedback=!p.done?'':p.decision==='merge'
+      ?`<div class="hint ok"><b>✓ Good call.</b> Same test, same two source files, identical element pair, 12 mm apart — that is one clash re-published after a model nudge, not two clashes. Merging keeps <b>${p.a}</b> (the row with history and notes) and folds <b>${p.b}</b> into it. In production this is written to the dedup action history and is reversible from there.</div>`
+      :p.decision==='separate'
+      ?`<div class="hint err"><b>✗ Not this time.</b> Look again: element A and B are the same objects, from the same .nwc files, and the XYZ differs by 12 mm. Keeping them separate would double-count this clash in every weekly chart. Nothing is broken — in training you can <button class="btn sm" onclick="dedupUndo('${p.id}')">undo</button> and try again.</div>`
+      :`<div class="hint"><b>↷ Skipped.</b> That is allowed — skipped pairs stay listed under "Show skipped" and keep their buttons. But a skipped pair is still counted twice until decided. <button class="btn sm" onclick="dedupUndo('${p.id}')">Unskip</button></div>`;
+    return `<div class="card" style="border-top:3px solid #EA7600;${p.done&&p.decision!=='skip'?'opacity:.85':''}">
+    <div class="ch" style="background:#0F1824"><span class="ct">Candidate pair · <span style="color:#F59E0B">${p.distMm.toFixed(2)}mm apart</span>${p.done?` <span class="pb tiny" style="background:rgba(255,255,255,.15);color:#fff;margin-left:6px">${p.decision==='merge'?'Merged':p.decision==='separate'?'Kept separate':'Skipped'}</span>`:''}</span><span style="font-size:10px;opacity:.7">Detected ${p.detectedAt}</span></div>
+    <div class="cb g2">${cell(a)}${cell(b)}</div>
+    <div class="dact">${p.done?`<span class="note" style="margin-right:auto">Decision recorded in the sandbox only.</span>`:''}
+      <button class="btn" onclick="dedupDecide('${p.id}','skip')" ${p.done?'disabled':''}>↷ Skip</button>
+      <button class="btn" onclick="dedupDecide('${p.id}','separate')" ${p.done?'disabled':''}>✗ Keep separate</button>
+      <button class="btn p" onclick="dedupDecide('${p.id}','merge')" ${p.done?'disabled':''}>✓ Merge (keep ${p.a})</button></div>
+    ${feedback?`<div class="cb" style="padding-top:0">${feedback}</div>`:''}</div>`;}).join('')}
+  <div class="rw" style="justify-content:flex-end"><button class="btn" onclick="toast('Sandbox audit log: '+(S.log.length)+' entries')">📜 View action history (${S.log.length})</button></div>`;
+}
+function dedupDecide(id,d){const p=S.dedup.find(x=>x.id===id);if(!p||p.done)return;p.done=true;p.decision=d;
+  if(d==='merge'){const b=S.clashes.find(c=>c.uid===p.b);if(b)b.gone=true;}
+  S.log.push('Dedup '+d+' '+id);toast(d==='merge'?'Merged — '+p.b+' folded into '+p.a:d==='separate'?'Kept separate':'Skipped');nav('dedup');}
+function dedupUndo(id){const p=S.dedup.find(x=>x.id===id);if(!p)return;const b=S.clashes.find(c=>c.uid===p.b);if(b)b.gone=false;p.done=false;p.decision=null;S.log.push('Dedup undo '+id);nav('dedup');}
+
+function rReview(){
+  if(!S.training)return `<div class="card" style="border-top:3px solid #00B050"><div class="empty"><div class="et">✓ Review Queue is empty</div><div class="es">Production queue — nothing to review right now.</div></div></div>`;
+  if(!S.imported)return `<div class="card" style="border-top:3px solid #00B050"><div class="empty"><div class="et">✓ Review Queue is empty</div><div class="es">Clashes that vanish between imports land here. Run the <b>Practice import</b> first.</div><div style="margin-top:10px"><button class="btn p" onclick="nav('timport')">Go to practice import →</button></div></div></div>`;
+  const byUid=new Map(S.clashes.map(c=>[c.uid,c]));
+  const pend=S.review.filter(r=>!r.done),done=S.review.filter(r=>r.done);
+  const byTest={};pend.forEach(r=>{const c=byUid.get(r.uid);(byTest[c.testName]=byTest[c.testName]||[]).push(c);});
+  const groups=Object.keys(byTest).sort().map(tn=>`<div class="card"><div class="ch"><span class="ct">${tn} <span class="pb tiny" style="background:#EA7600;color:#fff;margin-left:6px">${byTest[tn].length} pending</span></span>
+     <button class="btn sm" onclick="reviewGroup('${tn}')">✓ Confirm all in this test as Resolved</button></div>
+    <div class="twrap"><table><thead><tr><th style="width:28px"></th><th>ID</th><th>Clash</th><th>Element A</th><th>Element B</th><th>Last seen</th><th>Status</th><th>Decision</th></tr></thead><tbody>
+    ${byTest[tn].map(c=>`<tr><td><input type="checkbox" disabled title="Bulk select not wired in mockup"></td><td class="cid">${c.uid}</td><td class="cnm">${esc(c.name)}</td><td>${esc(c.elementA)}</td><td>${esc(c.elementB)}</td><td class="mono">W35 · ${c.date}</td><td>${stPill(c.status)}</td>
+      <td class="rw"><button class="btn sm p" onclick="reviewDecide('${c.uid}','resolve')">✓ Resolved</button><button class="btn sm" onclick="reviewDecide('${c.uid}','keep')">Keep ${c.status}</button></td></tr>`).join('')}
+    </tbody></table></div></div>`).join('');
+  const doneList=done.length?`<div class="card"><div class="ch" style="background:#334155"><span class="ct">Decided this session (${done.length})</span></div><div class="twrap"><table><thead><tr><th>ID</th><th>Clash</th><th>Test</th><th>Decision</th><th>Status now</th></tr></thead><tbody>
+    ${done.map(r=>{const c=byUid.get(r.uid);return `<tr><td class="cid">${c.uid}</td><td class="cnm">${esc(c.name)}</td><td class="mono">${c.testName}</td><td>${r.decision==='resolve'?'Confirmed resolved':'Kept — still open'}</td><td>${stPill(c.status)}</td></tr>`;}).join('')}
+    </tbody></table></div></div>`:'';
+  const coach=done.length&&!pend.length?`<div class="hint ok"><b>Queue cleared.</b> ${done.filter(r=>r.decision==='resolve').length} confirmed Resolved, ${done.filter(r=>r.decision==='keep').length} kept open. In production, "Resolved" appends a STATUS-HIST entry and the clash counts as Resolved from this week's bucket onward (KI-008 projection). "Keep" leaves it Active for the next import to check again.</div>`:'';
+  return `<div class="hint warn"><b>Step 5.</b> Four practice clashes were present in W35 but absent from the W36 export. The platform never auto-resolves — you decide. Same grouping and buttons as the production Review Queue.</div>
+  ${pend.length?'':`<div class="card" style="border-top:3px solid #00B050"><div class="empty"><div class="et">✓ Review Queue is empty</div><div class="es">All W36 disappearances decided.</div></div></div>`}
+  ${groups}${coach}${doneList}
+  ${!pend.length?`<div class="rw" style="justify-content:flex-end"><button class="btn w" onclick="askExit()">⏏ Finish — exit training</button></div>`:''}`;
+}
+function reviewDecide(uid,d){const r=S.review.find(x=>x.uid===uid);if(!r||r.done)return;r.done=true;r.decision=d;const c=S.clashes.find(x=>x.uid===uid);
+  if(d==='resolve'){c.status='Resolved';c.week='W36';}S.log.push('Review '+d+' '+uid);nav('review');}
+function reviewGroup(tn){S.review.forEach(r=>{const c=S.clashes.find(x=>x.uid===r.uid);if(!r.done&&c.testName===tn){r.done=true;r.decision='resolve';c.status='Resolved';c.week='W36';}});S.log.push('Review group resolve '+tn);nav('review');}
+
+function rData(){
+  return `${S.training?'<div class="hint warn">In training, the production Data Manager actions are hidden. The only import available is the <b>Practice import</b> in the sidebar.</div>':''}
+  <div class="card"><div class="ch"><span class="ct">Weekly clash register</span></div><div class="cb">
+    ${S.training?'<div class="drop">Folder import disabled while Training mode is on.<br><span class="muted">Prevents a trainee importing live Muratec XML into the sandbox, or sandbox XML into production.</span></div>':'<div class="drop"><b>Import folder</b> — pick this week\'s Clash Detective XML exports<br><span class="muted">Production control. Not wired in this mockup.</span></div>'}
+  </div></div>
+  <div class="card"><div class="ch"><span class="ct">🗓 Reset a specific weekly batch</span></div><div class="cb note">${S.training?'Hidden in training.':'Production control — not part of this mockup.'}</div></div>`;
+}
+function rSet(){
+  const on=S.training;
+  return `<div class="card"><div class="ch"><span class="ct">Admin · Training mode</span>${on?'<span class="pb tiny" style="background:var(--trnbg);color:#78350F;border-color:var(--trnbd)">ACTIVE</span>':''}</div>
+  <div class="cb">
+    <div class="srow">
+      <button class="sw ${on?'on':''}" onclick="${on?'askExit()':'enterTraining()'}" title="${on?'Turn training off':'Turn training on'}"></button>
+      <div style="flex:1"><div class="sl">Training mode</div>
+        <div class="sd">Loads a <b>sandbox register</b> of practice clashes so a new user can walk the full weekly workflow — import, register, Dedup Queue, Review Queue — without touching ESMC data.
+        A striped <b>TRAINING MODE</b> banner stays on every screen until you exit. Turning it off discards the sandbox and restores the normal state.</div>
+        <div class="hint" style="margin-top:8px">
+          <b>What training does</b><br>
+          • Swaps the in-memory register for the built-in practice set (3 tests, 36 clashes, 1 planted near-duplicate).<br>
+          • Replaces the Data Manager folder picker with a fixed practice batch (W36).<br>
+          • Leaves every <span class="mono">nw:*</span> key and the IndexedDB stores exactly as they are. No writes, no flush.<br>
+          • Exit restores the production register from where it was — nothing to reload.</div>
+        <div class="rw" style="margin-top:8px">
+          ${on?`<button class="btn w" onclick="askExit()">⏏ Exit training</button><button class="btn" onclick="resetSandbox()">↺ Restart practice from W35 baseline</button>`:`<button class="btn p" onclick="enterTraining()">🎓 Start training</button>`}
+        </div>
+      </div>
+    </div>
+    <div class="srow"><div style="width:40px"></div><div><div class="sl">Practice data set</div><div class="sd">Built-in <span class="mono">TRN_*</span> tests only. <span class="muted">Custom practice sets are out of scope for PR-3.</span></div></div></div>
+  </div></div>
+  <div class="card"><div class="ch"><span class="ct">Selective reset</span></div><div class="cb note">Existing production section — unchanged, ${on?'<b>disabled while training is on</b>':'shown for placement only'}.</div></div>
+  <div class="card"><div class="ch"><span class="ct">Review Queue detection</span></div><div class="cb note">Existing production section — unchanged.</div></div>`;
+}
+function resetSandbox(){S.clashes=buildSandbox();S.dedup=[];S.review=[];S.imported=false;S.importing=false;S.log=[];toast('Sandbox reset to W35 baseline');nav('timport');}
+
+function rNotes(){
+  return `<div class="card"><div class="ch" style="background:#374151;border-bottom-color:#9CA3AF"><span class="ct">PR-3 scope as illustrated</span></div><div class="cb note">
+  <table style="font-size:11px"><thead><tr><th>Scope item</th><th>Where in this mockup</th></tr></thead><tbody>
+   <tr><td>Training toggle in Settings / Admin</td><td>Settings → "Admin · Training mode" card, switch + Start button</td></tr>
+   <tr><td>Sandbox register loads on entry (sample data inline)</td><td>3 practice tests, 36 clashes at W35 baseline; 3 more arrive with the W36 practice import</td></tr>
+   <tr><td>One deliberate near-duplicate pair</td><td>TRN-0007 / TRN-0008 — same test, same .nwc sources, same element pair, 12 mm apart</td></tr>
+   <tr><td>Practice flow: import step</td><td>Sidebar "Practice import" — fixed batch, canned parse result, production-order summary</td></tr>
+   <tr><td>Practice flow: register view</td><td>Clash Register with NEW / DEDUP / NOT-IN-W36 flags</td></tr>
+   <tr><td>Practice flow: Dedup Queue decision</td><td>Production card + Skip / Keep separate / Merge, coaching panel after the decision, undo</td></tr>
+   <tr><td>Practice flow: Review Queue</td><td>Grouped by test, per-row Resolved / Keep, group confirm, decided list</td></tr>
+   <tr><td>Persistent banner</td><td>Striped amber bar under the sidebar/topbar on every screen while training is on; TRAINING pill in the page title; amber project block in the sidebar</td></tr>
+   <tr><td>Exit restores normal state</td><td>Exit button (banner, Settings, end of Review flow) → confirm modal → sandbox discarded, production counts back</td></tr>
+  </tbody></table>
+  <div class="hint warn" style="margin-top:10px"><b>Not in this mockup, by design:</b> real parser, images, charts, board view, BCF, localStorage / IndexedDB. Everything is fake and in memory.</div>
+  <div class="hint"><b>Design decisions made here for spot-check</b> (not decided in the brief):<br>
+   1. Training is an <b>in-memory swap</b>, not a second profile: <span class="mono">S.clashes</span> / <span class="mono">S.weekly</span> are parked and a sandbox takes their place; <span class="mono">sv()</span> is bypassed while training is on so nothing routes to <span class="mono">records</span>. Exit puts the parked objects back — no reload, no <span class="mono">_flushPendingWrites()</span> needed because nothing was written.<br>
+   2. The folder picker is <b>replaced</b>, not just relabelled, so live XML can never reach the sandbox and sandbox XML can never reach production.<br>
+   3. Coaching text appears only <b>after</b> a decision, so the Dedup / Review screens are pixel-identical to production up to the moment of choice.<br>
+   4. Practice test names carry a <span class="mono">TRN_</span> prefix and IDs a <span class="mono">TRN-</span> prefix as a second guard against confusion in screenshots.<br>
+   5. Selective reset and other destructive Settings controls are disabled while training is on.</div>
+  <div class="hint err"><b>Open questions for the PR-3 build:</b> should a refresh (F5) mid-training drop back to production or resume the sandbox? (mockup assumes drop back, since nothing is persisted). Should the Dedup image slot show a bundled placeholder image or stay blank?</div>
+  </div></div>`;
+}
+
+/* ═══════════ MOCKUP GUIDE STRIP ═══════════ */
+function goStep(n){
+  if(n===1)return nav('settings');
+  if(!S.training)enterTraining();
+  if(n===2)return nav('timport');
+  if(!S.imported){applyImport();toast('Practice batch imported (guide shortcut)');}
+  if(n===3)return nav('register');
+  if(n===4)return nav('dedup');
+  if(n===5)return nav('review');
+  if(n===6)return askExit();
+}
+function updGuide(){
+  const st={1:S.training,2:S.imported,3:S.imported,4:S.dedup.length>0&&S.dedup.every(d=>d.done),5:S.review.length>0&&S.review.every(r=>r.done),6:false};
+  const cur={settings:1,timport:2,register:3,dedup:4,review:5}[S.view];
+  for(let i=1;i<=6;i++){const e=document.getElementById('gs'+i);e.classList.toggle('done',!!st[i]);e.classList.toggle('on',cur===i);}
+}
+nav('dashboard');
+</script>
+</body>
+</html>
