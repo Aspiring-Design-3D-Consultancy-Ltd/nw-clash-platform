@@ -817,7 +817,102 @@ Read-only investigation of the duplicate-event mechanism before any change to `_
 
 # Confirmed Issues
 
-None currently recorded.
+## KI-011
+
+Title:
+
+Anthropic API Key Persisted in Plaintext in Browser Storage (`nw:apikey`)
+
+Status:
+
+Confirmed — raised 2026-09-04 from the client deployment design paper (`docs/design/CLIENT_DEPLOYMENT_DESIGN.md`, Section 1.2). Ruled the same day: key rotation accepted (Shane actions it himself); remediation option 3 chosen and queued as **KI-011-FIX** for the session that owns `working.html`; option 2 folded into 3; option 4 rejected on the keyspace argument.
+
+Severity:
+
+Medium (security). Not a data-loss defect. The key is a paid credential that grants API spend on Shane's Anthropic account; exposure is bounded to whoever can read the browser profile or any export that copies `nw:*` keys wholesale.
+
+Related Investigation:
+
+None. Source-read finding, no runtime reproduction required.
+
+Summary:
+
+`saveAK()` (line 16858 at `1510f82`) stores the key with `sv('apikey', …)`, i.e. `localStorage['nw:apikey']` as a JSON string, unencrypted. `initAuth()` reads it back at line 1423 and `baianalyse()` sends it in the `x-api-key` header from the browser at line 13756 with `anthropic-dangerous-direct-browser-access: true`. The Settings field at line 16819 is `type="password"`, which hides it on screen only.
+
+Evidence:
+
+- `[Certain]` `nw:apikey` appears in the `sv()` key inventory (paper Section 1.2) and in the `settings` category of `_selectiveResetCategories()` (line 17753), so it is treated as an ordinary setting.
+- `[Certain]` `dlJSON()` (line 18970) does not export it today. The exposure is therefore: DevTools → Application → Local Storage on the live machine; any screenshot or console dump taken during investigations that listed `nw:*` values; any future "package", "copy profile" or "export all keys" feature that does not explicitly exclude it.
+- `[Certain]` The client deployment paper's Option A package would copy settings keys; without an explicit exclusion the key would ship to the client.
+
+Root Cause:
+
+Convenience persistence chosen when the AI-analysis feature was added. There is no secret-handling path in the app; everything persisted is treated alike.
+
+Approved Remediation:
+
+Not yet approved. Options, in increasing scope:
+
+1. **Rotate the key now** (no code change): revoke the current key in the Anthropic console and issue a new one. Recommended regardless of which option below is chosen, because the current key has lived in a browser profile on the live machine since the feature shipped.
+2. **Exclusion rule** (docs + any future export code): `nw:apikey` is never written to any export, package, backup or diagnostic dump. Record as an anti-regression invariant in CLAUDE.md alongside `DATA_VERSION`.
+3. **Session-only key** (`working.html` change, small): keep the key in `S.apiKey` for the tab's lifetime and stop calling `sv('apikey')`; the Settings field becomes "enter key for this session". One-time cleanup deletes any existing `nw:apikey`. Removes the exposure entirely at the cost of re-entering the key per session.
+4. **Encrypt at rest with the PIN** (`working.html` change, medium): derive an AES-GCM key from the admin PIN via PBKDF2 and store the ciphertext. Weak in practice: a 4-digit PIN is a 10,000-guess keyspace, so this is obfuscation, not protection. Not recommended over option 3.
+
+Ruling (Shane, 2026-09-04):
+
+- Option 1 (rotate): ACCEPTED, actioned by Shane outside the repository.
+- Option 3 (session-only key): CHOSEN. Option 2's exclusion rule is folded in: once the key is never persisted there is nothing to exclude, and the invariant "no export emits `sk-ant-`" still gets a test.
+- Option 4 (PIN-derived encryption): REJECTED — 10,000-guess keyspace.
+
+Queued Item: KI-011-FIX (do not implement from the docs session)
+
+Marker: `KI-011-SESSION-KEY`. Six touch points at `1510f82`; all one-line. Re-grep `apikey` before editing — the line numbers move with every merge.
+
+| # | Line | Today | Change |
+| --- | --- | --- | --- |
+| 1 | 1423 | `S.apiKey=lv('apikey','');` | `S.apiKey='';` then one-shot cleanup `try{localStorage.removeItem('nw:apikey');}catch(e){}` so an existing plaintext key is deleted on the first boot of the new build. |
+| 2 | 16818 | ibox text "Stored only in your browser (localStorage). Never sent to any other server." | "Held in memory for this browser tab only — re-enter it after reloading. Sent only to api.anthropic.com when you run AI analysis." |
+| 3 | 16819 | `<input … id="sak" value="${esc(S.apiKey)}" …>` | Unchanged (still shows the in-memory value while the tab lives). |
+| 4 | 16858 | `saveAK(){S.apiKey=gv('sak')||'';sv('apikey',S.apiKey);…'✓ API key saved — AI features enabled.'` | Drop the `sv('apikey',…)` call; message becomes "✓ API key set for this session — AI features enabled." |
+| 5 | 17755 / 18305 | `'apikey'` in the Selective Reset `settings` `lsKeys` list; `if(lsKill.has('apikey'))S.apiKey='';` | Remove `'apikey'` from the list; keep the `lsKill` line harmless or delete it. Nothing persisted means nothing to reset. |
+| 6 | 18442 | `closeApp()`: `if(S.apiKey)sv('apikey',S.apiKey);` | Delete the line. |
+
+Sketch (illustrative, not a patch):
+
+```js
+/* KI-011-SESSION-KEY start: the Anthropic key lives in S.apiKey for the tab's
+   lifetime only. It was persisted in plaintext under nw:apikey (KI-011); this
+   build never writes that key and deletes any copy left by an older build. */
+S.apiKey='';
+try{localStorage.removeItem('nw:apikey');}catch(e){}
+/* KI-011-SESSION-KEY end */
+…
+function saveAK(){S.apiKey=gv('sak')||'';/* KI-011-SESSION-KEY: no sv() */ …}
+```
+
+Anti-regression invariant to add to CLAUDE.md with the fix: `nw:apikey` is a retired key; no code path may write it, and no export, package or diagnostic dump may emit a string matching `sk-ant-`.
+
+Tests (`tests/ki-011-session-key.spec.js`): (a) seed `nw:apikey` before load, boot, assert it is gone and `S.apiKey` is empty; (b) enter a key via Settings, assert `localStorage['nw:apikey']` stays absent and `S.apiKey` is set; (c) reload, assert `S.apiKey` is empty; (d) `dlJSON()` output contains no `sk-ant-`; (e) `closeApp()` writes no `nw:apikey`. Reset `S.clashes` per KI-009 if the spec touches the dashboard.
+
+Trade-off accepted: the key is re-entered once per session. AI analysis is a rarely used path (BCF Generator only), so this is the right default.
+
+Implementation Status:
+
+⏳ Queued (KI-011-FIX), not started
+
+QA Retest Status:
+
+n/a
+
+Regression Protection:
+
+Proposed with KI-011-FIX: a spec asserting that no export path (`dlJSON`, any future package export) emits a string matching `sk-ant-`, and that `localStorage['nw:apikey']` is absent after option 3's cleanup.
+
+Outcome:
+
+Open. Rotation in hand (Shane). KI-011-FIX queued for the `working.html`-owning session.
+
+---
 
 ---
 
@@ -851,7 +946,7 @@ Monitoring Items:
 
 Confirmed Issues:
 
-None outstanding.
+- KI-011 — Anthropic API key persisted in plaintext in `nw:apikey` (security; raised 2026-09-04; rotation accepted; KI-011-FIX session-only key queued, marker `KI-011-SESSION-KEY`)
 
 Active Investigations:
 
