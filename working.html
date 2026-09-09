@@ -11617,12 +11617,6 @@ function importToRegister(mode){
     }
   });
   /* PAIR-ID-RESOLVED-COUNT end */
-  /* PAIR-ID-RESOLVED-COUNT-PHASE2 start: track auto-resolved clashes for undo.
-     When a previously-Resolved clash reappears with lower status (New/Active/
-     Reviewed), auto-flip it back to Resolved and track it here. After import
-     completes, show a toast with undo option. */
-  const _resolvedHeldClashes=[];
-  /* PAIR-ID-RESOLVED-COUNT-PHASE2 end */
   /* REVIEW-QUEUE-DATE-GUARD start: resolve the batch's export date so
      REVIEW-QUEUE-DETECT can distinguish "clash was resolved between the
      register and this XML" from "user imported an older archive so
@@ -11792,46 +11786,71 @@ function importToRegister(mode){
       const newPen=c.depMm+'mm';
       const stChanged=(exist.status!==c.mappedSt);
       const geomChanged=(exist.penetration!==newPen||exist.x!==c.x||exist.y!==c.y||exist.z!==c.z);
-      /* PAIR-ID-RESOLVED-COUNT-PHASE2 start: auto-flip Resolved clashes back
-         to Resolved when they reappear with lower status. Instead of allowing
-         the downgrade, hold the status and track for undo. Record action in
-         history so users see what happened. Check this BEFORE PR-03 pushStatusHistory
-         so Phase 2 handles the single history entry, not both Phase 2 + PR-03. */
-      const isResolvedBeingDowngraded=(exist.status==='Resolved'&&['New','Active','Reviewed'].includes(c.mappedSt));
-      /* PAIR-ID-RESOLVED-COUNT-PHASE2 end */
-      /* PR-03-CLOCK2-STATUS-TRANSITIONS start: re-import status
-         transitions stamp with the import-batch clock (weekDate,
-         clock 2), not the Navisworks detection clock (c.nwCreated,
-         clock 1). Pre-PR-03 this site read c.nwCreated in the same
-         way PR-02 fixed history[0] for new inserts — the pre-existing
-         STATUS-HIST comment already said "record status change at the
-         import's week" but the code was reading a different clock, so
-         the comment intent is now honestly reflected in the code.
-         Fallback is _weekYearNow() (wall clock, clock 3) for parity
-         with PR-02 handling of paste-imports where weekDate is null.
-         c.nwCreated is deliberately absent from the fallback chain —
-         same reasoning as PR-02. Companion fix at Site 2
-         (_xtResolveSkip) below.
-         Skip pushStatusHistory when Phase 2 is holding the status. */
-      if(stChanged&&!isResolvedBeingDowngraded){
-        const wy=_weekYearFromISO(c.weekDate)||_weekYearNow();
-        pushStatusHistory(exist,c.mappedSt,wy);
+      /* TERMINAL-STATUS-GUARD start: DEC-021 — prevent terminal statuses
+         (Approved/Resolved) from being downgraded by XML imports. Decision table:
+         - exist non-terminal × anything: proceed with PR-03-CLOCK2 (status changes, history entry)
+         - exist Approved × New/Active/Reviewed: block downgrade, no history entry
+         - exist Approved × Approved: no change
+         - exist Resolved × Approved: allow upgrade, new history entry (source:'Import')
+         - exist Resolved × New/Active/Reviewed: HOLD — status stays Resolved, append reappearances[], skip weekTag/weekDate refresh
+         - exist Resolved × Resolved: no change */
+      let statusHeld=false;
+      const existTerminal=(exist.status==='Approved'||exist.status==='Resolved');
+      if(!existTerminal){
+        // Non-terminal: proceed with existing PR-03-CLOCK2 logic
+        if(stChanged){
+          const wy=_weekYearFromISO(c.weekDate)||_weekYearNow();
+          pushStatusHistory(exist,c.mappedSt,wy);
+        }
+        exist.status=c.mappedSt;
+      }else if(exist.status==='Approved'){
+        // Approved blocks downgrade to New/Active/Reviewed
+        if(c.mappedSt==='New'||c.mappedSt==='Active'||c.mappedSt==='Reviewed'){
+          // Block downgrade: no status change, no history entry
+        }else if(c.mappedSt==='Approved'){
+          // No change
+        }else{
+          // Approved → other terminal edge case: allow (e.g., Approved→Resolved)
+          if(stChanged){
+            const wy=_weekYearFromISO(c.weekDate)||_weekYearNow();
+            pushStatusHistory(exist,c.mappedSt,wy);
+          }
+          exist.status=c.mappedSt;
+        }
+      }else if(exist.status==='Resolved'){
+        if(c.mappedSt==='Resolved'){
+          // Resolved→Resolved: no change
+        }else if(c.mappedSt==='Approved'){
+          // Allow upgrade: Resolved→Approved
+          if(stChanged){
+            const wy=_weekYearFromISO(c.weekDate)||_weekYearNow();
+            pushStatusHistory(exist,c.mappedSt,wy);
+          }
+          exist.status=c.mappedSt;
+        }else{
+          // Resolved→New/Active/Reviewed: HOLD case per DEC-020
+          statusHeld=true;
+          exist.reappearances=exist.reappearances||[];
+          const lastRe=exist.reappearances.length>0?exist.reappearances[exist.reappearances.length-1]:null;
+          if(lastRe&&lastRe.open){
+            // Update existing open entry's last-seen timestamps only
+            lastRe.lastSeenWeekTag=c.weekTag||null;
+            lastRe.lastSeenWeekDate=c.weekDate||null;
+          }else{
+            // Push new reappearance entry
+            exist.reappearances.push({
+              weekTag:c.weekTag||null,
+              weekDate:c.weekDate||null,
+              lastSeenWeekTag:c.weekTag||null,
+              lastSeenWeekDate:c.weekDate||null,
+              batch:_rqBatch||null,
+              at:new Date().toISOString(),
+              open:true
+            });
+          }
+        }
       }
-      /* PR-03-CLOCK2-STATUS-TRANSITIONS end */
-      /* PAIR-ID-RESOLVED-COUNT-PHASE2 start: auto-flip Resolved clashes back
-         to Resolved when they reappear with lower status. Instead of allowing
-         the downgrade, hold the status and track for undo. Record action in
-         history so users see what happened. */
-      if(isResolvedBeingDowngraded){
-        const wy=_weekYearFromISO(c.weekDate)||_weekYearNow();
-        _resolvedHeldClashes.push({uid:exist.uid,testName:exist.testName,nwName:exist.nwName,incomingStatus:c.mappedSt,priorStatus:'Resolved'});
-        if(!Array.isArray(exist.statusHistory))exist.statusHistory=[];
-        exist.statusHistory.push({status:'Resolved',week:wy.week,year:wy.year,source:'Resolved-Reappearance',incomingStatus:c.mappedSt,at:new Date().toISOString()});
-        // Status stays Resolved (do not update to c.mappedSt)
-      } else {
-        exist.status=c.mappedSt;// NW is the authoritative source for clash status
-      }
-      /* PAIR-ID-RESOLVED-COUNT-PHASE2 end */
+      /* TERMINAL-STATUS-GUARD end */
       if(geomChanged){exist.penetration=newPen;exist.x=c.x;exist.y=c.y;exist.z=c.z;}
       /* PAIR-KEY-COORD-TIER-USE: stamp tier + refresh coordinates when the
          match came from the coord fall-through (source-model republishing
@@ -11880,9 +11899,12 @@ function importToRegister(mode){
          already tagged to `week-260601` that gets re-imported inside
          `week-260629` correctly relearns the newer tag — this IS the
          semantic the weekly model needs: the register clash reflects
-         the most recent week it was observed in. */
-      if(c.weekTag)exist.weekTag=c.weekTag;
-      if(c.weekDate)exist.weekDate=c.weekDate;
+         the most recent week it was observed in. Skip on TERMINAL-STATUS-GUARD
+         held clashes (Resolved→New/Active/Reviewed) per DEC-020. */
+      if(!statusHeld){
+        if(c.weekTag)exist.weekTag=c.weekTag;
+        if(c.weekDate)exist.weekDate=c.weekDate;
+      }
       /* EA-EB-FLATTENING start: refresh Layer A nested objects on re-import to preserve
          baseLevel and gridHead values that may have changed in the source model. */
       if(c.eA){
@@ -11954,13 +11976,6 @@ function importToRegister(mode){
       sourceA:c.eA.source||'',
       sourceB:c.eB.source||'',
       /* OWNER-MAP-FIX end */
-      /* EA-EB-FLATTENING start: preserve Layer A nested objects with their baseLevel
-         and gridHead properties so downstream functions (extractLevel, GRID-SYSTEM)
-         can access c.eA.baseLevel, c.eB.baseLevel, c.eA.gridHead, c.eB.gridHead, and
-         c.eA.layer, c.eB.layer without fallback to top-level properties. */
-      eA:(c.eA?{id:c.eA.id,idSrc:c.eA.idSrc,item:c.eA.item,layer:c.eA.layer,source:c.eA.source,baseLevel:c.eA.baseLevel,gridHead:c.eA.gridHead}:{}),
-      eB:(c.eB?{id:c.eB.id,idSrc:c.eB.idSrc,item:c.eB.item,layer:c.eB.layer,source:c.eB.source,baseLevel:c.eB.baseLevel,gridHead:c.eB.gridHead}:{}),
-      /* EA-EB-FLATTENING end */
       penetration:c.depMm+'mm',
       status:/* DUP-FILES-FIX start: extended `isFirstImport?'New':c.mappedSt` to also default to 'New' when this clash's testName wasn't in the register at the start of this import. Brand-new tests on their first import behave like a fresh register — clashes begin their lifecycle at New rather than inheriting the NW XML's Active/etc. status. Re-imports of known tests still trust the XML status. To revert: replace this expression with `isFirstImport?'New':c.mappedSt`. */_initStatus,/* DUP-FILES-FIX end */
       priority:c.pri,
@@ -12471,22 +12486,6 @@ function importToRegister(mode){
   </div></div>`;
   showToast(`Merged: ${added} new, ${updated} updated, ${unchanged} unchanged${/* PAIR-ID-RESOLVED-COUNT */_disappeared?` \u00b7 ${_disappeared} likely fixed in model`:''}`);
   bmsg(`\u2713 ${added} new clashes imported — ${updated} updated, ${unchanged} unchanged${/* PAIR-ID-RESOLVED-COUNT */_disappeared?` \u00b7 ${_disappeared} likely fixed in model (not present in this XML)`:''}`,'#007A38');
-  /* PAIR-ID-RESOLVED-COUNT-PHASE2 start: show toast for auto-resolved clashes.
-     If any Resolved clashes were held because they reappeared with lower
-     status, notify user with undo option. */
-  if(_resolvedHeldClashes.length){
-    const verb=_resolvedHeldClashes.length===1?'clash':'clashes';
-    const msg=`Auto-kept ${_resolvedHeldClashes.length} ${verb} Resolved (reappeared with lower status)`;
-    const id='_ph2_'+Date.now();
-    window._pendingResolveds={clashes:_resolvedHeldClashes,id:id};
-    const btn=document.createElement('button');
-    btn.className='btn sm';
-    btn.style.cssText='margin-left:8px;background:#E5F8EE;color:#1B5E3F;border-color:#10B981;font-size:11px';
-    btn.textContent='Undo';
-    btn.onclick=()=>_undoPhase2Resolve(_resolvedHeldClashes);
-    showToastWithAction(msg,btn);
-  }
-  /* PAIR-ID-RESOLVED-COUNT-PHASE2 end */
   /* BATCH-IMPORT-FOLDER-CAPTURE start: post-import summary. Logs the
      added count and the unique set of archive folders captured from
      this batch so the user can open DevTools and verify the third-from-
@@ -20298,15 +20297,6 @@ async function exportSingleBCF(uid){
 }
 
 function showToast(msg){const t=document.createElement('div');t.textContent=msg;t.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#0F1824;color:#fff;padding:8px 18px;border-radius:6px;font-size:12px;font-family:Arial,sans-serif;z-index:9999;pointer-events:none;opacity:1;transition:opacity .4s';document.body.appendChild(t);setTimeout(()=>{t.style.opacity='0';setTimeout(()=>t.remove(),400);},2000);}
-/* PAIR-ID-RESOLVED-COUNT-PHASE2 start: toast with action button. Shows message
-   and a button next to it (does not auto-dismiss), for undo operations. */
-function showToastWithAction(msg,btn){const t=document.createElement('div');t.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#0F1824;color:#fff;padding:8px 18px;border-radius:6px;font-size:12px;font-family:Arial,sans-serif;z-index:9999;display:flex;align-items:center;gap:12px';const msgSpan=document.createElement('span');msgSpan.textContent=msg;t.appendChild(msgSpan);t.appendChild(btn);document.body.appendChild(t);const autoClose=setTimeout(()=>{t.style.opacity='0';setTimeout(()=>t.remove(),400);},5000);btn.onclick=(e)=>{clearTimeout(autoClose);t.style.opacity='0';setTimeout(()=>t.remove(),400);btn.onclick.call(e.target);}}
-/* PAIR-ID-RESOLVED-COUNT-PHASE2 end */
-/* PAIR-ID-RESOLVED-COUNT-PHASE2 start: undo handler. Reverts the Resolved
-   clashes back to their incoming status (the status they appeared with during
-   re-import). Updates statusHistory and persists. */
-function _undoPhase2Resolve(clashes){if(!Array.isArray(clashes)||!clashes.length)return;const cs=S.clashes||[];const byUid=new Map();cs.forEach((c,i)=>byUid.set(c.uid,i));clashes.forEach(held=>{const i=byUid.get(held.uid);if(i==null)return;const c=cs[i];const oldSt=c.status;c.status=held.incomingStatus;const wy=_weekYearNow();if(!Array.isArray(c.statusHistory))c.statusHistory=[];c.statusHistory.push({status:held.incomingStatus,week:wy.week,year:wy.year,source:'Resolved-Reappearance-Undo',priorStatus:'Resolved',at:new Date().toISOString()});});sv('clashes',cs);updSB();updSS();showToast(`Undone: ${clashes.length} clash${clashes.length===1?'':'es'} reverted to ${clashes[0].incomingStatus}`);}
-/* PAIR-ID-RESOLVED-COUNT-PHASE2 end */
 
 /* ═══════ INIT ═══════ */
 window.onload=()=>{initAuth();/* IMG-DHASH-PHASE1 start: backfill after initNwImages has restored the metadata, deliberately un-awaited so it never gates app startup or UI interaction. Two guards, both load-bearing: skip entirely when no images were restored, so a store with nothing to hash generates no IndexedDB traffic at all; and delay past the 1500/1600ms deferred migrations so the backfill's openIDB() cannot land in the middle of another caller's open/close cycle. Without the first guard the un-awaited backfill re-populated the cached _idbOpenPromise while selective-reset's retry path was mid-test, masking a failed open. Failures are contained inside _dhashBackfill. */initNwImages().then(()=>{if(!(_nwImgCount>0))return;setTimeout(()=>{try{_dhashBackfill();}catch(e){}},2000);}).catch(()=>{});/* IMG-DHASH-PHASE1 end *//* PLAN-BG start: load floor-plan records into memory cache on app start. Mirrors initNwImages — non-blocking, fails silent on no-data. */initPlans();/* PLAN-BG end */
