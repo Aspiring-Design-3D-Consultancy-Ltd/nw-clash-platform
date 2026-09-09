@@ -11617,6 +11617,12 @@ function importToRegister(mode){
     }
   });
   /* PAIR-ID-RESOLVED-COUNT end */
+  /* PAIR-ID-RESOLVED-COUNT-PHASE2 start: track auto-resolved clashes for undo.
+     When a previously-Resolved clash reappears with lower status (New/Active/
+     Reviewed), auto-flip it back to Resolved and track it here. After import
+     completes, show a toast with undo option. */
+  const _resolvedHeldClashes=[];
+  /* PAIR-ID-RESOLVED-COUNT-PHASE2 end */
   /* REVIEW-QUEUE-DATE-GUARD start: resolve the batch's export date so
      REVIEW-QUEUE-DETECT can distinguish "clash was resolved between the
      register and this XML" from "user imported an older archive so
@@ -11804,7 +11810,21 @@ function importToRegister(mode){
         pushStatusHistory(exist,c.mappedSt,wy);
       }
       /* PR-03-CLOCK2-STATUS-TRANSITIONS end */
-      exist.status=c.mappedSt;// NW is the authoritative source for clash status
+      /* PAIR-ID-RESOLVED-COUNT-PHASE2 start: auto-flip Resolved clashes back
+         to Resolved when they reappear with lower status. Instead of allowing
+         the downgrade, hold the status and track for undo. Record action in
+         history so users see what happened. */
+      const isResolvedBeingDowngraded=(exist.status==='Resolved'&&['New','Active','Reviewed'].includes(c.mappedSt));
+      if(isResolvedBeingDowngraded){
+        const wy=_weekYearFromISO(c.weekDate)||_weekYearNow();
+        _resolvedHeldClashes.push({uid:exist.uid,testName:exist.testName,nwName:exist.nwName,incomingStatus:c.mappedSt,priorStatus:'Resolved'});
+        if(!Array.isArray(exist.statusHistory))exist.statusHistory=[];
+        exist.statusHistory.push({status:'Resolved',week:wy.week,year:wy.year,source:'Resolved-Reappearance',incomingStatus:c.mappedSt,at:new Date().toISOString()});
+        // Status stays Resolved (do not update to c.mappedSt)
+      } else {
+        exist.status=c.mappedSt;// NW is the authoritative source for clash status
+      }
+      /* PAIR-ID-RESOLVED-COUNT-PHASE2 end */
       if(geomChanged){exist.penetration=newPen;exist.x=c.x;exist.y=c.y;exist.z=c.z;}
       /* PAIR-KEY-COORD-TIER-USE: stamp tier + refresh coordinates when the
          match came from the coord fall-through (source-model republishing
@@ -12428,6 +12448,22 @@ function importToRegister(mode){
   </div></div>`;
   showToast(`Merged: ${added} new, ${updated} updated, ${unchanged} unchanged${/* PAIR-ID-RESOLVED-COUNT */_disappeared?` \u00b7 ${_disappeared} likely fixed in model`:''}`);
   bmsg(`\u2713 ${added} new clashes imported — ${updated} updated, ${unchanged} unchanged${/* PAIR-ID-RESOLVED-COUNT */_disappeared?` \u00b7 ${_disappeared} likely fixed in model (not present in this XML)`:''}`,'#007A38');
+  /* PAIR-ID-RESOLVED-COUNT-PHASE2 start: show toast for auto-resolved clashes.
+     If any Resolved clashes were held because they reappeared with lower
+     status, notify user with undo option. */
+  if(_resolvedHeldClashes.length){
+    const verb=_resolvedHeldClashes.length===1?'clash':'clashes';
+    const msg=`Auto-kept ${_resolvedHeldClashes.length} ${verb} Resolved (reappeared with lower status)`;
+    const id='_ph2_'+Date.now();
+    window._pendingResolveds={clashes:_resolvedHeldClashes,id:id};
+    const btn=document.createElement('button');
+    btn.className='btn sm';
+    btn.style.cssText='margin-left:8px;background:#E5F8EE;color:#1B5E3F;border-color:#10B981;font-size:11px';
+    btn.textContent='Undo';
+    btn.onclick=()=>_undoPhase2Resolve(_resolvedHeldClashes);
+    showToastWithAction(msg,btn);
+  }
+  /* PAIR-ID-RESOLVED-COUNT-PHASE2 end */
   /* BATCH-IMPORT-FOLDER-CAPTURE start: post-import summary. Logs the
      added count and the unique set of archive folders captured from
      this batch so the user can open DevTools and verify the third-from-
@@ -20239,6 +20275,15 @@ async function exportSingleBCF(uid){
 }
 
 function showToast(msg){const t=document.createElement('div');t.textContent=msg;t.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#0F1824;color:#fff;padding:8px 18px;border-radius:6px;font-size:12px;font-family:Arial,sans-serif;z-index:9999;pointer-events:none;opacity:1;transition:opacity .4s';document.body.appendChild(t);setTimeout(()=>{t.style.opacity='0';setTimeout(()=>t.remove(),400);},2000);}
+/* PAIR-ID-RESOLVED-COUNT-PHASE2 start: toast with action button. Shows message
+   and a button next to it (does not auto-dismiss), for undo operations. */
+function showToastWithAction(msg,btn){const t=document.createElement('div');t.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#0F1824;color:#fff;padding:8px 18px;border-radius:6px;font-size:12px;font-family:Arial,sans-serif;z-index:9999;display:flex;align-items:center;gap:12px';const msgSpan=document.createElement('span');msgSpan.textContent=msg;t.appendChild(msgSpan);t.appendChild(btn);document.body.appendChild(t);const autoClose=setTimeout(()=>{t.style.opacity='0';setTimeout(()=>t.remove(),400);},5000);btn.onclick=(e)=>{clearTimeout(autoClose);t.style.opacity='0';setTimeout(()=>t.remove(),400);btn.onclick.call(e.target);}}
+/* PAIR-ID-RESOLVED-COUNT-PHASE2 end */
+/* PAIR-ID-RESOLVED-COUNT-PHASE2 start: undo handler. Reverts the Resolved
+   clashes back to their incoming status (the status they appeared with during
+   re-import). Updates statusHistory and persists. */
+function _undoPhase2Resolve(clashes){if(!Array.isArray(clashes)||!clashes.length)return;const cs=S.clashes||[];const byUid=new Map();cs.forEach((c,i)=>byUid.set(c.uid,i));clashes.forEach(held=>{const i=byUid.get(held.uid);if(i==null)return;const c=cs[i];const oldSt=c.status;c.status=held.incomingStatus;const wy=_weekYearNow();if(!Array.isArray(c.statusHistory))c.statusHistory=[];c.statusHistory.push({status:held.incomingStatus,week:wy.week,year:wy.year,source:'Resolved-Reappearance-Undo',priorStatus:'Resolved',at:new Date().toISOString()});});sv('clashes',cs);updSB();updSS();showToast(`Undone: ${clashes.length} clash${clashes.length===1?'':'es'} reverted to ${clashes[0].incomingStatus}`);}
+/* PAIR-ID-RESOLVED-COUNT-PHASE2 end */
 
 /* ═══════ INIT ═══════ */
 window.onload=()=>{initAuth();/* IMG-DHASH-PHASE1 start: backfill after initNwImages has restored the metadata, deliberately un-awaited so it never gates app startup or UI interaction. Two guards, both load-bearing: skip entirely when no images were restored, so a store with nothing to hash generates no IndexedDB traffic at all; and delay past the 1500/1600ms deferred migrations so the backfill's openIDB() cannot land in the middle of another caller's open/close cycle. Without the first guard the un-awaited backfill re-populated the cached _idbOpenPromise while selective-reset's retry path was mid-test, masking a failed open. Failures are contained inside _dhashBackfill. */initNwImages().then(()=>{if(!(_nwImgCount>0))return;setTimeout(()=>{try{_dhashBackfill();}catch(e){}},2000);}).catch(()=>{});/* IMG-DHASH-PHASE1 end *//* PLAN-BG start: load floor-plan records into memory cache on app start. Mirrors initNwImages — non-blocking, fails silent on no-data. */initPlans();/* PLAN-BG end */
