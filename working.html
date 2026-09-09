@@ -11792,6 +11792,13 @@ function importToRegister(mode){
       const newPen=c.depMm+'mm';
       const stChanged=(exist.status!==c.mappedSt);
       const geomChanged=(exist.penetration!==newPen||exist.x!==c.x||exist.y!==c.y||exist.z!==c.z);
+      /* PAIR-ID-RESOLVED-COUNT-PHASE2 start: auto-flip Resolved clashes back
+         to Resolved when they reappear with lower status. Instead of allowing
+         the downgrade, hold the status and track for undo. Record action in
+         history so users see what happened. Check this BEFORE PR-03 pushStatusHistory
+         so Phase 2 handles the single history entry, not both Phase 2 + PR-03. */
+      const isResolvedBeingDowngraded=(exist.status==='Resolved'&&['New','Active','Reviewed'].includes(c.mappedSt));
+      /* PAIR-ID-RESOLVED-COUNT-PHASE2 end */
       /* PR-03-CLOCK2-STATUS-TRANSITIONS start: re-import status
          transitions stamp with the import-batch clock (weekDate,
          clock 2), not the Navisworks detection clock (c.nwCreated,
@@ -11804,8 +11811,9 @@ function importToRegister(mode){
          with PR-02 handling of paste-imports where weekDate is null.
          c.nwCreated is deliberately absent from the fallback chain —
          same reasoning as PR-02. Companion fix at Site 2
-         (_xtResolveSkip) below. */
-      if(stChanged){
+         (_xtResolveSkip) below.
+         Skip pushStatusHistory when Phase 2 is holding the status. */
+      if(stChanged&&!isResolvedBeingDowngraded){
         const wy=_weekYearFromISO(c.weekDate)||_weekYearNow();
         pushStatusHistory(exist,c.mappedSt,wy);
       }
@@ -11814,7 +11822,6 @@ function importToRegister(mode){
          to Resolved when they reappear with lower status. Instead of allowing
          the downgrade, hold the status and track for undo. Record action in
          history so users see what happened. */
-      const isResolvedBeingDowngraded=(exist.status==='Resolved'&&['New','Active','Reviewed'].includes(c.mappedSt));
       if(isResolvedBeingDowngraded){
         const wy=_weekYearFromISO(c.weekDate)||_weekYearNow();
         _resolvedHeldClashes.push({uid:exist.uid,testName:exist.testName,nwName:exist.nwName,incomingStatus:c.mappedSt,priorStatus:'Resolved'});

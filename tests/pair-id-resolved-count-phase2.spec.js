@@ -38,33 +38,43 @@ test.describe('PAIR-ID-RESOLVED-COUNT-PHASE2 — auto-flip Resolved when reappea
   test('Phase2-A — Resolved re-imported as Active: auto-kept, not downgraded', async ({ page }) => {
     const result = await page.evaluate(async () => {
       // Seed initial clash as Resolved
-      S.clashes = [{
-        uid: 1,
+      const initialClash = {
+        uid: 'CLX-001',
+        name: 'CLX-001 — Clash1',
         testName: 'TestP2A',
+        nwOrig: 'Clash1',
         nwName: 'Clash1',
         status: 'Resolved',
         statusHistory: [{week: 23, year: 2026, status: 'Resolved'}],
         penetration: '0mm',
         x: 1, y: 2, z: 3,
-        eA: {id: 'EID-A-1'},
-        eB: {id: 'EID-B-1'},
+        eA: {id: 'EID-A-1', idSrc: 'guid'},
+        eB: {id: 'EID-B-1', idSrc: 'guid'},
+        elementIdA: 'EID-A-1',
+        elementIdB: 'EID-B-1',
+        elementIdSrcA: 'guid',
+        elementIdSrcB: 'guid',
         nwCreated: '15/01/26',
         weekTag: 'week-260601',
         weekDate: '2026-06-01',
         firstSeenWeekTag: 'week-260601'
-      }];
+      };
+      S.clashes = [initialClash];
       sv('clashes', S.clashes);
       _uid = 1;
 
       // Re-import as Active (Phase 2 should hold it Resolved, not downgrade)
       _bcfC = [{
-        testName: 'TestP2A',
+        tn: 'TestP2A',
         nwName: 'Clash1',
         mappedSt: 'Active',
+        dA: 'Structure',
+        dB: 'MEP',
         depMm: 0.01,
         x: 1, y: 2, z: 3,
-        eA: {id: 'EID-A-1'},
-        eB: {id: 'EID-B-1'},
+        pri: 'High',
+        eA: {id: 'EID-A-1', idSrc: 'guid', item: 'Clash1', layer: '', source: 'Structure'},
+        eB: {id: 'EID-B-1', idSrc: 'guid', item: 'Clash1', layer: '', source: 'MEP'},
         nwCreated: '15/01/26',
         weekTag: 'week-260608',
         weekDate: '2026-06-08'
@@ -97,8 +107,12 @@ test.describe('PAIR-ID-RESOLVED-COUNT-PHASE2 — auto-flip Resolved when reappea
         statusHistory: [{week: 23, year: 2026, status: 'Resolved'}],
         penetration: '0mm',
         x: 1, y: 2, z: 3,
-        eA: {id: 'EID-A-1'},
-        eB: {id: 'EID-B-1'},
+        eA: {id: 'EID-A-1', idSrc: 'Element ID'},
+        eB: {id: 'EID-B-1', idSrc: 'Handle'},
+        elementIdA: 'EID-A-1',
+        elementIdB: 'EID-B-1',
+        elementIdSrcA: 'Element ID',
+        elementIdSrcB: 'Handle',
         nwCreated: '15/01/26',
         weekTag: 'week-260601',
         weekDate: '2026-06-01'
@@ -107,13 +121,16 @@ test.describe('PAIR-ID-RESOLVED-COUNT-PHASE2 — auto-flip Resolved when reappea
       _uid = 1;
 
       _bcfC = [{
-        testName: 'TestP2B',
+        tn: 'TestP2B',
         nwName: 'Clash1',
         mappedSt: 'Reviewed',
+        dA: 'Structure',
+        dB: 'MEP',
         depMm: 0.01,
         x: 1, y: 2, z: 3,
-        eA: {id: 'EID-A-1'},
-        eB: {id: 'EID-B-1'},
+        pri: 'High',
+        eA: {id: 'EID-A-1', idSrc: 'Element ID', item: 'Clash1', layer: '', source: 'Structure'},
+        eB: {id: 'EID-B-1', idSrc: 'Handle', item: 'Clash1', layer: '', source: 'MEP'},
         nwCreated: '15/01/26',
         weekTag: 'week-260608',
         weekDate: '2026-06-08'
@@ -161,8 +178,12 @@ test.describe('PAIR-ID-RESOLVED-COUNT-PHASE2 — auto-flip Resolved when reappea
         statusHistory: [{week: 23, year: 2026, status: 'New'}],
         penetration: '0mm',
         x: 1, y: 2, z: 3,
-        eA: {id: 'EID-A-1'},
-        eB: {id: 'EID-B-1'},
+        eA: {id: 'EID-A-1', idSrc: 'Element ID'},
+        eB: {id: 'EID-B-1', idSrc: 'Handle'},
+        elementIdA: 'EID-A-1',
+        elementIdB: 'EID-B-1',
+        elementIdSrcA: 'Element ID',
+        elementIdSrcB: 'Handle',
         nwCreated: '15/01/26',
         weekTag: 'week-260601',
         weekDate: '2026-06-01'
@@ -172,13 +193,16 @@ test.describe('PAIR-ID-RESOLVED-COUNT-PHASE2 — auto-flip Resolved when reappea
 
       // Re-import with different (still non-terminal) status
       _bcfC = [{
-        testName: 'TestP2C',
+        tn: 'TestP2C',
         nwName: 'Clash1',
         mappedSt: 'Reviewed',
+        dA: 'Structure',
+        dB: 'MEP',
         depMm: 0.01,
         x: 1, y: 2, z: 3,
-        eA: {id: 'EID-A-1'},
-        eB: {id: 'EID-B-1'},
+        pri: 'High',
+        eA: {id: 'EID-A-1', idSrc: 'Element ID', item: 'Clash1', layer: '', source: 'Structure'},
+        eB: {id: 'EID-B-1', idSrc: 'Handle', item: 'Clash1', layer: '', source: 'MEP'},
         nwCreated: '15/01/26',
         weekTag: 'week-260608',
         weekDate: '2026-06-08'
