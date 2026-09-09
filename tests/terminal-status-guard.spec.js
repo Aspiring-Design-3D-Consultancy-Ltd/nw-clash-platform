@@ -80,7 +80,7 @@ test.describe('PR-A1-TERMINAL-STATUS-GUARD — terminal statuses blocked from do
       S.clashes = [{
         uid: 1,
         testName: 'TestT2',
-        nwName: 'Clash1',
+        nwOrig: 'Clash1',
         status: 'Approved',
         statusHistory: [{week: 23, year: 2026, status: 'Approved'}],
         penetration: '0mm',
@@ -97,7 +97,7 @@ test.describe('PR-A1-TERMINAL-STATUS-GUARD — terminal statuses blocked from do
 
       // Re-import as Active (should be blocked by guard)
       _bcfC = [{
-        testName: 'TestT2',
+        tn: 'TestT2',
         nwName: 'Clash1',
         mappedSt: 'Active',
         depMm: 0.01,
@@ -130,7 +130,7 @@ test.describe('PR-A1-TERMINAL-STATUS-GUARD — terminal statuses blocked from do
       S.clashes = [{
         uid: 1,
         testName: 'TestT3',
-        nwName: 'Clash1',
+        nwOrig: 'Clash1',
         status: 'Approved',
         statusHistory: [{week: 23, year: 2026, status: 'Approved'}],
         penetration: '0mm',
@@ -145,7 +145,7 @@ test.describe('PR-A1-TERMINAL-STATUS-GUARD — terminal statuses blocked from do
       _uid = 1;
 
       _bcfC = [{
-        testName: 'TestT3',
+        tn: 'TestT3',
         nwName: 'Clash1',
         mappedSt: 'Approved',
         depMm: 0.01,
@@ -176,7 +176,7 @@ test.describe('PR-A1-TERMINAL-STATUS-GUARD — terminal statuses blocked from do
       S.clashes = [{
         uid: 1,
         testName: 'TestT4',
-        nwName: 'Clash1',
+        nwOrig: 'Clash1',
         status: 'Resolved',
         statusHistory: [{week: 23, year: 2026, status: 'Resolved'}],
         penetration: '0mm',
@@ -191,7 +191,7 @@ test.describe('PR-A1-TERMINAL-STATUS-GUARD — terminal statuses blocked from do
       _uid = 1;
 
       _bcfC = [{
-        testName: 'TestT4',
+        tn: 'TestT4',
         nwName: 'Clash1',
         mappedSt: 'Approved',
         depMm: 0.01,
@@ -225,7 +225,7 @@ test.describe('PR-A1-TERMINAL-STATUS-GUARD — terminal statuses blocked from do
       S.clashes = [{
         uid: 1,
         testName: 'TestT5',
-        nwName: 'Clash1',
+        nwOrig: 'Clash1',
         status: 'Resolved',
         statusHistory: [{week: 23, year: 2026, status: 'Resolved'}],
         penetration: '0mm',
@@ -241,7 +241,7 @@ test.describe('PR-A1-TERMINAL-STATUS-GUARD — terminal statuses blocked from do
       _rqBatch = 'bat-test-batch-id';
 
       _bcfC = [{
-        testName: 'TestT5',
+        tn: 'TestT5',
         nwName: 'Clash1',
         mappedSt: 'Active',
         depMm: 0.01,
