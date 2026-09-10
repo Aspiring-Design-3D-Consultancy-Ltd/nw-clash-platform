@@ -74,6 +74,58 @@ function buildXml(testName, clashName, status) {
 test.describe('PR-A1-TERMINAL-STATUS-GUARD — terminal statuses blocked from downgrade', () => {
   test.beforeEach(async ({ page }) => { await bootstrap(page); });
 
+  test('T1 — Active re-imported as Active proceeds (non-terminal unchanged)', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      // Seed initial clash as Active (non-terminal)
+      S.clashes = [{
+        uid: 1,
+        testName: 'TestT1',
+        nwOrig: 'Clash1',
+        status: 'Active',
+        statusHistory: [{week: 23, year: 2026, status: 'Active'}],
+        penetration: '0mm',
+        x: 1, y: 2, z: 3,
+        elementIdA: 'EID-A-1',
+        elementIdB: 'EID-B-1',
+        eA: {id: 'EID-A-1'},
+        eB: {id: 'EID-B-1'},
+        nwCreated: '15/01/26',
+        weekTag: 'week-260601',
+        weekDate: '2026-06-01'
+      }];
+      sv('clashes', S.clashes);
+      _uid = 1;
+
+      // Re-import as Active (same status)
+      _bcfC = [{
+        tn: 'TestT1',
+        nwName: 'Clash1',
+        mappedSt: 'Active',
+        depMm: 0.01,
+        x: 1, y: 2, z: 3,
+        eA: {id: 'EID-A-1'},
+        eB: {id: 'EID-B-1'},
+        nwCreated: '15/01/26',
+        weekTag: 'week-260608',
+        weekDate: '2026-06-08'
+      }];
+
+      window._skipCrossTestDupes = true;
+      importToRegister('append');
+
+      const c = (S.clashes || [])[0];
+      return {
+        status: c.status,
+        historyLen: (c.statusHistory || []).length,
+        weekTag: c.weekTag
+      };
+    });
+
+    expect(result.status).toBe('Active'); // Non-terminal: proceeds normally
+    expect(result.historyLen).toBe(1); // No change = no new history (dedupe)
+    expect(result.weekTag).toBe('week-260608'); // Refreshed as normal
+  });
+
   test('T2 — Approved re-imported as Active blocks downgrade, no history entry', async ({ page }) => {
     const result = await page.evaluate(async () => {
       // Seed initial clash as Approved
