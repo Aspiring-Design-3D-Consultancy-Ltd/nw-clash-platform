@@ -3839,15 +3839,15 @@ const _IWK_UNTAGGED='untagged';
 const _IWK_SEP='\u241F';
 const _nwImgSets=new Map();
 const _nwImgLatest={};
-function _iwkKey(testName,weekTag){return String(testName)+_IWK_SEP+String(weekTag);}
+function _iwkKey(buildingScope,testName,weekTag){return String(buildingScope)+_IWK_SEP+String(testName)+_IWK_SEP+String(weekTag);}
 function _iwkWeekOrder(tag){
   if(!tag||tag===_IWK_UNTAGGED)return -1;
   const d=(typeof _parseWeekDate==='function')?_parseWeekDate(tag):null;
   return d?parseInt(d.replace(/-/g,''),10):-1;
 }
-function _iwkResolveLoadTag(testName,weekTag){
+function _iwkResolveLoadTag(buildingScope,testName,weekTag){
   if(typeof _isWeekTag==='function'&&_isWeekTag(weekTag))return weekTag;
-  return _nwImgLatest[testName]||_IWK_UNTAGGED;
+  return _nwImgLatest[buildingScope+_IWK_SEP+testName]||_IWK_UNTAGGED;
 }
 function _iwkReferencedSlots(){
   const s=new Set();
@@ -3864,16 +3864,19 @@ function _iwkRebuildViews(){
   Object.keys(_nwImgByTest).forEach(k=>delete _nwImgByTest[k]);
   _nwImages.clear();
   _nwImgSets.forEach(t=>{
-    const cur=_nwImgLatest[t.testName];
-    if(cur===undefined||_iwkWeekOrder(t.weekTag)>_iwkWeekOrder(cur))_nwImgLatest[t.testName]=t.weekTag;
+    const bs=t.buildingScope||'';
+    const latestKey=bs+_IWK_SEP+t.testName;
+    const cur=_nwImgLatest[latestKey];
+    if(cur===undefined||_iwkWeekOrder(t.weekTag)>_iwkWeekOrder(cur))_nwImgLatest[latestKey]=t.weekTag;
   });
   let total=0;
   _nwImgSets.forEach(t=>{
+    const bs=t.buildingScope||'';
     const fns=t.filenames||[];
-    const isLatest=_nwImgLatest[t.testName]===t.weekTag;
+    const isLatest=_nwImgLatest[bs+_IWK_SEP+t.testName]===t.weekTag;
     fns.forEach((fn,j)=>{
       if(!fn)return;
-      _nwImages.set(t.testName+'::'+t.weekTag+'::'+fn,(t.firstIdx|0)+j);
+      _nwImages.set(bs+_IWK_SEP+t.testName+'::'+t.weekTag+'::'+fn,(t.firstIdx|0)+j);
     });
     if(isLatest)_nwImgByTest[t.testName]={firstIdx:t.firstIdx|0,count:t.count|0,filenames:fns.slice()};
     total+=t.count|0;
@@ -3883,7 +3886,7 @@ function _iwkRebuildViews(){
 function _iwkSerialiseSets(){
   const o={};
   _nwImgSets.forEach((t,k)=>{
-    o[k]={testName:t.testName,weekTag:t.weekTag,firstIdx:t.firstIdx|0,count:t.count|0,filenames:(t.filenames||[]).slice(),loadedAt:t.loadedAt||null};
+    o[k]={testName:t.testName,weekTag:t.weekTag,buildingScope:t.buildingScope||'',firstIdx:t.firstIdx|0,count:t.count|0,filenames:(t.filenames||[]).slice(),loadedAt:t.loadedAt||null};
     if(t.synth)o[k].synth=true;
   });
   return o;
@@ -3895,6 +3898,9 @@ function _iwkSerialiseLatest(){return Object.assign({},_nwImgLatest);}
    so _imgWeekKeyingMigrate knows which sets to retag from the register.
    Week-keyed lookups miss synthesised sets and fall through to the latest-set
    path, which is exactly the pre-change behaviour. Returns the image total. */
+/* IMG-KEY-BUILDING-MIGRATION start: rekey images with buildingScope to
+   eliminate FAB/CUP collisions. Legacy data without buildingScope is recovered
+   from S.clashes by testName match. New key: buildingScope::testName::weekTag. */
 function _iwkRestore(meta){
   _nwImgSets.clear();
   const sets=(meta&&meta.sets&&typeof meta.sets==='object')?meta.sets:null;
@@ -3903,53 +3909,89 @@ function _iwkRestore(meta){
       const t=sets[k];
       if(!t||typeof t!=='object'||!t.testName)return;
       const tag=(typeof t.weekTag==='string'&&t.weekTag)||_IWK_UNTAGGED;
-      _nwImgSets.set(_iwkKey(t.testName,tag),{testName:t.testName,weekTag:tag,firstIdx:t.firstIdx|0,count:t.count|0,
+      let bs=(typeof t.buildingScope==='string'&&t.buildingScope)||'';
+      if(!bs&&S.clashes&&Array.isArray(S.clashes)){
+        for(let c of S.clashes){
+          if((c.rawTestName||c.testName)===t.testName&&c.buildingScope){
+            bs=c.buildingScope;
+            break;
+          }
+        }
+      }
+      _nwImgSets.set(_iwkKey(bs,t.testName,tag),{testName:t.testName,weekTag:tag,buildingScope:bs,firstIdx:t.firstIdx|0,count:t.count|0,
         filenames:(t.filenames||[]).slice(),loadedAt:t.loadedAt||null,synth:!!t.synth});
     });
   }else if(meta&&meta.byTest&&typeof meta.byTest==='object'){
     Object.entries(meta.byTest).forEach(([tn,info])=>{
-      _nwImgSets.set(_iwkKey(tn,_IWK_UNTAGGED),{testName:tn,weekTag:_IWK_UNTAGGED,firstIdx:(info&&info.firstIdx)|0,count:(info&&info.count)|0,
+      let bs='';
+      if(S.clashes&&Array.isArray(S.clashes)){
+        for(let c of S.clashes){
+          if((c.rawTestName||c.testName)===tn&&c.buildingScope){
+            bs=c.buildingScope;
+            break;
+          }
+        }
+      }
+      _nwImgSets.set(_iwkKey(bs,tn,_IWK_UNTAGGED),{testName:tn,weekTag:_IWK_UNTAGGED,buildingScope:bs,firstIdx:(info&&info.firstIdx)|0,count:(info&&info.count)|0,
         filenames:((info&&info.filenames)||[]).slice(),loadedAt:(meta&&meta.loadedAt)||null,synth:true});
     });
   }
   return _iwkRebuildViews();
 }
+/* IMG-KEY-BUILDING-MIGRATION end */
 /* Composite lookup. The clash's own week set is authoritative when it exists;
    the latest set is consulted only when the clash's week has no set. */
 function _iwkLookupIdx(c){
+  const bs=c&&c.buildingScope||'';
   const ref=(c&&c.nwImageRef)||'';
   const tn=(c&&(c.rawTestName||c.testName))||'';
   if(!ref||!tn)return null;
   const wt=c.weekTag;
-  if(typeof wt==='string'&&wt&&_nwImgSets.has(_iwkKey(tn,wt))){
-    const idx=_nwImages.get(tn+'::'+wt+'::'+ref);
+  if(typeof wt==='string'&&wt&&_nwImgSets.has(_iwkKey(bs,tn,wt))){
+    const idx=_nwImages.get(bs+_IWK_SEP+tn+'::'+wt+'::'+ref);
     return idx===undefined?null:idx;
   }
-  const lt=_nwImgLatest[tn];
+  const lt=_nwImgLatest[bs+_IWK_SEP+tn];
   if(lt===undefined)return null;
-  const idx=_nwImages.get(tn+'::'+lt+'::'+ref);
+  const idx=_nwImages.get(bs+_IWK_SEP+tn+'::'+lt+'::'+ref);
   return idx===undefined?null:idx;
 }
 /* Positional fallback (IMG-POS rule: only when the set's image count equals
    the test's clash count) scoped to the same set choice. */
 function _iwkPositionalIdx(c){
+  const bs=c&&c.buildingScope||'';
   const tn=(c&&(c.rawTestName||c.testName))||'';
   if(!tn||typeof c.testIdx!=='number')return null;
   const wt=c.weekTag;
   let set=null;
-  if(typeof wt==='string'&&wt)set=_nwImgSets.get(_iwkKey(tn,wt))||null;
-  if(!set&&_nwImgLatest[tn]!==undefined)set=_nwImgSets.get(_iwkKey(tn,_nwImgLatest[tn]))||null;
+  if(typeof wt==='string'&&wt)set=_nwImgSets.get(_iwkKey(bs,tn,wt))||null;
+  const latestKey=bs+_IWK_SEP+tn;
+  if(!set&&_nwImgLatest[latestKey]!==undefined)set=_nwImgSets.get(_iwkKey(bs,tn,_nwImgLatest[latestKey]))||null;
   if(!set)return null;
   const cnt=_posClashCount(tn);
   if(set.count!==cnt||c.testIdx<0||c.testIdx>=set.count)return null;
   const pf=(set.filenames||[])[c.testIdx];
   if(!pf)return null;
-  const idx=_nwImages.get(tn+'::'+set.weekTag+'::'+pf);
+  const idx=_nwImages.get(bs+_IWK_SEP+tn+'::'+set.weekTag+'::'+pf);
   return idx===undefined?null:{idx,filename:pf,set};
 }
 /* IMG-WEEK-KEYING end */
 let _pendingImgTest=null;   // set by the load-images modal before the folder picker fires
 /* IMG-FIX end */
+/* Determine buildingScope for a testName by scanning S.clashes. If all
+   clashes with this testName have the same scope, use it; otherwise use the
+   first one found (legacy manual loads before parsing). */
+function _imgGetBuildingScope(testName){
+  if(!testName||!S.clashes||!Array.isArray(S.clashes))return '';
+  const scopes=new Set();
+  for(let c of S.clashes){
+    if((c.rawTestName||c.testName)===testName){
+      if(c.buildingScope)scopes.add(c.buildingScope);
+    }
+  }
+  if(scopes.size===1)return Array.from(scopes)[0];
+  return scopes.size>0?Array.from(scopes)[0]:'';
+}
 let _idb=null;
 /* INV-008 start: cached in-flight openIDB() promise. window.onload fires
    initNwImages() and initPlans() back-to-back, both calling openIDB()
@@ -4861,8 +4903,10 @@ function loadNwImages(files,testName,weekTag){
      valid week-YYMMDD tag is used as given; anything else means the test's
      current latest set (the modal loader and paste imports), else 'untagged'.
      Only the SAME (test, week) set is superseded — other weeks' sets stay. */
-  const _iwkTag=_iwkResolveLoadTag(testName,weekTag);
-  const _iwkSetKey=_iwkKey(testName,_iwkTag);
+  /* IMG-KEY-BUILDING-MIGRATION: infer buildingScope from clash data. */
+  const _iwkBuildingScope=_imgGetBuildingScope(testName);
+  const _iwkTag=_iwkResolveLoadTag(_iwkBuildingScope,testName,weekTag);
+  const _iwkSetKey=_iwkKey(_iwkBuildingScope,testName,_iwkTag);
   const _iwkPrev=_nwImgSets.get(_iwkSetKey)||null;
   /* IMG-ORPHAN-CLEANUP: remember the range being superseded so its records
      can be deleted once the new metadata is safely written (INV-011). */
@@ -4886,7 +4930,7 @@ function loadNwImages(files,testName,weekTag){
   imgFiles.forEach(f=>filenames.push(f.name));
   /* IMG-WEEK-KEYING: register the set synchronously (the batch loop reads the
      derived _nwImgByTest for the next test), then rebuild the derived views. */
-  _nwImgSets.set(_iwkSetKey,{testName,weekTag:_iwkTag,firstIdx,count:total,filenames,loadedAt:Date.now()});
+  _nwImgSets.set(_iwkSetKey,{testName,weekTag:_iwkTag,buildingScope:_iwkBuildingScope,firstIdx,count:total,filenames,loadedAt:Date.now()});
   _iwkRebuildViews();
 
   /* IMG-BATCH-BACKPRESSURE start: this used to open a FileReader for EVERY
@@ -5612,7 +5656,17 @@ async function _imgWeekKeyingMigrate(opts){
     Object.keys(src).forEach(k=>{const t=src[k];if(t&&typeof t==='object'&&t.testName)scratch.set(k,Object.assign({},t,{filenames:(t.filenames||[]).slice()}));});
   }else{
     Object.entries(meta.byTest||{}).forEach(([tn,info])=>{
-      scratch.set(_iwkKey(tn,_IWK_UNTAGGED),{testName:tn,weekTag:_IWK_UNTAGGED,firstIdx:(info&&info.firstIdx)|0,count:(info&&info.count)|0,
+      /* IMG-KEY-BUILDING-MIGRATION: recover buildingScope for legacy data */
+      let bs='';
+      if(S.clashes&&Array.isArray(S.clashes)){
+        for(let c of S.clashes){
+          if((c.rawTestName||c.testName)===tn&&c.buildingScope){
+            bs=c.buildingScope;
+            break;
+          }
+        }
+      }
+      scratch.set(_iwkKey(bs,tn,_IWK_UNTAGGED),{testName:tn,weekTag:_IWK_UNTAGGED,buildingScope:bs,firstIdx:(info&&info.firstIdx)|0,count:(info&&info.count)|0,
         filenames:((info&&info.filenames)||[]).slice(),loadedAt:meta.loadedAt||null,synth:true});
     });
   }
@@ -5636,7 +5690,7 @@ async function _imgWeekKeyingMigrate(opts){
     const to=tag||_IWK_UNTAGGED;
     const row={testName:t.testName,from:t.weekTag,to,clashesSeen:seen,images:t.count|0};
     out.assignments.push(row);
-    const nk=_iwkKey(t.testName,to);
+    const nk=_iwkKey(t.buildingScope||'',t.testName,to);
     if(nk!==k&&scratch.has(nk)){
       // A real set for that week already exists (loaded after the store was
       // written). Keep the synthesised one untagged so nothing is overwritten.
@@ -6022,11 +6076,10 @@ async function getNwImageB64(c){
      "pretend to match" fallback that returned arbitrary images. Misses now
      correctly return null so the SVG plan placeholder renders instead. */
   const ref=c.nwImageRef||'';
-  /* PR-A11-IMAGE-KEY-RAWTESTNAME start: read raw testName so
-     post-PR-A6 display suffix "(FAB)" / "(CUP)" doesn't defeat the
-     composite key. Fallback preserves pre-A6 lookups. Region 2 of 4. */
+  /* Use buildingScope as the key discriminant (part of IMG-KEY-BUILDING).
+     buildingScope precisely separates FAB vs CUP, avoiding any display-suffix
+     issues. rawTestName is still used to get the actual test name. */
   const tn=c.rawTestName||c.testName||'';
-  /* PR-A11-IMAGE-KEY-RAWTESTNAME end */
   /* IMG-WEEK-KEYING: resolve through the clash's own week set first; the
      latest set only when the clash's week has no set. Same for positional. */
   if(ref&&tn){
@@ -19967,7 +20020,8 @@ Penetration: ${xe(c.penetration)} | Detected: ${xe(c.date)}</Description>
           // Try composite key first (IMG-WEEK-KEYING: the clash's own week set, then latest)
           if(ref&&tn){
             if(_iwkLookupIdx(c)!==null){
-              return `<span style="font-size:9px;font-weight:600;color:#00B050" title="Loaded as ${esc(ref)} under test ${esc(tn)}${(typeof c.weekTag==='string'&&c.weekTag&&_nwImgSets.has(_iwkKey(tn,c.weekTag)))?(' ('+esc(c.weekTag)+')'):''}">📷 NW screenshot</span>`;
+              const bs=c&&c.buildingScope||'';
+              return `<span style="font-size:9px;font-weight:600;color:#00B050" title="Loaded as ${esc(ref)} under test ${esc(tn)}${(typeof c.weekTag==='string'&&c.weekTag&&_nwImgSets.has(_iwkKey(bs,tn,c.weekTag)))?(' ('+esc(c.weekTag)+')'):''}">📷 NW screenshot</span>`;
             }
           }
           /* IMG-POS: try positional match before declaring failure */
