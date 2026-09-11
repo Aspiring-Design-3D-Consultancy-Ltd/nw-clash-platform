@@ -4870,7 +4870,7 @@ function updateNwImgUI(){
   });
 }
 
-function loadNwImages(files,testName,weekTag){
+function loadNwImages(files,testName,weekTag,buildingScope){
   /* IMG-FIX start: per-test loading with composite key. testName argument is
      required — set by the load-images modal via _pendingImgTest. If absent we
      bail with a clear error to prevent the old "unassociated" behaviour. */
@@ -4878,6 +4878,9 @@ function loadNwImages(files,testName,weekTag){
   _pendingImgTest=null; // consume one-shot
   if(!testName){showToast('Pick a clash test first — use the Load NWC Images button',6000);return;}
   if(!files||!files.length)return;
+  /* IMG-REATTACH-PATH-KEYING: buildingScope parameter disambiguates folders
+     with identical names in different buildings */
+  if(!buildingScope)buildingScope=_imgGetBuildingScope(testName);
   const imgFiles=[...files].filter(f=>/\.(jpe?g|png)$/i.test(f.name));
   if(!imgFiles.length){showToast('No image files found in that folder');return;}
   /* IMG-COUNT-CHECK: record intended batch image count so the pre-merge
@@ -10062,21 +10065,29 @@ function _bifShowShapeWarn(archiveName){
 
 /* Bucket a webkitdirectory pick: images by their parent _files folder (handles
    nesting), everything else that could be a report as a candidate. */
+/* IMG-REATTACH-PATH-KEYING start: bucket by full path, not folder leaf, to
+   disambiguate folders with identical names in different buildings. */
 function _bifBucketFolderFiles(all){
   const reportCandidates=[];
-  const imagesByFolder={};
+  const imagesByPath={};
+  const buildingScopeByPath={};
   all.forEach(f=>{
     const path=f.webkitRelativePath||f.name;
     const parts=path.split('/');
     const parentDir=parts.length>=2?parts[parts.length-2]:'';
     if(/\.(jpe?g|png)$/i.test(f.name)&&/_files$/i.test(parentDir)){
-      (imagesByFolder[parentDir]=imagesByFolder[parentDir]||[]).push(f);
+      const buildingMatch=/^(FAB|CUP)\s/.exec(parts[parts.length-3]||'');
+      const buildingScope=buildingMatch?buildingMatch[1]:'';
+      const fullPath=parts.slice(0,-1).join('/');
+      (imagesByPath[fullPath]=imagesByPath[fullPath]||[]).push(f);
+      buildingScopeByPath[fullPath]=buildingScope;
     } else if(!/\.(zip|pdf|docx?|xlsx?|nwf|nwc|nwd|json|css|js|gif|svg|ico|mp4|wav|mp3)$/i.test(f.name)){
       reportCandidates.push(f);
     }
   });
-  return {reportCandidates,imagesByFolder};
+  return {reportCandidates,imagesByPath,buildingScopeByPath};
 }
+/* IMG-REATTACH-PATH-KEYING end */
 
 /* Identify which candidates are Navisworks reports by sniffing the first 4 KB.
    This is the only file content the re-attach tool reads — it needs the report
@@ -10096,25 +10107,30 @@ async function _bifSniffXmlFiles(reportCandidates){
 
 /* Pair each report with its images folder: `<baseName>_files`, with the
    single-test fallback for folders where the one _files sibling is
-   unambiguous despite a naming mismatch. */
-function _bifMatchImageJobs(xmlFiles,imagesByFolder){
+   unambiguous despite a naming mismatch. Extract buildingScope from path. */
+function _bifMatchImageJobs(xmlFiles,imagesByPath,buildingScopeByPath){
   return xmlFiles.map(xmlFile=>{
     const baseName=xmlFile.name.replace(/\.[^.]+$/,'');
-    const expectedImgFolder=baseName+'_files';
-    let matchedImages=imagesByFolder[expectedImgFolder]||[];
+    const xmlPath=xmlFile.webkitRelativePath||xmlFile.name;
+    const xmlParts=xmlPath.split('/');
+    const xmlDir=xmlParts.slice(0,-1).join('/');
+    const expectedImgPath=xmlDir+'/'+baseName+'_files';
+    let matchedImages=imagesByPath[expectedImgPath]||[];
+    let buildingScope=buildingScopeByPath[expectedImgPath]||'';
     // Fallback for single-test folders where the images folder is the only
     // _files folder in the same directory (handles minor naming mismatches)
     if(!matchedImages.length&&xmlFiles.length===1){
-      const xmlPath=xmlFile.webkitRelativePath||xmlFile.name;
-      const xmlDir=xmlPath.split('/').slice(0,-1).join('/');
-      const siblings=Object.keys(imagesByFolder).filter(k=>{
-        const samplePath=imagesByFolder[k][0].webkitRelativePath||'';
+      const siblings=Object.keys(imagesByPath).filter(k=>{
+        const samplePath=imagesByPath[k][0].webkitRelativePath||'';
         const folderDir=samplePath.split('/').slice(0,-2).join('/');
         return folderDir===xmlDir;
       });
-      if(siblings.length===1)matchedImages=imagesByFolder[siblings[0]];
+      if(siblings.length===1){
+        matchedImages=imagesByPath[siblings[0]];
+        buildingScope=buildingScopeByPath[siblings[0]]||'';
+      }
     }
-    return {xmlFile,baseName,matchedImages};
+    return {xmlFile,baseName,matchedImages,buildingScope};
   });
 }
 
@@ -10145,7 +10161,7 @@ async function reattachImagesFromArchive(inputEl){
   const all=[...inputEl.files];
   if(!all.length)return;
 
-  const {reportCandidates,imagesByFolder}=_bifBucketFolderFiles(all);
+  const {reportCandidates,imagesByPath,buildingScopeByPath}=_bifBucketFolderFiles(all);
   if(!reportCandidates.length){
     showToast('No report file found in this folder',5000);
     inputEl.value='';
@@ -10158,7 +10174,7 @@ async function reattachImagesFromArchive(inputEl){
     inputEl.value='';
     return;
   }
-  const jobs=_bifMatchImageJobs(xmlFiles,imagesByFolder);
+  const jobs=_bifMatchImageJobs(xmlFiles,imagesByPath,buildingScopeByPath);
   const withImages=jobs.filter(j=>j.matchedImages.length>0);
   if(!withImages.length){
     showToast(`Found ${jobs.length} test${jobs.length===1?'':'s'} but no matching _files image folders — nothing to re-attach`,7000);
@@ -10193,10 +10209,10 @@ async function reattachImagesFromArchive(inputEl){
 
   let attached=0,failedImages=0,failedTests=0;
   for(let i=0;i<withImages.length;i++){
-    const {baseName,matchedImages}=withImages[i];
+    const {baseName,matchedImages,buildingScope}=withImages[i];
     showToast(`[${i+1}/${withImages.length}] Re-attaching "${baseName}" — ${matchedImages.length} image${matchedImages.length===1?'':'s'}…`,3500);
     try{
-      const res=await loadNwImages(matchedImages,baseName,_weekTag); /* IMG-WEEK-KEYING */
+      const res=await loadNwImages(matchedImages,baseName,_weekTag,buildingScope); /* IMG-WEEK-KEYING */
       const stored=(res&&res.stored)||0;
       const failed=(res&&res.failed)||0;
       attached+=stored;
@@ -10336,7 +10352,7 @@ async function importFolderPick(inputEl){
 
   /* IMG-REATTACH-ARCHIVE: bucketing moved to _bifBucketFolderFiles so the
      archive re-attach tool shares this matcher instead of forking one. */
-  const {reportCandidates,imagesByFolder}=_bifBucketFolderFiles(all);
+  const {reportCandidates,imagesByPath,buildingScopeByPath}=_bifBucketFolderFiles(all);
 
   if(!reportCandidates.length){
     showToast('No report file found in this folder',5000);
@@ -10356,17 +10372,17 @@ async function importFolderPick(inputEl){
   }
 
   /* IMG-REATTACH-ARCHIVE: shared report<->images pairing. */
-  const jobs=_bifMatchImageJobs(xmlFiles,imagesByFolder);
+  const jobs=_bifMatchImageJobs(xmlFiles,imagesByPath,buildingScopeByPath);
 
   // SINGLE-TEST PATH: original behaviour — load XML, await user click on Append/Replace.
   // Keeps the preview-then-confirm flow for one-off imports.
   if(jobs.length===1){
-    const {xmlFile,baseName,matchedImages}=jobs[0];
+    const {xmlFile,baseName,matchedImages,buildingScope}=jobs[0];
     showToast(`Importing "${baseName}" — XML + ${matchedImages.length} image${matchedImages.length===1?'':'s'}`,4000);
     window._pendingImgTest=baseName;
     bloadf({files:[xmlFile]});
     if(matchedImages.length){
-      loadNwImages(matchedImages,baseName,_extractWeekTag(xmlFile.webkitRelativePath||'')); /* IMG-WEEK-KEYING */
+      loadNwImages(matchedImages,baseName,_extractWeekTag(xmlFile.webkitRelativePath||''),buildingScope); /* IMG-WEEK-KEYING */
     } else {
       showToast(`Loaded "${baseName}" — no matching images folder found`,5000);
     }
@@ -10401,7 +10417,7 @@ async function importFolderPick(inputEl){
   /* STORAGE-WRITE-GUARD-BATCH end */
 
   for(let i=0;i<jobs.length;i++){
-    const {xmlFile,baseName,matchedImages}=jobs[i];
+    const {xmlFile,baseName,matchedImages,buildingScope}=jobs[i];
     showToast(`[${i+1}/${jobs.length}] Importing "${baseName}" — ${matchedImages.length} images…`,3500);
 
     try{
@@ -10426,7 +10442,7 @@ async function importFolderPick(inputEl){
       window._pendingImgTest=baseName;
       if(matchedImages.length){
         try{
-          const _imgRes=await loadNwImages(matchedImages,baseName,_extractWeekTag(xmlFile.webkitRelativePath||'')); /* IMG-WEEK-KEYING */
+          const _imgRes=await loadNwImages(matchedImages,baseName,_extractWeekTag(xmlFile.webkitRelativePath||''),buildingScope); /* IMG-WEEK-KEYING */
           if(_imgRes&&_imgRes.failed){
             try{console.warn('[IMG-BATCH-BACKPRESSURE-AWAIT] "'+baseName+'": '+
               _imgRes.failed+' of '+_imgRes.total+' images failed to store; clash import continues.');}catch(e){}

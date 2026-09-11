@@ -153,7 +153,7 @@ test.describe('IMG-BATCH-BACKPRESSURE', () => {
     await bootstrap(page);
     const kind = await page.evaluate(() => {
       const f = new File(['x'], 'cd000001.jpg', { type: 'image/jpeg' });
-      const r = loadNwImages([f], 'probe-test');
+      const r = loadNwImages([f], 'probe-test', '2026-W00');
       return { isThenable: !!(r && typeof r.then === 'function') };
     });
     // Pre-fix loadNwImages returned undefined, so the batch loop had nothing to
