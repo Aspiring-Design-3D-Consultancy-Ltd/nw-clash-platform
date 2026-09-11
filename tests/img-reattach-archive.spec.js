@@ -232,9 +232,9 @@ test.describe('IMG-REATTACH-ARCHIVE', () => {
     test.setTimeout(90000);
     await bootstrap(page);
     const r = await runReattach(page, { week: 'week-260622', tests: ['T1', 'T2'], imgs: 2 });
-    expect(r.sets).toEqual(['T1\u241Fweek-260622', 'T2\u241Fweek-260622']);
-    expect(r.latest).toEqual({ T1: 'week-260622', T2: 'week-260622' });
-    expect(r.byTest).toEqual({ T1: 2, T2: 2 });
+    expect(r.sets).toEqual(['CUP\u241FT1\u241Fweek-260622', 'CUP\u241FT2\u241Fweek-260622']);
+    expect(r.latest).toEqual({ 'CUP::T1': 'week-260622', 'CUP::T2': 'week-260622' });
+    expect(r.byTest).toEqual({ 'CUP::T1': 2, 'CUP::T2': 2 });
   });
 
   test('IMG-WEEK-KEYING — a second week accumulates alongside the first; the latest pointer follows the week date', async ({ page }) => {
@@ -244,9 +244,9 @@ test.describe('IMG-REATTACH-ARCHIVE', () => {
     const earlier = await runReattach(page, { week: 'week-260622', tests: ['T1', 'T2'], imgs: 2 });
     expect(later.imageRecords).toBe(6);
     expect(earlier.imageRecords).toBe(10);                      // 6 + 4, nothing superseded across weeks
-    expect(earlier.sets).toEqual(['T1\u241Fweek-260622', 'T1\u241Fweek-260629', 'T2\u241Fweek-260622', 'T2\u241Fweek-260629']);
-    expect(earlier.latest).toEqual({ T1: 'week-260629', T2: 'week-260629' });   // by date, though loaded first
-    expect(earlier.byTest).toEqual({ T1: 3, T2: 3 });                            // derived view mirrors the latest week
+    expect(earlier.sets).toEqual(['CUP\u241FT1\u241Fweek-260622', 'CUP\u241FT1\u241Fweek-260629', 'CUP\u241FT2\u241Fweek-260622', 'CUP\u241FT2\u241Fweek-260629']);
+    expect(earlier.latest).toEqual({ 'CUP::T1': 'week-260629', 'CUP::T2': 'week-260629' });   // by date, though loaded first
+    expect(earlier.byTest).toEqual({ 'CUP::T1': 3, 'CUP::T2': 3 });                            // derived view mirrors the latest week
     expect(earlier.nwImgCount).toBe(10);
     // Re-running the earlier week supersedes only that week.
     const again = await runReattach(page, { week: 'week-260622', tests: ['T1', 'T2'], imgs: 2 });

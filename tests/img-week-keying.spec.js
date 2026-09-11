@@ -46,7 +46,7 @@ const _mkFile = (name, seed) => new Promise(res => {
 const files = async (n, seed) => { const out = []; for (let i = 1; i <= n; i++) out.push(await _mkFile('img' + i + '.png', seed + i)); return out; };
 const W1 = 'week-260601', W2 = 'week-260608', W3 = 'week-260615';
 const slotB64 = async (key) => { const idx = _nwImages.get(key); return idx === undefined ? null : (await idbGet(idx)).b64; };
-const clash = (over) => Object.assign({ uid: 'X', rawTestName: 'T1', testName: 'T1 (CUP)', nwImageRef: 'img1.png', weekTag: W1 }, over || {});
+const clash = (over) => Object.assign({ uid: 'X', rawTestName: 'T1', testName: 'T1 (CUP)', buildingScope: 'CUP', nwImageRef: 'img1.png', weekTag: W1 }, over || {});
 `;
 
 test.describe('IMG-WEEK-KEYING — per-week resolution', () => {
@@ -55,8 +55,8 @@ test.describe('IMG-WEEK-KEYING — per-week resolution', () => {
     const r = await page.evaluate(`(async () => { ${MAKERS}
       await loadNwImages(await files(3, 0), 'T1', W1);
       await loadNwImages(await files(3, 100), 'T1', W2);
-      const w1 = await slotB64('T1::' + W1 + '::img1.png');
-      const w2 = await slotB64('T1::' + W2 + '::img1.png');
+      const w1 = await slotB64('CUP::T1::' + W1 + '::img1.png');
+      const w2 = await slotB64('CUP::T1::' + W2 + '::img1.png');
       const a = await getNwImageB64(clash({ weekTag: W1 }));
       const b = await getNwImageB64(clash({ weekTag: W2 }));
       return { w1, w2, a, b, hasA: hasNwImage(clash({ weekTag: W1 })), hasB: hasNwImage(clash({ weekTag: W2 })),
@@ -77,13 +77,13 @@ test.describe('IMG-WEEK-KEYING — per-week resolution', () => {
     const r = await page.evaluate(`(async () => { ${MAKERS}
       await loadNwImages(await files(2, 100), 'T1', W2);   // newer week loaded FIRST
       await loadNwImages(await files(2, 0), 'T1', W1);     // older week loaded second
-      const w2 = await slotB64('T1::' + W2 + '::img1.png');
+      const w2 = await slotB64('CUP::T1::' + W2 + '::img1.png');
       return {
         w2,
         legacy: await getNwImageB64(clash({ weekTag: null })),       // no week on the clash
         unknownWeek: await getNwImageB64(clash({ weekTag: W3 })),    // week with no set
-        latest: _nwImgLatest.T1,
-        byTestFirst: _nwImgByTest.T1.firstIdx, w2First: _nwImgSets.get(_iwkKey('T1', W2)).firstIdx,
+        latest: _nwImgLatest['CUP::T1'],
+        byTestFirst: _nwImgByTest.T1.firstIdx, w2First: _nwImgSets.get(_iwkKey('CUP', 'T1', W2)).firstIdx,
       };
     })()`);
     expect(r.legacy).toBe(r.w2);
@@ -112,13 +112,13 @@ test.describe('IMG-WEEK-KEYING — per-week resolution', () => {
     await bootstrap(page);
     const r = await page.evaluate(`(async () => { ${MAKERS}
       const untaggedOnly = await loadNwImages(await files(1, 0), 'T1');           // no sets yet → untagged
-      const tagUntagged = _nwImgLatest.T1;
+      const tagUntagged = _nwImgLatest['CUP::T1'];
       await loadNwImages(await files(2, 10), 'T1', W1);
       await loadNwImages(await files(2, 20), 'T1', W2);
       const res = await loadNwImages(await files(3, 30), 'T1');                   // no week → replaces W2
       return { untaggedOnly: untaggedOnly.weekTag, tagUntagged, res: res.weekTag, superseded: res.superseded,
-        sets: [..._nwImgSets.keys()].sort(), w1Count: _nwImgSets.get(_iwkKey('T1', W1)).count, w2Count: _nwImgSets.get(_iwkKey('T1', W2)).count,
-        w2First: _nwImgSets.get(_iwkKey('T1', W2)).firstIdx, keys: await idbGetAllKeys() };
+        sets: [..._nwImgSets.keys()].sort(), w1Count: _nwImgSets.get(_iwkKey('CUP', 'T1', W1)).count, w2Count: _nwImgSets.get(_iwkKey('CUP', 'T1', W2)).count,
+        w2First: _nwImgSets.get(_iwkKey('CUP', 'T1', W2)).firstIdx, keys: await idbGetAllKeys() };
     })()`);
     expect(r.untaggedOnly).toBe('untagged');
     expect(r.tagUntagged).toBe('untagged');
@@ -197,12 +197,12 @@ test.describe('IMG-WEEK-KEYING — metadata shape, restore and migration', () =>
     const r = await page.evaluate(`(async () => { ${MAKERS}
       await loadNwImages(await files(2, 0), 'T1', W1);
       await loadNwImages(await files(2, 100), 'T1', W2);
-      const w1 = await slotB64('T1::' + W1 + '::img2.png');
+      const w1 = await slotB64('CUP::T1::' + W1 + '::img2.png');
       _nwImgSets.clear(); Object.keys(_nwImgLatest).forEach(k => delete _nwImgLatest[k]);
       Object.keys(_nwImgByTest).forEach(k => delete _nwImgByTest[k]); _nwImages.clear(); _nwImagesByIndex.length = 0; _nwImgCount = 0;
       if (!S.clashes.length) S.clashes.push({ uid: 'keep-orphan-sweep-off' });
       await initNwImages();
-      return { sets: _nwImgSets.size, latest: _nwImgLatest.T1, count: _nwImgCount,
+      return { sets: _nwImgSets.size, latest: _nwImgLatest['CUP::T1'], count: _nwImgCount,
         resolved: await getNwImageB64(clash({ weekTag: W1, nwImageRef: 'img2.png' })), w1 };
     })()`);
     expect(r.sets).toBe(2);
@@ -219,9 +219,9 @@ test.describe('IMG-WEEK-KEYING — metadata shape, restore and migration', () =>
       await idbPut(1, { b64: 'OLD-A', dhash: null }); await idbPut(2, { b64: 'OLD-B', dhash: null });
       const total = _iwkRestore(await idbGet(0));
       _nwImgCount = total;
-      const set = _nwImgSets.get(_iwkKey('T1', 'untagged'));
+      const set = _nwImgSets.get(_iwkKey('CUP', 'T1', 'untagged'));
       return { total, set: set && { weekTag: set.weekTag, synth: set.synth, firstIdx: set.firstIdx, count: set.count },
-        latest: _nwImgLatest.T1, byTest: _nwImgByTest.T1,
+        latest: _nwImgLatest['CUP::T1'], byTest: _nwImgByTest['CUP::T1'],
         taggedClash: await getNwImageB64(clash({ weekTag: W1, nwImageRef: 'b.png' })),   // week has no set → latest
         legacyClash: await getNwImageB64(clash({ weekTag: null, nwImageRef: 'a.png' })) };
     })()`);
@@ -286,7 +286,7 @@ test.describe('IMG-WEEK-KEYING — metadata shape, restore and migration', () =>
       const res = await _imgWeekKeyingMigrate({ dryRun: false });
       window.idbPut = oPut;
       return { res: { ok: res.ok, verified: res.verified, reason: res.reason }, same: before === JSON.stringify(await idbGet(0)),
-        gate: localStorage.getItem('nw:imgWeekKeyingMigrated'), memSet: _nwImgSets.get(_iwkKey('T1', 'untagged')) ? 'untagged' : 'moved' };
+        gate: localStorage.getItem('nw:imgWeekKeyingMigrated'), memSet: _nwImgSets.get(_iwkKey('CUP', 'T1', 'untagged')) ? 'untagged' : 'moved' };
     })()`);
     expect(r.res.ok).toBe(false);
     expect(r.res.reason).toMatch(/gate not set/);
