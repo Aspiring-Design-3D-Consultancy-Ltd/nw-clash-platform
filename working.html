@@ -11786,9 +11786,9 @@ function importToRegister(mode){
       const newPen=c.depMm+'mm';
       const stChanged=(exist.status!==c.mappedSt);
       const geomChanged=(exist.penetration!==newPen||exist.x!==c.x||exist.y!==c.y||exist.z!==c.z);
-      /* TERMINAL-STATUS-GUARD start: DEC-021 — prevent terminal statuses
+      /* PR-03-CLOCK2-STATUS-TRANSITIONS start: DEC-021 — prevent terminal statuses
          (Approved/Resolved) from being downgraded by XML imports. Decision table:
-         - exist non-terminal × anything: proceed with PR-03-CLOCK2 (status changes, history entry)
+         - exist non-terminal × anything: proceed with standard logic (status changes, history entry)
          - exist Approved × New/Active/Reviewed: block downgrade, no history entry
          - exist Approved × Approved: no change
          - exist Resolved × Approved: allow upgrade, new history entry (source:'Import')
@@ -11850,7 +11850,7 @@ function importToRegister(mode){
           }
         }
       }
-      /* TERMINAL-STATUS-GUARD end */
+      /* PR-03-CLOCK2-STATUS-TRANSITIONS end */
       if(geomChanged){exist.penetration=newPen;exist.x=c.x;exist.y=c.y;exist.z=c.z;}
       /* PAIR-KEY-COORD-TIER-USE: stamp tier + refresh coordinates when the
          match came from the coord fall-through (source-model republishing
@@ -11899,21 +11899,12 @@ function importToRegister(mode){
          already tagged to `week-260601` that gets re-imported inside
          `week-260629` correctly relearns the newer tag — this IS the
          semantic the weekly model needs: the register clash reflects
-         the most recent week it was observed in. Skip on TERMINAL-STATUS-GUARD
+         the most recent week it was observed in. Skip on PR-03-CLOCK2-STATUS-TRANSITIONS
          held clashes (Resolved→New/Active/Reviewed) per DEC-020. */
       if(!statusHeld){
         if(c.weekTag)exist.weekTag=c.weekTag;
         if(c.weekDate)exist.weekDate=c.weekDate;
       }
-      /* EA-EB-FLATTENING start: refresh Layer A nested objects on re-import to preserve
-         baseLevel and gridHead values that may have changed in the source model. */
-      if(c.eA){
-        exist.eA={id:c.eA.id,idSrc:c.eA.idSrc,item:c.eA.item,layer:c.eA.layer,source:c.eA.source,baseLevel:c.eA.baseLevel,gridHead:c.eA.gridHead};
-      }
-      if(c.eB){
-        exist.eB={id:c.eB.id,idSrc:c.eB.idSrc,item:c.eB.item,layer:c.eB.layer,source:c.eB.source,baseLevel:c.eB.baseLevel,gridHead:c.eB.gridHead};
-      }
-      /* EA-EB-FLATTENING end */
       if(stChanged||geomChanged){updated++;/* DUP-FILES-FIX */_bumpPF(c,'updated');}else{unchanged++;/* DUP-FILES-FIX */_bumpPF(c,'unchanged');}
       return;
     }
