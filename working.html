@@ -11821,10 +11821,10 @@ function importToRegister(mode){
         if(c.mappedSt==='Resolved'){
           // Resolved→Resolved: no change
         }else if(c.mappedSt==='Approved'){
-          // Allow upgrade: Resolved→Approved
+          // Allow upgrade: Resolved→Approved (per DEC-021)
           if(stChanged){
             const wy=_weekYearFromISO(c.weekDate)||_weekYearNow();
-            pushStatusHistory(exist,c.mappedSt,wy);
+            _appendStatusHistory(exist,{week:wy.week,year:wy.year,status:'Approved',source:'Import'});
           }
           exist.status=c.mappedSt;
         }else{
