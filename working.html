@@ -510,6 +510,9 @@ function _crApproveConfirm(){
       <!-- REVIEW-QUEUE-TAB start: nav entry + badge for disappeared-clash queue -->
       <div class="na" id="na-review" onclick="nav('review')"><span class="ni">🔍</span>Review Queue<span class="na-badge" id="na-review-badge" hidden>0</span></div>
       <!-- REVIEW-QUEUE-TAB end -->
+      <!-- REAPPEARED-QUEUE start: nav entry + badge for Resolved clashes held on reappearance -->
+      <div class="na" id="na-reappeared" onclick="nav('reappeared')"><span class="ni">↻</span>Reappeared Queue<span class="na-badge" id="na-reappeared-badge" hidden>0</span></div>
+      <!-- REAPPEARED-QUEUE end -->
       <!-- DEDUP-QUEUE-TAB start: nav entry + badge for candidate duplicate pairs -->
       <div class="na" id="na-dedup" onclick="nav('dedup')"><span class="ni">🧬</span>Dedup Queue<span class="na-badge" id="na-dedup-badge" hidden>0</span></div>
       <!-- DEDUP-QUEUE-TAB end -->
@@ -1768,7 +1771,7 @@ function doLock(){
 }
 
 /* ═══════ NAV ═══════ */
-const VT={dashboard:'Dashboard',heatmap:'Spatial Heatmap',register:'Clash Register',board:'Board View',/* REVIEW-QUEUE-TAB */review:'Review Queue',/* DEDUP-QUEUE-TAB */dedup:'Dedup Queue',bcf:'BCF Generator',priority:'Priority Guide',help:'User Guide',data:'Data Manager',settings:'Settings'};
+const VT={dashboard:'Dashboard',heatmap:'Spatial Heatmap',register:'Clash Register',board:'Board View',/* REVIEW-QUEUE-TAB */review:'Review Queue',/* REAPPEARED-QUEUE */reappeared:'Reappeared Queue',/* DEDUP-QUEUE-TAB */dedup:'Dedup Queue',bcf:'BCF Generator',priority:'Priority Guide',help:'User Guide',data:'Data Manager',settings:'Settings'};
 const VA={
   dashboard:'<div style="display:flex;gap:6px"><button class="tbtn ac" onclick="exportReport(&apos;report&apos;)" style="flex:1;text-align:center">&#x1F4CB; Weekly Report</button><button class="tbtn" onclick="exportPPTX()" style="flex:1;text-align:center;background:#EA7600;color:#fff;border-color:#EA7600">&#x1F4CA; Export PPTX</button><button class="tbtn" onclick="closeApp()" style="flex:1;text-align:center;background:#475569;color:#fff;border-color:#475569">&#x2715; Close</button></div>',
   register:'<button class="tbtn tbtn-fw" onclick="showAF()">+ Add clash</button><button class="tbtn tbtn-fw" onclick="dlCSV()">&#x2193; CSV</button><button class="tbtn tbtn-fw" onclick="showBCFImportPanel()">&#x2191; BCF In</button><button class="tbtn tbtn-fw" onclick="dlBCF()">&#x2193; BCF Out</button><button class="tbtn tbtn-fw" onclick="showIsoRenameModal()">🏷 Rename Clashes</button>',
@@ -1806,7 +1809,7 @@ function nav(v){
   if(v==='heatmap')initHeatmap();
   if(v==='register')setTimeout(filterReg,0);
 }
-function rv(v){switch(v){case 'dashboard':return rDash();case 'heatmap':return rHeatmap();case 'register':return rReg();case 'board':return rBoard();/* REVIEW-QUEUE-VIEW */case 'review':return rReview();/* DEDUP-QUEUE-VIEW */case 'dedup':return rDedup();case 'bcf':return rBCF();case 'priority':return rPri();case 'help':return rHelp();case 'data':return rData();case 'settings':return rSet();default:return '';}}
+function rv(v){switch(v){case 'dashboard':return rDash();case 'heatmap':return rHeatmap();case 'register':return rReg();case 'board':return rBoard();/* REVIEW-QUEUE-VIEW */case 'review':return rReview();/* REAPPEARED-QUEUE */case 'reappeared':return rReappeared();/* DEDUP-QUEUE-VIEW */case 'dedup':return rDedup();case 'bcf':return rBCF();case 'priority':return rPri();case 'help':return rHelp();case 'data':return rData();case 'settings':return rSet();default:return '';}}
 
 /* ═══════ SIDEBAR & STRIP ═══════ */
 function updSB(){
@@ -1824,6 +1827,18 @@ function updSB(){
     if(_rqN>0)_rqBadge.removeAttribute('hidden');else _rqBadge.setAttribute('hidden','');
   }
   /* REVIEW-QUEUE-TAB end */
+  /* REAPPEARED-QUEUE start: open-reappearance count on the sidebar badge.
+     Counts clashes with an open c.reappearances[] entry directly off
+     S.clashes rather than the _reappearedQueue render cache, so the
+     badge is correct even before the Reappeared Queue view has been
+     opened once (same reasoning as the Review Queue badge above). */
+  const _rpqBadge=document.getElementById('na-reappeared-badge');
+  if(_rpqBadge){
+    const _rpqN=(S.clashes||[]).filter(c=>!!_reappearedOpenEntry(c)).length;
+    _rpqBadge.textContent=String(_rpqN);
+    if(_rpqN>0)_rpqBadge.removeAttribute('hidden');else _rpqBadge.setAttribute('hidden','');
+  }
+  /* REAPPEARED-QUEUE end */
   /* DEDUP-QUEUE-TAB start: candidate pair count on the sidebar badge. */
   const _dqBadge=document.getElementById('na-dedup-badge');
   if(_dqBadge){
@@ -3148,6 +3163,81 @@ function _migrateCUBtoCUP(){
   return changes.length>0;
 }
 /* CUB-TO-CUP-MIGRATION end */
+/* REAPPEARED-QUEUE start: data layer for the "a Resolved clash came back"
+   queue (PR-B). Reads — never writes — the c.reappearances[] array that
+   DEC-020/PR-03-CLOCK2-STATUS-TRANSITIONS already populates on every
+   Resolved→New/Active/Reviewed HOLD during import (see the HOLD branch in
+   importToRegister's merge loop): {weekTag, weekDate, lastSeenWeekTag,
+   lastSeenWeekDate, batch, at, open}. A clash can only ever have one OPEN
+   entry at a time — a second reappearance before the first is actioned
+   updates lastSeenWeekTag/lastSeenWeekDate on the same entry rather than
+   pushing a new one — so "the open entry" is always reappearances[last
+   open one found]; closed entries (open:false, left by _queueReopen /
+   _queueKeepResolved below) are historical record only.
+   _weeksSinceReappearance(weekTag) converts a "week-YYMMDD" weekTag (see
+   WEEKLY-IMPORT-CAPTURE's _parseWeekDate) into whole weeks elapsed to
+   now — used both for the queue's sort tiebreak and the card's "held"
+   stat. Falls back to null (rendered as "—") when weekTag doesn't parse,
+   e.g. legacy pre-PR-03 data or a manually-added clash. */
+function _weeksSinceReappearance(weekTag){
+  const iso=_parseWeekDate(weekTag);
+  if(!iso)return null;
+  const then=new Date(iso+'T00:00:00Z').getTime();
+  if(isNaN(then))return null;
+  const days=Math.floor((Date.now()-then)/86400000);
+  return days<0?0:Math.floor(days/7);
+}
+function _reappearedOpenEntry(c){
+  const list=Array.isArray(c.reappearances)?c.reappearances:null;
+  if(!list||!list.length)return null;
+  for(let i=list.length-1;i>=0;i--){if(list[i]&&list[i].open)return list[i];}
+  return null;
+}
+/* _reappearedQueue is a rendered cache, not a source of truth — S.clashes
+   (specifically each clash's reappearances[] array) is the source of
+   truth. Refreshed by _refreshReappearedQueue() on nav('reappeared') and
+   after every REAPPEARED-QUEUE action, same lifecycle as _rqOpen for the
+   Review Queue. */
+let _reappearedQueue=[];
+function _refreshReappearedQueue(){
+  _reappearedQueue=_generateReappearedQueue();
+  return _reappearedQueue;
+}
+function _generateReappearedQueue(){
+  const out=[];
+  (S.clashes||[]).forEach(c=>{
+    const entry=_reappearedOpenEntry(c);
+    if(!entry)return;
+    out.push({
+      uid:c.uid,
+      testName:c.testName||'(unknown test)',
+      elementA:c.elementA||'',
+      elementB:c.elementB||'',
+      status:c.status||'Resolved',
+      weekTag:entry.weekTag||null,
+      weekDate:entry.weekDate||null,
+      lastSeenWeekTag:entry.lastSeenWeekTag||null,
+      lastSeenWeekDate:entry.lastSeenWeekDate||null,
+      at:entry.at||null,
+      reappearCount:Array.isArray(c.reappearances)?c.reappearances.length:1,
+      weeksSince:_weeksSinceReappearance(entry.weekTag),
+    });
+  });
+  // Sort by reappeared week ascending (oldest unactioned reappearance
+  // first — that's the one that's been sitting longest), tie-broken by
+  // reappearCount descending (a clash that's flip-flopped Resolved↔Active
+  // more than once is the more troublesome one to surface first among
+  // equals).
+  out.sort((a,b)=>{
+    const da=_parseWeekDate(a.weekTag),db=_parseWeekDate(b.weekTag);
+    if(da&&db&&da!==db)return da<db?-1:1;
+    if(da&&!db)return -1;
+    if(!da&&db)return 1;
+    return b.reappearCount-a.reappearCount;
+  });
+  return out;
+}
+/* REAPPEARED-QUEUE end */
 function _gridFor(b){
   if(!b||b==='all')return null;
   if(!S.grid||typeof S.grid!=='object')return null;
@@ -12960,6 +13050,177 @@ function reviewQueueBulkApplyDelta(tn,bucket){
   updSB();updSS();nav('review');
 }
 /* REVIEW-QUEUE-DELTA-ANALYSIS-BULK-APPLY end */
+/* REAPPEARED-QUEUE start: UI for the Reappeared Queue tab (PR-B). Visual
+   language matches Review Queue exactly (.card/.ch/.cb, group-by-test with
+   expand/collapse via a module-level open-state map, esc() on every
+   interpolated field) with one new element the design brief called for:
+   a per-card expand showing the clash's real statusHistory as a timeline,
+   ending in the reappearance itself, plus a REOPEN / KEEP RESOLVED pair
+   with a hover tooltip spelling out the difference. Violet (#6D28D9) is
+   used as this queue's accent — deliberately distinct from Review Queue's
+   orange, Approved's green and the amber warning banners, since "a
+   Resolved clash came back" is a state none of those already cover. */
+const _rpqOpen={};
+const _rpqExpanded={};
+let _rpqFilterTest='all',_rpqFilterWeek='all',_rpqFilterStatus='all',_rpqSearch='';
+function _rpqSetFilter(kind,v){
+  if(kind==='test')_rpqFilterTest=v;
+  else if(kind==='week')_rpqFilterWeek=v;
+  else if(kind==='status')_rpqFilterStatus=v;
+  nav('reappeared');
+}
+function _rpqSetSearch(v){_rpqSearch=String(v||'');nav('reappeared');}
+function _rpqWeekLabel(weekTag){
+  if(!weekTag)return '—';
+  const m=String(weekTag).match(/^week-(\d{2})(\d{2})(\d{2})$/i);
+  if(!m)return esc(weekTag);
+  return 'W/o '+m[3]+'/'+m[2]+'/'+m[1];
+}
+function _rpqHeldLabel(weeksSince){
+  if(weeksSince==null)return '—';
+  return weeksSince+' wk'+(weeksSince===1?'':'s');
+}
+function _rpqToggleGroup(tn){_rpqOpen[tn]=!_rpqOpen[tn];nav('reappeared');}
+function _rpqToggleCard(uid){_rpqExpanded[uid]=!_rpqExpanded[uid];nav('reappeared');}
+function _rpqTimelineHtml(c,entry){
+  const hist=(Array.isArray(c.statusHistory)?c.statusHistory:[])
+    .filter(h=>h&&typeof h.week==='number'&&typeof h.year==='number')
+    .slice(-4);
+  const items=hist.map(h=>{
+    const what=h.status?('Status → '+esc(h.status)):'Update';
+    const meta=h.source?('via '+esc(h.source)):(h.reviewedStillOpen?'Kept as-is':'');
+    return `<li><div class="when">W${h.week} · ${h.year}</div><div class="what">${what}</div>${meta?`<div class="meta">${meta}</div>`:''}</li>`;
+  }).join('');
+  const nowMeta='Last seen '+esc(_rpqWeekLabel(entry.lastSeenWeekTag))+' — status held at Resolved, awaiting decision';
+  return `<ul class="rpq-tl">${items}<li class="now"><div class="when">${esc(_rpqWeekLabel(entry.weekTag))}</div><div class="what">Reappeared</div><div class="meta">${nowMeta}</div></li></ul>`;
+}
+function _rpqCardExpanded(c,entry){
+  return `<div style="padding:12px 14px;border-top:.5px solid var(--bd);background:#FCFCFE">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 24px">
+      <div>
+        <div class="rpq-kv"><span class="k">UID</span><span class="v" style="font-family:monospace;font-weight:400">${esc(c.uid)}</span></div>
+        <div class="rpq-kv"><span class="k">Test</span><span class="v">${esc(c.testName)}</span></div>
+        <div class="rpq-kv"><span class="k">Geometry</span><span class="v" style="text-align:right">${esc(c.elementA)} ↔ ${esc(c.elementB)}</span></div>
+        <div class="rpq-kv"><span class="k">Last seen week</span><span class="v">${esc(_rpqWeekLabel(c.lastSeenWeekTag))}</span></div>
+        <div class="rpq-kv"><span class="k">Reappeared week</span><span class="v">${esc(_rpqWeekLabel(c.weekTag))}</span></div>
+        <div class="rpq-kv"><span class="k">Held</span><span class="v" style="color:#6D28D9">${esc(_rpqHeldLabel(c.weeksSince))}</span></div>
+      </div>
+      <div>
+        <div style="font-size:10px;font-weight:700;color:var(--tm);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">History</div>
+        ${_rpqTimelineHtml(c,entry)}
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;padding-top:10px;margin-top:8px;border-top:.5px solid var(--bd)">
+      <button class="btn" style="background:#006BA6;border-color:#006BA6;color:#fff" onclick="event.stopPropagation();reappearedQueueReopen('${esc(c.uid)}')">↻ Reopen</button>
+      <button class="btn" style="background:#00B050;border-color:#00B050;color:#fff" onclick="event.stopPropagation();reappearedQueueKeepResolved('${esc(c.uid)}')">✓ Keep Resolved</button>
+      <span class="rpq-tip" onclick="event.stopPropagation()">
+        <span class="q" title="What's the difference?">?</span>
+        <span class="bubble"><b>Reopen</b> — geometry genuinely still clashes. Status flips to Active and an
+          audited history entry is appended.<br><br><b>Keep Resolved</b> — reappearance is noise (partial
+          export, model not republished). Entry is dismissed, status stays Resolved, no status change is logged.</span>
+      </span>
+    </div>
+  </div>`;
+}
+function rReappeared(){
+  _refreshReappearedQueue();
+  const all=_reappearedQueue;
+  if(!all.length){
+    return `<div class="card" style="border-top:3px solid #00B050"><div class="cb" style="padding:24px;text-align:center">
+      <div style="font-size:14px;font-weight:700;color:#00B050;margin-bottom:6px">✓ Reappeared Queue is empty</div>
+      <div style="font-size:11px;color:#64748B;line-height:1.6">A Resolved clash that shows up again in a later import lands here for a decision.<br>Nothing held right now.</div>
+    </div></div>`;
+  }
+  const testOptions=[...new Set(all.map(c=>c.testName))].sort();
+  const weekOptions=[...new Set(all.map(c=>c.weekTag).filter(Boolean))].sort();
+  const statusOptions=[...new Set(all.map(c=>c.status))].sort();
+  const q=_rpqSearch.trim().toLowerCase();
+  const filtered=all.filter(c=>{
+    if(_rpqFilterTest!=='all'&&c.testName!==_rpqFilterTest)return false;
+    if(_rpqFilterWeek!=='all'&&c.weekTag!==_rpqFilterWeek)return false;
+    if(_rpqFilterStatus!=='all'&&c.status!==_rpqFilterStatus)return false;
+    if(q&&!(c.uid.toLowerCase().includes(q)||c.testName.toLowerCase().includes(q)||
+      c.elementA.toLowerCase().includes(q)||c.elementB.toLowerCase().includes(q)))return false;
+    return true;
+  });
+  const byTest={};
+  filtered.forEach(c=>{(byTest[c.testName]=byTest[c.testName]||[]).push(c);});
+  const groups=Object.keys(byTest).sort().map(tn=>{
+    const rows=byTest[tn];
+    const open=_rpqOpen[tn]!==false; // default expanded, like the mockup
+    const tnJson=JSON.stringify(tn).replace(/"/g,'&quot;');
+    const rowHtml=rows.map(c=>{
+      const exp=!!_rpqExpanded[c.uid];
+      const cIdx=(S.clashes||[]).find(x=>x.uid===c.uid);
+      const entry=cIdx?_reappearedOpenEntry(cIdx):null;
+      const expandedHtml=(exp&&entry)?_rpqCardExpanded(c,entry):'';
+      return `<tr class="rpq-row" style="border-top:.5px solid var(--bd);cursor:pointer" onclick="_rpqToggleCard('${esc(c.uid)}')">
+        <td style="padding:5px 8px;text-align:center;width:20px;color:var(--tm)">${exp?'▾':'▸'}</td>
+        <td style="padding:5px 8px;font-family:monospace;font-size:10px;color:var(--tm)">${esc(c.uid)}</td>
+        <td style="padding:5px 8px;font-size:11px;color:var(--t2)">${esc(c.elementA)} ↔ ${esc(c.elementB)}</td>
+        <td style="padding:5px 8px;font-size:10px;color:#64748B;white-space:nowrap">${esc(_rpqWeekLabel(c.lastSeenWeekTag))}</td>
+        <td style="padding:5px 8px"><span class="rpq-pill">${esc(_rpqWeekLabel(c.weekTag))}</span></td>
+        <td style="padding:5px 8px;font-size:10px;color:#64748B;font-variant-numeric:tabular-nums">${esc(_rpqHeldLabel(c.weeksSince))}</td>
+      </tr>${expandedHtml?`<tr><td colspan="6" style="padding:0">${expandedHtml}</td></tr>`:''}`;
+    }).join('');
+    return `<div class="card" data-rpq-group="${esc(tn)}" style="margin-bottom:8px">
+      <div class="ch" style="cursor:pointer" onclick="_rpqToggleGroup(${tnJson})">
+        <span class="ct" style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:11px;color:#64748B">${open?'▼':'▶'}</span>
+          ${esc(tn)}
+          <span class="rpq-pill" style="background:#6D28D9;color:#fff">${rows.length} held</span>
+        </span>
+      </div>
+      <div class="cb" style="padding:0;display:${open?'block':'none'}">
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr style="background:#F8FAFC">
+            <th style="width:20px"></th>
+            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#64748B;font-weight:600">UID</th>
+            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#64748B;font-weight:600">Geometry</th>
+            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#64748B;font-weight:600">Last seen</th>
+            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#64748B;font-weight:600">Reappeared</th>
+            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#64748B;font-weight:600">Held</th>
+          </tr></thead>
+          <tbody>${rowHtml}</tbody>
+        </table>
+      </div>
+    </div>`;
+  }).join('');
+  const optHtml=(opts,active,kind,fmt)=>`<option value="all"${active==='all'?' selected':''}>All ${kind}s</option>`+
+    opts.map(o=>`<option value="${esc(o)}"${o===active?' selected':''}>${esc(fmt?fmt(o):o)}</option>`).join('');
+  return `
+    <style>
+      .rpq-pill{display:inline-block;padding:1px 7px;border-radius:8px;font-size:9px;font-weight:700;white-space:nowrap;background:#EDE9FE;color:#4C1D95}
+      .rpq-kv{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:.5px solid #F1F4F9;font-size:11px}
+      .rpq-kv .k{color:var(--tm)}.rpq-kv .v{color:var(--t1);font-weight:600}
+      .rpq-tl{list-style:none;margin:2px 0 0;padding:0;position:relative}
+      .rpq-tl::before{content:"";position:absolute;left:5px;top:4px;bottom:4px;width:1px;background:var(--bd)}
+      .rpq-tl li{position:relative;padding:0 0 10px 18px;font-size:10.5px}
+      .rpq-tl li::after{content:"";position:absolute;left:0;top:2px;width:9px;height:9px;border-radius:50%;background:#fff;border:2px solid var(--tm)}
+      .rpq-tl li.now::after{border-color:#6D28D9;background:#EDE9FE}
+      .rpq-tl .when{font-size:9.5px;color:var(--tm);font-variant-numeric:tabular-nums}
+      .rpq-tl .what{font-weight:600;color:var(--t1)}
+      .rpq-tl .meta{color:var(--t2)}
+      .rpq-tip{position:relative;display:inline-flex}
+      .rpq-tip .q{width:15px;height:15px;border-radius:50%;background:#EEF0F4;color:var(--tm);font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;cursor:help}
+      .rpq-tip .bubble{display:none;position:absolute;bottom:22px;left:0;width:280px;background:#1E2534;color:#E2E8F0;font-size:10.5px;line-height:1.55;padding:10px 12px;border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.25);z-index:5}
+      .rpq-tip:hover .bubble{display:block}
+    </style>
+    <div class="card" style="border:.5px solid #D6C6F7;background:#F6F2FE;margin-bottom:9px"><div class="cb" style="padding:10px 14px">
+      <div style="font-size:12px;font-weight:700;color:#3B0E82;margin-bottom:3px">↻ ${all.length} clash${all.length===1?'':'es'} held on reappearance</div>
+      <div style="font-size:10.5px;color:#4C1D95;line-height:1.5">A clash you'd marked Resolved showed up again in a later import. Status stays Resolved until you decide: <strong>Reopen</strong> if it's genuinely still clashing, or <strong>Keep Resolved</strong> if the reappearance is noise (partial export, stale federation). Nothing auto-flips.</div>
+    </div></div>
+    <div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+      <select class="fsel" onchange="_rpqSetFilter('test',this.value)">${optHtml(testOptions,_rpqFilterTest,'test')}</select>
+      <select class="fsel" onchange="_rpqSetFilter('week',this.value)">${optHtml(weekOptions,_rpqFilterWeek,'week',_rpqWeekLabel)}</select>
+      <select class="fsel" onchange="_rpqSetFilter('status',this.value)">${optHtml(statusOptions,_rpqFilterStatus,'status')}</select>
+      <input class="fsrch" placeholder="Search UID, test, element…" value="${esc(_rpqSearch)}" oninput="_rpqSetSearch(this.value)" style="flex:1;min-width:160px">
+      <span style="font-size:10.5px;color:#94A3B8">${filtered.length} of ${all.length} shown</span>
+    </div>
+    ${groups||'<div class="card"><div class="cb" style="text-align:center;color:#94A3B8;font-size:11px;padding:20px">No clashes match the current filters.</div></div>'}
+  `;
+}
+/* REAPPEARED-QUEUE end */
 /* REVIEW-QUEUE-ACTIONS start: mark-Resolved and mark-Still-Open handlers.
    Both mutate the flagged clashes in S.clashes, clear pendingReview, append a
    statusHistory entry tagged source='ReviewQueue', persist via sv(), and
@@ -13134,6 +13395,69 @@ function _markClashesAsApproved(clashIds,source='ReviewQueue'){
   return updated;
 }
 /* APPROVE-ACTION-HANDLER end */
+
+/* REAPPEARED-QUEUE start: action handlers. _queueReopen / _queueKeepResolved
+   are the pure data-mutation functions (uid in, count out — 0/1 since each
+   call targets one clash) mirroring _rqActionOnUids's shape; the thin
+   reappearedQueue* wrappers below are the onclick targets that also
+   refresh the sidebar badge, toast, and re-render, mirroring
+   reviewQueueMarkApproved's wrapper shape. Both close the clash's open
+   reappearances[] entry (open:false) so it drops out of
+   _generateReappearedQueue() — that's what removes the card from the
+   queue; entries are kept (not deleted) as history. */
+function _queueReopen(uid,source){
+  const c=(S.clashes||[]).find(x=>x.uid===uid);
+  if(!c)return 0;
+  const entry=_reappearedOpenEntry(c);
+  if(!entry)return 0;
+  const _src=source||'ReappearedQueue';
+  const now=new Date().toISOString();
+  const wy=_weekYearNow();
+  if(c.status!=='Active'){
+    pushStatusHistory(c,'Active',wy);
+    c.status='Active';
+  }
+  _appendStatusHistory(c,{reopenedAt:now,source:_src,status:'Active',week:wy.week,year:wy.year,
+    reappearedWeekTag:entry.weekTag||'',lastSeenWeekTag:entry.lastSeenWeekTag||''});
+  entry.open=false;
+  entry.closedAt=now;
+  entry.resolution='reopened';
+  sv('clashes',S.clashes);
+  regenWeeklyFromRegister();
+  return 1;
+}
+function _queueKeepResolved(uid,source){
+  const c=(S.clashes||[]).find(x=>x.uid===uid);
+  if(!c)return 0;
+  const entry=_reappearedOpenEntry(c);
+  if(!entry)return 0;
+  const _src=source||'ReappearedQueue';
+  const now=new Date().toISOString();
+  const wy=_weekYearNow();
+  // Status stays Resolved — no pushStatusHistory call, matching
+  // reviewQueueMarkStillOpen's "no real status change" audit shape: the
+  // entry below records the decision without claiming a status flip.
+  _appendStatusHistory(c,{keptResolvedAt:now,source:_src,status:c.status||'Resolved',week:wy.week,year:wy.year,
+    reappearedWeekTag:entry.weekTag||'',lastSeenWeekTag:entry.lastSeenWeekTag||''});
+  entry.open=false;
+  entry.closedAt=now;
+  entry.resolution='keptResolved';
+  sv('clashes',S.clashes);
+  return 1;
+}
+function reappearedQueueReopen(uid){
+  const n=_queueReopen(uid);
+  if(!n){showToast('Nothing to reopen');return;}
+  showToast(`↻ ${uid} reopened`);
+  updSB();updSS();nav('reappeared');
+}
+function reappearedQueueKeepResolved(uid){
+  const n=_queueKeepResolved(uid);
+  if(!n){showToast('Nothing to keep');return;}
+  showToast(`✓ ${uid} kept Resolved`);
+  updSB();updSS();nav('reappeared');
+}
+/* REAPPEARED-QUEUE end */
 
 /* RQ-NW-EXPORT-FILTER start: build a Navisworks-consumable Clash Detective
    XML containing only the Review Queue's clashes. Semantic guarantee: each
