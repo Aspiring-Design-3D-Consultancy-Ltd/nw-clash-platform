@@ -1,0 +1,246 @@
+<!doctype html>
+<title>Reappeared Queue</title>
+<style>
+:root{
+  --sb:#0F1824;--sbh:#1A2A3F;--sbt:rgba(255,255,255,.4);
+  --acc:#006BA6;--acc2:#00AEEF;
+  --bg:#F0F2F7;--card:#fff;--bd:#E2E8F0;
+  --t1:#0F172A;--t2:#475569;--tm:#94A3B8;
+  --rq:#EA7600;--rq-tint:#FFF1E1;      /* Review Queue orange, for contrast reference */
+  --rp:#6D28D9;--rp-tint:#EDE9FE;      /* Reappeared Queue violet — new semantic */
+  --ok:#00B050;--ok-tint:#E7F8EE;
+  --warn:#F59E0B;--warn-tint:#FEF3C7;--warn-tx:#92400E;
+  color-scheme:light;
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:Arial,Helvetica,sans-serif;font-size:13px;background:var(--bg);color:var(--t1);padding-block:0}
+button{font-family:inherit}
+
+/* ---- shell: sidebar + topbar, cropped to what's needed to place the screen in context ---- */
+.shell{display:flex;min-height:100vh}
+.sidebar{width:212px;flex:none;background:var(--sb);padding:14px 0 10px;display:flex;flex-direction:column}
+.sb-brand{padding:0 16px 14px;font-size:13px;font-weight:700;color:#fff;border-bottom:.5px solid rgba(255,255,255,.08);margin-bottom:8px}
+.sb-brand small{display:block;font-weight:500;color:var(--sbt);font-size:10px;margin-top:2px}
+.na{display:flex;align-items:center;gap:9px;padding:.52rem .9rem;color:var(--sbt);font-size:12px;font-weight:500;border-left:3px solid transparent;cursor:default}
+.na .ni{width:15px;text-align:center;font-size:13px}
+.na.on{background:var(--sbh);color:#fff;border-left-color:var(--acc2)}
+.na-badge{margin-left:auto;background:var(--rq);color:#fff;font-size:9px;font-weight:700;padding:1px 6px;border-radius:8px;min-width:14px;text-align:center}
+.na-badge.rp{background:var(--rp)}
+.main{flex:1;min-width:0;display:flex;flex-direction:column}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:12px 20px;background:#fff;border-bottom:.5px solid var(--bd)}
+.tb-t{font-size:18px;font-weight:700;color:var(--t1)}
+.content{padding:16px 20px 40px;max-width:1040px;width:100%;margin:0 auto}
+
+/* ---- card system, matching working.html .card/.ch/.cb ---- */
+.card{background:var(--card);border:.5px solid var(--bd);border-radius:7px;margin-bottom:9px}
+.ch{padding:.58rem .82rem;border-bottom:.5px solid var(--bd);display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.cb{padding:.68rem .82rem}
+.ct{font-size:13px;font-weight:700;color:var(--t1)}
+
+.pill{display:inline-block;padding:1px 7px;border-radius:8px;font-size:9px;font-weight:700;white-space:nowrap;font-variant-numeric:tabular-nums}
+.pill-rp{background:var(--rp);color:#fff}
+.pill-ok{background:var(--ok-tint);color:#0B6B3A}
+.pill-week{background:#EEF2FF;color:#3730A3}
+
+.btn{padding:5px 12px;border-radius:4px;font-size:11px;cursor:pointer;border:.5px solid var(--bd);background:#fff;color:var(--t2);font-weight:600}
+.btn:hover{background:#F8FAFC}
+.btn.reopen{background:var(--acc);border-color:var(--acc);color:#fff}
+.btn.reopen:hover{background:#00588A}
+.btn.keep{background:var(--ok);border-color:var(--ok);color:#fff}
+.btn.keep:hover{background:#009244}
+.btn.sm{padding:3px 9px;font-size:10px}
+
+/* ---- explainer strip ---- */
+.explain{background:var(--rp-tint);border:.5px solid #D6C6F7;border-radius:6px;padding:9px 13px;font-size:10.5px;color:#4C1D95;line-height:1.55;display:flex;gap:10px;margin-bottom:10px}
+.explain b{color:#3B0E82}
+
+/* ---- filter bar ---- */
+.filters{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+.fsel,.fsrch{font-size:11px;padding:5px 8px;border:.5px solid var(--bd);border-radius:4px;background:#fff;color:var(--t2)}
+.fsrch{flex:1;min-width:160px}
+.fcount{margin-left:auto;font-size:10.5px;color:var(--tm)}
+
+/* ---- group header (collapsed rows, like Review Queue) ---- */
+.grp-hd{cursor:default}
+.grp-hd .ct{display:flex;align-items:center;gap:8px}
+.chev{font-size:10px;color:var(--tm);width:9px;display:inline-block}
+table{width:100%;border-collapse:collapse}
+th{padding:5px 8px;text-align:left;font-size:10px;color:var(--tm);font-weight:600;background:#F8FAFC}
+td{padding:6px 8px;font-size:11px;color:var(--t2);border-top:.5px solid var(--bd);vertical-align:middle}
+tr.row-active td{background:var(--rp-tint)}
+.uid{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10px;color:var(--tm)}
+.testnm{font-weight:600;color:var(--t1)}
+.geom{color:var(--t2)}
+
+/* ---- expanded card ---- */
+.exp-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 28px}
+.kv-row{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:.5px solid #F1F4F9;font-size:11.5px}
+.kv-row .k{color:var(--tm)}
+.kv-row .v{color:var(--t1);font-weight:600;text-align:right}
+.kv-row .v.mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:400;font-size:10.5px}
+
+.tl{list-style:none;margin:2px 0 0;padding:0;position:relative}
+.tl::before{content:"";position:absolute;left:5px;top:4px;bottom:4px;width:1px;background:var(--bd)}
+.tl li{position:relative;padding:0 0 12px 20px}
+.tl li:last-child{padding-bottom:0}
+.tl .dot{position:absolute;left:0;top:2px;width:11px;height:11px;border-radius:50%;background:#fff;border:2px solid var(--tm)}
+.tl li.now .dot{border-color:var(--rp);background:var(--rp-tint)}
+.tl li.ok .dot{border-color:var(--ok)}
+.tl .when{font-size:9.5px;color:var(--tm);font-variant-numeric:tabular-nums}
+.tl .what{font-size:11px;color:var(--t1);font-weight:600;margin-top:1px}
+.tl .meta{font-size:10px;color:var(--t2);margin-top:1px}
+
+.actions{display:flex;gap:8px;align-items:center;padding-top:10px;margin-top:6px;border-top:.5px solid var(--bd)}
+.tip{position:relative;display:inline-flex}
+.tip .q{width:15px;height:15px;border-radius:50%;background:#EEF0F4;color:var(--tm);font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;cursor:default}
+.tip .bubble{display:none;position:absolute;bottom:22px;left:50%;transform:translateX(-50%);width:280px;background:#1E2534;color:#E2E8F0;font-size:10.5px;line-height:1.55;padding:10px 12px;border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.25);z-index:5}
+.tip .bubble b{color:#fff}
+.tip:hover .bubble{display:block}
+.tip .bubble::after{content:"";position:absolute;top:100%;left:50%;transform:translateX(-50%);border:6px solid transparent;border-top-color:#1E2534}
+
+.annot{font-size:10px;color:var(--tm);font-style:italic;margin:4px 0 12px}
+</style>
+
+<div class="shell">
+  <div class="sidebar">
+    <div class="sb-brand">NW Clash Intelligence<small>ESMC · Muratec AMHS</small></div>
+    <div class="na"><span class="ni">▦</span>Dashboard</div>
+    <div class="na"><span class="ni">▤</span>Clash Register</div>
+    <div class="na"><span class="ni">🔍</span>Review Queue<span class="na-badge" hidden>0</span></div>
+    <div class="na on"><span class="ni">↻</span>Reappeared Queue<span class="na-badge rp">14</span></div>
+    <div class="na"><span class="ni">⧉</span>Dedup Queue</div>
+    <div class="na"><span class="ni">📄</span>BCF Generator</div>
+  </div>
+
+  <div class="main">
+    <div class="topbar">
+      <div class="tb-t">Reappeared Queue</div>
+    </div>
+
+    <div class="content">
+
+      <div class="explain">
+        <span style="font-size:15px;line-height:1">↻</span>
+        <div><b>A Resolved clash came back.</b> When a clash you'd marked Resolved shows up again in a later import,
+        it lands here with status held at Resolved — it does <b>not</b> silently reopen. Decide per clash:
+        <b>Reopen</b> if the geometry is genuinely still clashing (status → Active, logged to history), or
+        <b>Keep Resolved</b> if it's a stale/partial export or coordination noise (dismisses the entry, status
+        stays Resolved). Nothing here auto-flips.</div>
+      </div>
+
+      <div class="filters">
+        <input class="fsrch" placeholder="Search by test, UID, element…" value="">
+        <select class="fsel"><option>All tests</option><option>MEP_L20 vs STR_L20</option><option>CUP_L30 vs FAB_L30</option></select>
+        <select class="fsel"><option>All weeks</option><option>Reappeared W37</option><option>Reappeared W36</option></select>
+        <select class="fsel"><option selected>Open only</option><option>Open + dismissed</option></select>
+        <span class="fcount">14 held on reappearance · 3 tests</span>
+      </div>
+
+      <!-- Group 1: expanded, showing one fully expanded card -->
+      <div class="card">
+        <div class="ch grp-hd">
+          <span class="ct"><span class="chev">▼</span>MEP_L20 vs STR_L20<span class="pill pill-rp">6 held</span></span>
+          <button class="btn sm" disabled style="opacity:.5;cursor:default">✓ Keep all Resolved in this test</button>
+        </div>
+        <div class="cb" style="padding:0">
+          <table>
+            <thead><tr>
+              <th style="width:26px"></th>
+              <th>UID</th><th>Geometry</th><th>Last seen</th><th>Reappeared</th><th>Held</th>
+            </tr></thead>
+            <tbody>
+              <tr class="row-active">
+                <td style="text-align:center;color:var(--rp);font-weight:700">▾</td>
+                <td class="uid">CLX-04821</td>
+                <td class="geom"><span class="testnm">Cable Tray</span> ↔ Structural Beam</td>
+                <td>W29 · 2026-07-13</td>
+                <td><span class="pill pill-week">W37</span></td>
+                <td style="font-variant-numeric:tabular-nums">8 wks</td>
+              </tr>
+              <tr>
+                <td style="text-align:center;color:var(--tm)">▸</td>
+                <td class="uid">CLX-04833</td>
+                <td class="geom"><span class="testnm">Duct</span> ↔ Beam Flange</td>
+                <td>W31 · 2026-07-27</td>
+                <td><span class="pill pill-week">W37</span></td>
+                <td>6 wks</td>
+              </tr>
+              <tr>
+                <td style="text-align:center;color:var(--tm)">▸</td>
+                <td class="uid">CLX-04847</td>
+                <td class="geom"><span class="testnm">Sprinkler Pipe</span> ↔ Column</td>
+                <td>W34 · 2026-08-17</td>
+                <td><span class="pill pill-week">W37</span></td>
+                <td>3 wks</td>
+              </tr>
+              <tr>
+                <td style="text-align:center;color:var(--tm)">▸</td>
+                <td class="uid">CLX-04852</td>
+                <td class="geom"><span class="testnm">Cable Tray</span> ↔ Grid Beam</td>
+                <td>W35 · 2026-08-24</td>
+                <td><span class="pill pill-week">W36</span></td>
+                <td>2 wks</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <!-- Expanded card content, in place of the row (colspan panel) -->
+          <div style="padding:14px 14px 4px;border-top:.5px solid var(--bd);background:#FCFCFE">
+            <div class="exp-grid">
+              <div>
+                <div class="kv-row"><span class="k">UID</span><span class="v mono">CLX-04821</span></div>
+                <div class="kv-row"><span class="k">Test</span><span class="v">MEP_L20 vs STR_L20</span></div>
+                <div class="kv-row"><span class="k">Geometry</span><span class="v" style="text-align:right;max-width:200px">Cable Tray ↔ Structural Beam</span></div>
+                <div class="kv-row"><span class="k">Grid / Level</span><span class="v mono">CUP_L20 · Grid E-14</span></div>
+                <div class="kv-row"><span class="k">Last seen week</span><span class="v">W29 (2026-07-13)</span></div>
+                <div class="kv-row"><span class="k">Reappeared week</span><span class="v">W37 (2026-09-14)</span></div>
+                <div class="kv-row"><span class="k">Held</span><span class="v" style="color:var(--rp)">8 weeks</span></div>
+              </div>
+              <div>
+                <div style="font-size:10px;font-weight:700;color:var(--tm);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">History</div>
+                <ul class="tl">
+                  <li class="ok"><div class="when">W23 · 2026-06-01</div><div class="what">Detected</div><div class="meta">First seen in import, status Open</div></li>
+                  <li class="ok"><div class="when">W28 · 2026-07-06</div><div class="what">Status → Resolved</div><div class="meta">Marked resolved by S. Haines</div></li>
+                  <li><div class="when">W29 · 2026-07-13</div><div class="what">Last seen</div><div class="meta">Present in register, no longer in export</div></li>
+                  <li class="now"><div class="when">W37 · 2026-09-14</div><div class="what">Reappeared</div><div class="meta">Present again — status held at Resolved, entry opened</div></li>
+                </ul>
+              </div>
+            </div>
+
+            <div class="actions">
+              <button class="btn reopen">↻ Reopen</button>
+              <button class="btn keep">✓ Keep Resolved</button>
+              <span class="tip">
+                <span class="q">?</span>
+                <span class="bubble">
+                  <b>Reopen</b> — geometry genuinely still clashes. Status flips to Active, an audited history
+                  entry is appended (who / when / from-Resolved), and it re-enters your normal workflow.<br><br>
+                  <b>Keep Resolved</b> — reappearance is noise (partial export, model not republished, stale
+                  federation). Entry is dismissed, status stays Resolved, nothing is logged as a status change.
+                </span>
+              </span>
+            </div>
+            <div class="annot">Mock data for design review — not from a live import.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Group 2: collapsed -->
+      <div class="card">
+        <div class="ch grp-hd">
+          <span class="ct"><span class="chev">▶</span>CUP_L30 vs FAB_L30<span class="pill pill-rp">5 held</span></span>
+          <button class="btn sm" disabled style="opacity:.5;cursor:default">✓ Keep all Resolved in this test</button>
+        </div>
+      </div>
+
+      <!-- Group 3: collapsed -->
+      <div class="card">
+        <div class="ch grp-hd">
+          <span class="ct"><span class="chev">▶</span>BSGS_L10 vs FAB_L10<span class="pill pill-rp">3 held</span></span>
+          <button class="btn sm" disabled style="opacity:.5;cursor:default">✓ Keep all Resolved in this test</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
