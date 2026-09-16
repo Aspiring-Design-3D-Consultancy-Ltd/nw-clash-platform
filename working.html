@@ -9105,6 +9105,59 @@ function bgetElementId(el){
   return{id:'',src:''};
 }
 /* BGATR-ID-MULTI end */
+/* PARSER-IMPROVEMENTS start: shared helpers for the three clash-XML parse
+   sites (dual-parser discipline, CLAUDE.md — batchParse ~batch import,
+   bparse ~paste/single-file import, _bfParseXml ~PAIR-ID-BACKFILL reparse).
+
+   1. _pxLeafClashEls(batch) fixes the W37 CHEM/WWT Exyte export: some tests
+      in the same file dropped the <clashresult> wrapper entirely and emit
+      <clashgroup> as the actual leaf record (clashobject/clashpoint direct
+      children, no nested clashresult) while OTHER tests in the SAME file
+      still emit old-style groups that wrap a nested <clashresult> (the
+      pre-existing XML-GROUPS-FIX "Group Selected" case). The original
+      fallback — `if(!clashresults.length) use all clashgroups` — only
+      fires when a batch has ZERO <clashresult> anywhere; with old- and
+      new-style tests mixed in one file, that count was never zero, so the
+      leaf clashgroups were silently skipped and any clashgroup that WAS
+      picked up as a false fallback could be a composite/container group
+      wrapping several nested groups, whose querySelectorAll('clashobject')
+      then grabbed all of its descendants' clashobject elements at once
+      (wrong pairing) or none. `elementA:c.eA.item||c.eA.layer||'Unknown'`
+      (importToRegister) is where that shows up as "Unknown".
+      Fix: union of every real <clashresult> (found at any depth, as
+      before) with every <clashgroup> that is itself a genuine leaf — no
+      nested clashresult (that's the old wrapper case, already covered by
+      the clashresult scan) and no nested clashgroup (a composite/
+      container group one level above the real leaves). Same extraction
+      code (pos3f / clashobject queries, both relative to the matched
+      element) runs unchanged on whichever kind of element was matched.
+   2. _pxApproved(r) reads Exyte's <approveddate> (ISO string text content)
+      and <approvedby> (text) child elements — absent from older exports,
+      so both default to ''.
+   3. _pxInferExporter(fname) tags each parsed clash with the exporting
+      party, inferred from the filename (Muratec vs ESMC/Exyte vs
+      unrecognised) — the two partners' Navisworks installs produce subtly
+      different XML dialects (see PR-A5-JAPANESE-ATTR above), and this
+      makes that provenance queryable per clash instead of re-derived by
+      re-reading the archived XML. */
+function _pxLeafClashEls(batch){
+  const clashresults=[...batch.querySelectorAll('clashresult')];
+  const leafGroups=[...batch.querySelectorAll('clashgroup')].filter(g=>!g.querySelector('clashresult, clashgroup'));
+  return clashresults.concat(leafGroups);
+}
+function _pxApproved(r){
+  return{
+    approvedDate:(r.querySelector('approveddate')?.textContent||'').trim(),
+    approvedBy:(r.querySelector('approvedby')?.textContent||'').trim(),
+  };
+}
+function _pxInferExporter(fname){
+  const f=String(fname||'').toLowerCase();
+  if(/muratec/.test(f))return 'Muratec';
+  if(/esmc|exyte/.test(f))return 'Exyte';
+  return 'Unknown';
+}
+/* PARSER-IMPROVEMENTS end */
 /* PAIR-ID-COMPOSITE-FALLBACK start: order-insensitive stable pair key for
    PAIR-ID-MERGE lookups. Three tiers:
      ID::A|B          — both sides carry an identity attribute (any of the
@@ -10785,15 +10838,23 @@ function batchParse(files,errors,readCount){
       /* XML-GROUPS-FIX start: Navisworks "Group Selected" exports wrap each clash
          as <clashgroup> instead of <clashresult> — same children structure. Fall
          back to clashgroup elements when the XML has no flat clashresults. */
-      let _clashEls=[...batch.querySelectorAll('clashresult')];
-      if(!_clashEls.length)_clashEls=[...batch.querySelectorAll('clashgroup')];
+      /* PARSER-IMPROVEMENTS: superseded by _pxLeafClashEls (see definition
+         above bgetElementId) — same intent, now correct when a batch mixes
+         old-style wrapped clashgroups with new-style leaf clashgroups in
+         the same file. Marker kept for history/searchability. */
+      const _clashEls=_pxLeafClashEls(batch);
       /* XML-GROUPS-FIX end */
-      ;_clashEls.forEach((r,i)=>{
+      /* PARSER-IMPROVEMENTS start: per-file exporter tag, inferred once per
+         batch (every clash in this file shares one exporter). */
+      const _exporter=_pxInferExporter(fname);
+      /* PARSER-IMPROVEMENTS end */
+      _clashEls.forEach((r,i)=>{
         const pos=r.querySelector('pos3f')||r.querySelector('clashpoint pos3f');
         const obs=[...r.querySelectorAll('clashobject')];
         const distRaw=parseFloat(r.getAttribute('distance')||r.getAttribute('dist')||'0');
         const depMm=Math.round(Math.abs(distRaw)*mult);
         const nwSt=r.getAttribute('status')||r.querySelector('resultstatus')?.textContent?.toLowerCase()||'new';
+        /* PARSER-IMPROVEMENTS */ const _approved=_pxApproved(r);
         /* FILE-MTIME-AS-DATE-USE start: prefer the file mtime over the
            XML's per-clash createddate. The mtime represents when the test
            was exported by Navisworks (which is the project-relevant date for
@@ -10889,6 +10950,13 @@ function batchParse(files,errors,readCount){
           nwCreated,
           /* REVIEW-QUEUE-DATE-GUARD-CREATEDDATE */ nwCreatedFullISO,
           nwImageRef,
+          /* PARSER-IMPROVEMENTS start: Exyte <approveddate>/<approvedby>
+             (empty string on exports that don't carry them, e.g. Muratec)
+             plus the per-file exporter tag computed above. */
+          approvedDate:_approved.approvedDate,
+          approvedBy:_approved.approvedBy,
+          exporter:_exporter,
+          /* PARSER-IMPROVEMENTS end */
           /* IMG-POS: per-test position (0-indexed). Lets us fall back to
              positional image matching when the XML has no href attributes
              (Navisworks exports without "Include Images" ticked) AND the
@@ -11136,15 +11204,19 @@ function bparse(){
       tn.match(/Priority\s*2|P2|Secondary/i)?'High':null;
     /* XML-GROUPS-FIX start: same fallback as parser #1 — grouped Navisworks
        exports use <clashgroup> instead of <clashresult>. */
-    let _clashEls=[...batch.querySelectorAll('clashresult')];
-    if(!_clashEls.length)_clashEls=[...batch.querySelectorAll('clashgroup')];
+    /* PARSER-IMPROVEMENTS: superseded by _pxLeafClashEls (dual-parser
+       mirror of the parser 1 change above). Marker kept for history. */
+    const _clashEls=_pxLeafClashEls(batch);
     /* XML-GROUPS-FIX end */
-    ;_clashEls.forEach((r,i)=>{
+    /* PARSER-IMPROVEMENTS: per-file exporter tag, mirror of parser 1. */
+    const _exporter2=_pxInferExporter(_srcFile);
+    _clashEls.forEach((r,i)=>{
       const pos=r.querySelector('pos3f')||r.querySelector('clashpoint pos3f');
       const obs=[...r.querySelectorAll('clashobject')];
       const distRaw=parseFloat(r.getAttribute('distance')||r.getAttribute('dist')||'0');
       const depMm=Math.round(Math.abs(distRaw)*mult);
       const nwSt=r.getAttribute('status')||r.querySelector('resultstatus')?.textContent?.toLowerCase()||'new';
+      /* PARSER-IMPROVEMENTS */ const _approved2=_pxApproved(r);
       // Parse creation date from <createddate><date year="..." month="..." day="..."/></createddate>
       const cdEl=r.querySelector('createddate date');
       let nwCreated=null;
@@ -11207,6 +11279,11 @@ function bparse(){
         nwCreated,
         /* REVIEW-QUEUE-DATE-GUARD-CREATEDDATE */ nwCreatedFullISO,
         nwImageRef,
+        /* PARSER-IMPROVEMENTS: mirror of parser 1's approveddate/approvedby
+           + exporter stamp. */
+        approvedDate:_approved2.approvedDate,
+        approvedBy:_approved2.approvedBy,
+        exporter:_exporter2,
         testIdx:i,
         x:parseFloat(pos?.getAttribute('x')||'0'),y:parseFloat(pos?.getAttribute('y')||'0'),z:parseFloat(pos?.getAttribute('z')||'0'),
         eA,eB,dA:inferDisc(eA.source,eA.layer),dB:inferDisc(eB.source,eB.layer),pri:inferredPri||inferPri(depMm),mappedSt:mapNWSt(nwSt)});
@@ -12051,6 +12128,15 @@ function importToRegister(mode){
       if(c.sourceFilePath)exist.sourceFilePath=c.sourceFilePath;
       else if(c.sourceFile&&!exist.sourceFilePath)exist.sourceFilePath=c.sourceFile;
       if(c.sourceFolder)exist.sourceFolder=c.sourceFolder;
+      /* PARSER-IMPROVEMENTS start: refresh approvedDate/approvedBy/exporter
+         on re-import, same only-overwrite-when-present rule as sourceFile
+         above — an export that doesn't carry <approveddate>/<approvedby>
+         (e.g. Muratec) must not blank out a value learned from an earlier
+         Exyte export of the same clash. */
+      if(c.approvedDate)exist.approvedDate=c.approvedDate;
+      if(c.approvedBy)exist.approvedBy=c.approvedBy;
+      if(c.exporter&&c.exporter!=='Unknown')exist.exporter=c.exporter;
+      /* PARSER-IMPROVEMENTS end */
       /* WEEKLY-IMPORT-CAPTURE refresh: same rule as sourceFolder — only
          overwrite when the incoming batch actually captured a weekTag.
          A legacy clash first ingested via paste (weekTag=null) learns
@@ -12160,6 +12246,13 @@ function importToRegister(mode){
       weekTag:(c.weekTag!==undefined?c.weekTag:null),
       weekDate:(c.weekDate!==undefined?c.weekDate:null),
       /* WEEKLY-IMPORT-CAPTURE end */
+      /* PARSER-IMPROVEMENTS start: approvedDate/approvedBy default to ''
+         (most exports don't carry them); exporter defaults to 'Unknown'
+         when filename inference didn't match a recognised partner. */
+      approvedDate:c.approvedDate||'',
+      approvedBy:c.approvedBy||'',
+      exporter:c.exporter||'Unknown',
+      /* PARSER-IMPROVEMENTS end */
       /* PR-01-FIRST-SEEN start: immutable first-appearance stamps. The
          17-Jul-2026 audit surfaced that weekTag/weekDate above use
          last-seen semantics — they're refreshed on every re-import at
@@ -18578,8 +18671,18 @@ function _bfParseXml(xmlText, fname){
   if(!batches.length)batches=[...doc.querySelectorAll('batchtest')];
   batches.forEach(batch=>{
     const tn=batch.getAttribute('name')||fname.replace(/\.xml$/i,'');
-    let clashes=[...batch.querySelectorAll('clashresult')];
-    if(!clashes.length)clashes=[...batch.querySelectorAll('clashgroup')];
+    /* PARSER-IMPROVEMENTS: mirror of the batchParse/bparse fix — see
+       _pxLeafClashEls above bgetElementId. Dual-parser discipline
+       (CLAUDE.md) — this ID-only backfill reparse hits the same
+       clashresult/clashgroup selection code as the two main import
+       parsers, so it shares the same W37 CHEM/WWT leaf-clashgroup bug
+       and needs the same fix. Scope note: approveddate/approvedby/
+       exporter are deliberately NOT added to this site's output —
+       _bfApply's contract explicitly overwrites ID fields only ("Status,
+       notes, priority, assignedTo, statusHistory, coordinates and dates
+       are never touched"), and this parser exists solely to backfill
+       elementIdA/B onto existing register clashes. */
+    const clashes=_pxLeafClashEls(batch);
     clashes.forEach((r,i)=>{
       const obs=[...r.querySelectorAll('clashobject')];
       const idA=bgetElementId(obs[0]);
